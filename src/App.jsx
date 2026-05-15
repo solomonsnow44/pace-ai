@@ -1,1750 +1,3958 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { createContext, createElement, useContext, useEffect, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import {
+  ArrowRight,
+  ArrowLeft,
+  Bot,
+  BriefcaseBusiness,
+  Building2,
+  CalendarDays,
+  CheckCircle2,
+  ChevronDown,
+  Circle,
+  Clock,
+  Contact,
+  Database,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileText,
+  KanbanSquare,
+  LayoutDashboard,
+  ListFilter,
+  LockKeyhole,
+  LogOut,
+  LogIn,
+  Mail,
+  MapPin,
+  Megaphone,
+  Moon,
+  PanelRight,
+  Phone,
+  Plug,
+  Plus,
+  Search,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Sun,
+  Target,
+  Upload,
+  UserRound,
+  Users,
+} from "lucide-react";
+import logoUrl from "../images/paceops-logo.jpeg";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-const CLAUDE_MODEL = "claude-sonnet-4-20250514";
-
-async function callClaude(messages, systemPrompt, maxTokens = 1200) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: maxTokens, system: systemPrompt, messages }),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.content?.map(b => b.text || "").join("") || "";
-}
-
-// ─── FULL PM_CORE INCLUDING MODULE 1 ─────────────────────────────────────────
-const PM_CORE = `You are an AI sales copilot built on PaceOps' ProspectMastery® methodology.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MODULE 1 — ESSENTIAL PROSPECTING
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-MODERN SELLING — 4 KEY CHARACTERISTICS:
-1. BUYER-CENTRIC ENGAGEMENT: Buyers are more informed and empowered than ever. They don't want to be sold to — they want help making better decisions. Map the buying committee (who influences, who decides, who blocks). Understand trigger events that signal real interest. Adapt messaging to the buyer's journey (awareness → evaluation → decision). Build credibility early by helping buyers gain clarity, not just pushing demos.
-2. VALUE-LED PERSONALISATION AT SCALE: Spray-and-pray is dead. Use intent data, CRM insights, and LinkedIn signals to shape outreach. Craft messaging that focuses on business problems, not product features. Tap into persona-based pain points while layering in relevant context (funding, job changes, growth). Balance automation with human touch.
-3. MULTI-CHANNEL, MULTI-TOUCH STRATEGY: It takes 8–12+ touches to engage a decision-maker. Build a structured cadence across email, phone, LinkedIn, video, and text. Vary touch types (value drops, social engagement, voice notes, referrals). Align messages around a central narrative that evolves over time. Each interaction should build recognition, reinforce credibility, and invite conversation — not just chase meetings.
-4. QUALIFICATION AS A SERVICE: BDRs are the first step in a consultative sales process. The goal is to guide, not push. Qualify for true fit, urgency, and mutual value — not just budget or timing. Frame qualification to help the buyer self-discover fit. Focus on quality of conversations, not just quantity of meetings booked.
-
-PROSPECTING ACKNOWLEDGEMENT — REALITY CHECK:
-- You are interrupting people. They are not expecting you.
-- It can be difficult and awkward. You cannot control their response.
-- Accept this reality and use the methodology to stack the odds in your favour.
-
-NEUROSCIENCE IN PROSPECTING — THE CROC BRAIN:
-The brain has three parts: CROC BRAIN (primal/instinctive — survival, fight-or-flight), MID-BRAIN (social/emotional — meaning, motivation), NEOCORTEX (logical/intellectual — reasoning, decision-making).
-THE CRITICAL DISCONNECT: You go outbound using your Neocortex brain (logical, detailed, value-rich). But your message is received by the prospect's CROC brain (primal, threat-scanning, short attention span). This is a serious concern.
-CROC BRAIN FILTERING SYSTEM: The croc brain asks two questions — "Is this an emergency?" and "Can this be ignored?" If your opening doesn't pass this filter, it gets discarded.
-CROC BRAIN RECEIVER ESSENTIALS: They will ignore you if possible. They only focus on the bigger picture. They respond with emotion. They are focused on the here and now. They need concrete facts. They have a very short attention span.
-HOW TO FILTER TO THE CROC BRAIN: Make messaging Simple, Clear, Non-threatening, and Intriguing. Start by addressing a fundamental need or pain point they will recognise immediately, triggering curiosity or urgency. Incorporate social proof or authority signals to reduce perceived risk. Keep your message concise — avoid overwhelming with too many options or details at once.
-
-BUYER DECISION MAKING JOURNEY — 5 STAGES (Gates in the funnel):
-1. OBLIVIOUS — No knowledge of who you are or how you can support them. Your job: create awareness.
-2. CREDIBLE — They now appreciate who you are and what you represent. Your job: establish trust.
-3. RELEVANT — They recognise how your offerings could potentially address a need or pain point. Your job: make it personal.
-4. INTERESTING — They admit interest in exploring and evaluating further. Your job: deepen the conversation.
-5. PREFERENCE — They acknowledge that an appointment is a valuable use of their time. Your job: gain the commitment.
-Always calibrate your outreach and calls to the buyer's current gate. Don't try to jump from Oblivious to Preference in one call.
-
-PACEOPS PROSPECTING FUNNEL:
-Top (red) — Prospect Intel + Resource Excellence (your preparation and research layer)
-Middle (blue, narrowing) — Credible → Relevant → Interesting → Preference (buyer journey through gates)
-Bottom — Intent to Buy → VALUE £ + CONV % → ROI
-Left side = Buying Behaviour | Right side = Selling Behaviour
-This funnel is OUTCOME BASED. Every action drives toward ROI.
-
-ICP — IDEAL CUSTOMER PROFILE:
-Your ICP is a comprehensive description of your perfect customer. Components: Industry, Company Size, Geography, Revenues, Buying Process, Decision Makers, Business Goals, Pain Points, Technology Stack, Attributes. Always qualify against ICP before investing time in a prospect.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PROSPECTING OPERATING SYSTEM (POS) — 6 STAGES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. PROFILE: Ideal Customer Profile, Industry/Market Position, Decision Making Process
-   — Fit with ICP, Key Stakeholders, Market Standing
-2. SEARCH: Defined Preparation, Timed Research, Advanced Curiosity
-   — Clearly understand target client characteristics, use advanced search filters, monitor LinkedIn, use AI tools
-3. CONNECT: Extensive Outreach, MultiTouch Cadence, Professional Position
-   — First impressions matter. Personalised, well-thought-out approach. Adapt based on prospect preferences.
-4. ENGAGE: Capture Attention, Develop Conversation, Journey of Discovery
-   — Critical step. Build trust. Earn the right for more time. Create a holding position.
-5. ASSESS: Role/Ownership Clarity, Journey of Qualification, Shared Valuable Insights
-   — Understand job function relevance. Determine if prospect is aware of problem. Position as credible advisor.
-6. INFLUENCE: Build Trust, Inspire Change, Gain Commitment
-   — Share success stories. Build intrigue and urgency. Guide decision-makers toward change. Transform passive buyer into active one.
-
-10 PROSPECTMASTERY MODULES:
-1. Essential Prospecting   2. Power of Persuasion   3. Planning & Preparation
-4. Script to Success       5. Insightful Questioning  6. Principal of Research
-7. Decision-Based Mapping  8. Objection Handling      9. Winning Formula   10. Social Media Edge
-
-PROSPECTING FUNNEL STAGES:
-- Discovering: Search and find, create awareness, identify problems
-- Sharing: Create consideration, share insights, highlight possible future
-- Cultivating: Planned re-engagement, build confidence, time to influence
-- Hand Over: Quality transfer to expert, detailed notes, expected pipeline value
-
-EMPLOYEE CORE COMPETENCIES (weighted): Resilience (19%), Curiosity (19%), Persistence (18%), Coachable (17%), Active Listener (14%), Organised (13%)
-
-CORE VALUES: Accountability, Control, Passion, Curiosity, Innovation
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MODULE 5 — INSIGHTFUL QUESTIONING (OctaQ Framework)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-QUESTION TYPES: Open (gather insights), Closed (confirm facts), Clarifying (remove ambiguity), Probing (dig deeper), Leading (guide thinking), Prioritising (identify most critical), Hypothetical (future-focused), Confirmation (verify details).
-
-ACTIVE LISTENING STYLE: Paraphrasing ("What I hear you saying is…"), Precision ("Help me better understand…"), Reflective (mirror emotions/concerns), Summarising ("To recap, your main concerns are…").
-
-OCTAQ FRAMEWORK — 8-stage question sequence every call should follow:
-1. BUSINESS BACKGROUND — Role, org structure, team size, tech stack, recent changes
-2. DECISION MAKING — Who owns the decision? Who else is involved? What's the process? Past obstacles?
-3. DISCOVERY — Current pain points, inefficiencies, goals for next 6-12 months, satisfaction with current solution
-4. QUALIFICATION — What happens if unresolved? Consequences of inaction? Risk to business goals?
-5. CHALLENGE — What benefits if solved? What would resolution mean for team productivity/customer satisfaction?
-6. BUDGET — How does budgeting work? Typical range? Approval process? Constraints?
-7. TIMEFRAMES — Decision timeline? Contract renewal? Steps before final decision? External factors?
-8. NEXT ACTIONS — Specific ask for next step with day/time — never leave a call without a committed next action
-
-KEY PRINCIPLE: A strategic question sequence builds naturally toward a close. By the time you ask for commitment, the conversation has led there organically. Ask ONE sharp insightful question at a time — never fire a list of surface-level questions.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MODULE 7 — DECISION BASED MAPPING (DMU Framework)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-CORE INSIGHT: Around 86% of B2B purchases stall. The average buying group includes 10–11 stakeholders (15+ for multinationals). 84% of B2B decisions are influenced by peer recommendations. The org chart shows formal structure — but deals are shaped by INFORMAL influence (trusted inner circle, political dynamics, hidden risks).
-
-DECISION MAKING UNIT (DMU) — 6 roles to identify and map:
-- DECISION MAKER: Has ultimate authority and budget sign-off. Can say YES and fund it.
-- PROFESSIONAL BUYER (Procurement): Controls purchase process, ensures value. Can block or delay.
-- RECOMMENDER: Evaluates options and makes formal recommendation for/against.
-- INFLUENCER: Opinions matter to the decision maker regardless of title.
-- END USER: Will use the solution — active in evaluation, champions internally.
-- DETRACTOR: Wants a different outcome. Delays, discourages, restricts information, highlights flaws.
-
-CENTRALISED vs DECENTRALISED:
-- Centralised (Startups, SMBs, regulated industries): Fewer DMs, faster decisions, clear authority
-- Decentralised (Enterprises, matrix orgs): Many stakeholders, consensus-driven, slower, more complex
-
-FORMAL vs INFORMAL INFLUENCE: Deals close with formal buy-in — but are often shaped by informal influence. Always map both. The person who actually decides is often NOT the most senior person in the room.
-
-PROBLEM OWNER vs BUDGET OWNER: These are often different people. The problem owner experiences the pain. The budget owner controls the spend and may have completely different priorities. You need both.
-
-POWER BUYERS (Finance & IT): Research shows IT and Finance departments are most influential across ALL buying decisions. Always consider who in IT and Finance needs to be part of your DMU map.
-
-PROCUREMENT & FRAMEWORK AGREEMENTS: Many organisations operate framework agreements (umbrella contracts, typically 4-year max). If procurement is involved, understand the framework — being on framework or not can be a deal-maker/breaker.
-
-DIRECTION OF TRAVEL PRINCIPLE: Always understand which direction an organisation is moving strategically before positioning your solution. Link what you offer to where they're going, not just where they are.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DISCOVERY QUESTION CATEGORIES:
-Growth & Expansion — qualifies intent, tests appetite, identifies strain, creates urgency
-Customer Experience — strategic framing, identifies friction, quantifies impact, finds DM
-Capability Building — assesses maturity, highlights fragility/risk, tests for next-step
-
-CALL COACHING FRAMEWORK: Score hook, bridge, permission ask, pain probe, value statement, soft close, listening. Coach using ProspectMastery Lewin Force Field — address restraining forces (lack of confidence, comfort zones, resistance) while building driving forces (resilience, curiosity, persistence).
-
-CROC BRAIN FILTER FOR ALL OUTPUTS: Every hook, opening line, and outreach message must pass the Croc Brain test — Is it Simple? Is it Clear? Is it Non-threatening? Is it Intriguing? If it doesn't pass, rewrite it.
-
-Always be direct, specific, and actionable. Avoid corporate fluff. Think like a top 1% B2B SDR. Apply OctaQ sequencing and DMU awareness in every output.`;
-
-// ─── THEME ───────────────────────────────────────────────────────────────────
-const LIGHT = {
-  mode: "light",
-  bg: "#F4F6F9",
-  bgCard: "#FFFFFF",
-  bgAlt: "#F0F2F5",
-  bgElevated: "#FFFFFF",
-  sidebar: "#FFFFFF",
-  rail: "#F8F9FB",
-  border: "rgba(15,23,42,0.08)",
-  borderMed: "rgba(15,23,42,0.13)",
-  accent: "#0C69C8",
-  accentHover: "#0A58A8",
-  accentSub: "rgba(12,105,200,0.07)",
-  accentBorder: "rgba(12,105,200,0.18)",
-  text: "#0F172A",
-  textSec: "#475569",
-  textMuted: "#94A3B8",
-  green: "#059669",
-  greenBg: "rgba(5,150,105,0.07)",
-  amber: "#D97706",
-  amberBg: "rgba(217,119,6,0.07)",
-  rose: "#DC2626",
-  roseBg: "rgba(220,38,38,0.07)",
-  teal: "#0284C7",
-  tealBg: "rgba(2,132,199,0.07)",
-  shadow: "0 1px 3px rgba(15,23,42,0.06), 0 4px 16px rgba(15,23,42,0.06)",
-  shadowLg: "0 8px 32px rgba(15,23,42,0.10)",
-  scrollbar: "rgba(15,23,42,0.10)",
-};
-
-const DARK = {
-  mode: "dark",
-  bg: "#060C1A",
-  bgCard: "#0D1526",
-  bgAlt: "#111D30",
-  bgElevated: "#0D1526",
-  sidebar: "#0A1020",
-  rail: "#080E1C",
-  border: "rgba(255,255,255,0.07)",
-  borderMed: "rgba(255,255,255,0.12)",
-  accent: "#1A7AFF",
-  accentHover: "#4D9FFF",
-  accentSub: "rgba(26,122,255,0.10)",
-  accentBorder: "rgba(26,122,255,0.20)",
-  text: "#F1F5F9",
-  textSec: "#8FA8CC",
-  textMuted: "#3D5475",
-  green: "#00D68F",
-  greenBg: "rgba(0,214,143,0.08)",
-  amber: "#FFAA00",
-  amberBg: "rgba(255,170,0,0.08)",
-  rose: "#FF4D6D",
-  roseBg: "rgba(255,77,109,0.08)",
-  teal: "#00C2E0",
-  tealBg: "rgba(0,194,224,0.08)",
-  shadow: "0 1px 3px rgba(0,0,0,0.25), 0 4px 16px rgba(0,0,0,0.25)",
-  shadowLg: "0 8px 32px rgba(0,0,0,0.45)",
-  scrollbar: "rgba(255,255,255,0.08)",
-};
-
-const makeStyles = (C) => `
-  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
-
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-font-smoothing: antialiased; }
-
-  html, body, #root { width: 100%; height: 100%; min-height: 100vh; }
-
-  :root {
-    --bg: ${C.bg}; --bg-card: ${C.bgCard}; --bg-alt: ${C.bgAlt}; --bg-elevated: ${C.bgElevated};
-    --sidebar: ${C.sidebar}; --rail: ${C.rail}; --border: ${C.border}; --border-med: ${C.borderMed};
-    --accent: ${C.accent}; --accent-hover: ${C.accentHover}; --accent-sub: ${C.accentSub}; --accent-border: ${C.accentBorder};
-    --text: ${C.text}; --text-sec: ${C.textSec}; --text-muted: ${C.textMuted};
-    --green: ${C.green}; --green-bg: ${C.greenBg}; --amber: ${C.amber}; --amber-bg: ${C.amberBg};
-    --rose: ${C.rose}; --rose-bg: ${C.roseBg}; --teal: ${C.teal}; --teal-bg: ${C.tealBg};
-    --shadow: ${C.shadow}; --shadow-lg: ${C.shadowLg}; --scrollbar: ${C.scrollbar};
-    --sans: 'DM Sans', sans-serif; --display: 'Sora', sans-serif; --mono: 'JetBrains Mono', monospace;
-    --r: 10px; --r-lg: 16px;
-  }
-
-  body { font-family: var(--sans); background: var(--bg); color: var(--text); font-size: 14px; transition: background 0.2s ease, color 0.2s ease; }
-  button { font-family: var(--sans); cursor: pointer; border: none; background: none; color: inherit; }
-  input, textarea, select { font-family: var(--sans); }
-  a { color: var(--accent); text-decoration: none; }
-  ::-webkit-scrollbar { width: 4px; }
-  ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
-
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
-  @keyframes slideIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
-
-  .fade-in { animation: fadeIn 0.25s ease both; }
-  .spin { animation: spin 0.7s linear infinite; }
-
-  .shell { display: grid; grid-template-columns: 240px 1fr; grid-template-rows: 100vh; height: 100vh; width: 100vw; overflow: hidden; position: fixed; top: 0; left: 0; right: 0; bottom: 0; }
-
-  .sidebar { background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; transition: background 0.2s ease; }
-  .sidebar-top { padding: 20px 16px 16px; border-bottom: 1px solid var(--border); }
-  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-  .brand-mark { width: 32px; height: 32px; border-radius: 9px; background: var(--accent); display: flex; align-items: center; justify-content: center; font-family: var(--display); font-size: 14px; font-weight: 800; color: #fff; flex-shrink: 0; box-shadow: 0 4px 12px rgba(12,105,200,0.30); }
-  .brand-name { font-family: var(--display); font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
-  .brand-name em { color: var(--accent); font-style: normal; }
-
-  .project-btn { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--r); background: var(--bg-alt); border: 1px solid var(--border); font-size: 12px; font-weight: 500; color: var(--text-sec); cursor: pointer; transition: all 0.15s; text-align: left; }
-  .project-btn:hover { border-color: var(--accent-border); color: var(--text); }
-  .project-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-
-  .sidebar-scroll { flex: 1; overflow-y: auto; padding: 12px 8px; }
-  .nav-section { font-size: 10px; font-weight: 700; color: var(--text-muted); letter-spacing: 1.2px; text-transform: uppercase; padding: 10px 8px 5px; }
-  .nav-item { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-sec); transition: all 0.13s; animation: slideIn 0.2s ease both; }
-  .nav-item:hover { background: var(--bg-alt); color: var(--text); }
-  .nav-item.active { background: var(--accent-sub); color: var(--accent); font-weight: 600; }
-  .nav-item .nav-icon { font-size: 14px; width: 20px; text-align: center; flex-shrink: 0; }
-  .nav-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--border); flex-shrink: 0; margin-left: auto; transition: background 0.15s; }
-  .nav-item.active .nav-dot { background: var(--accent); }
-
-  .sidebar-bottom { padding: 12px 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
-  .user-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; font-size: 12px; color: var(--text-sec); }
-  .user-avatar { width: 26px; height: 26px; border-radius: 50%; background: var(--accent-sub); border: 1px solid var(--accent-border); display: flex; align-items: center; justify-content: center; font-family: var(--display); font-size: 10px; font-weight: 700; color: var(--accent); flex-shrink: 0; }
-
-  .main { display: grid; grid-template-rows: 56px 1fr; overflow: hidden; background: var(--bg); min-width: 0; width: 100%; }
-  .topbar { padding: 0 28px; display: flex; align-items: center; gap: 12px; background: var(--bg-card); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .topbar-title { font-family: var(--display); font-size: 15px; font-weight: 700; color: var(--text); }
-  .topbar-sub { font-size: 12px; color: var(--text-muted); }
-  .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-
-  .icon-btn { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: var(--bg-alt); border: 1px solid var(--border); color: var(--text-sec); font-size: 13px; cursor: pointer; transition: all 0.15s; }
-  .icon-btn:hover { border-color: var(--accent-border); color: var(--accent); }
-
-  .pill-status { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; background: var(--accent-sub); border: 1px solid var(--accent-border); font-size: 11px; font-weight: 600; color: var(--accent); font-family: var(--mono); }
-  .pulse-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
-
-.content-area { overflow-y: auto; padding: 28px 36px; width: 100%; }
-  .page-header { margin-bottom: 22px; }
-  .page-title { font-family: var(--display); font-size: 20px; font-weight: 700; color: var(--text); letter-spacing: -0.3px; margin-bottom: 4px; display: flex; align-items: center; gap: 10px; }
-  .page-accent { display: inline-block; width: 3px; height: 20px; background: var(--accent); border-radius: 2px; flex-shrink: 0; }
-  .page-sub { font-size: 13px; color: var(--text-sec); line-height: 1.6; }
-
-  .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 22px 24px; box-shadow: var(--shadow); margin-bottom: 16px; }
-  .card-label { font-size: 10px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; }
-
-  label { display: block; font-size: 12px; font-weight: 600; color: var(--text-sec); margin-bottom: 5px; }
-  input[type="text"], input[type="email"], input[type="tel"], input[type="password"], textarea, select { width: 100%; background: var(--bg); border: 1px solid var(--border-med); border-radius: var(--r); padding: 10px 13px; color: var(--text); font-size: 13px; outline: none; transition: border-color 0.15s, box-shadow 0.15s; margin-bottom: 14px; }
-  input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-sub); }
-  input::placeholder, textarea::placeholder { color: var(--text-muted); }
-  textarea { resize: vertical; min-height: 80px; line-height: 1.6; }
-  select { cursor: pointer; appearance: none; }
-  select option { background: var(--bg-card); color: var(--text); }
-  input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus { -webkit-box-shadow: 0 0 0 30px var(--bg) inset !important; -webkit-text-fill-color: var(--text) !important; }
-
-  .btn { display: inline-flex; align-items: center; gap: 7px; padding: 10px 20px; border-radius: var(--r); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
-  .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 2px 10px rgba(12,105,200,0.25); }
-  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 4px 18px rgba(12,105,200,0.35); }
-  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
-  .btn-outline { border: 1px solid var(--border-med); color: var(--text-sec); background: var(--bg-card); }
-  .btn-outline:hover { border-color: var(--accent-border); color: var(--text); }
-  .btn-danger { border: 1px solid var(--roseBg); color: var(--rose); background: var(--rose-bg); }
-  .btn-danger:hover { opacity: 0.85; }
-  .btn-sm { padding: 7px 14px; font-size: 12px; }
-
-  .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .g3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-
-  .result-box { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r); padding: 18px 20px; font-size: 13px; line-height: 1.85; color: var(--text); white-space: pre-wrap; }
-
-  .loading-row { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-muted); font-family: var(--mono); padding: 14px 0; }
-  .spinner { width: 14px; height: 14px; border: 2px solid var(--border-med); border-top-color: var(--accent); border-radius: 50%; flex-shrink: 0; }
-
-  .score-row { margin-bottom: 13px; }
-  .score-header { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-sec); margin-bottom: 6px; font-weight: 500; }
-  .score-track { height: 5px; background: var(--bg-alt); border-radius: 3px; overflow: hidden; }
-  .score-fill { height: 100%; border-radius: 3px; transition: width 0.7s ease; }
-
-  .tag { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 5px; font-size: 10px; font-weight: 700; font-family: var(--mono); letter-spacing: 0.2px; }
-  .tag-blue  { background: var(--accent-sub); color: var(--accent); border: 1px solid var(--accent-border); }
-  .tag-green { background: var(--green-bg); color: var(--green); border: 1px solid rgba(5,150,105,0.20); }
-  .tag-amber { background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(217,119,6,0.20); }
-  .tag-rose  { background: var(--rose-bg); color: var(--rose); border: 1px solid rgba(220,38,38,0.20); }
-  .tag-teal  { background: var(--teal-bg); color: var(--teal); border: 1px solid rgba(2,132,199,0.20); }
-
-  .metric-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r); padding: 16px 18px; }
-  .metric-val { font-family: var(--display); font-size: 28px; font-weight: 800; color: var(--text); letter-spacing: -0.5px; }
-  .metric-lbl { font-size: 11px; color: var(--text-muted); margin-top: 3px; font-weight: 500; }
-
-  .copy-btn { font-size: 10px; font-family: var(--mono); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; transition: color 0.15s; padding: 2px 0; }
-  .copy-btn:hover { color: var(--accent); }
-
-  .range-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-  .range-row label { margin: 0; min-width: 140px; font-size: 12px; }
-  input[type="range"] { flex: 1; accent-color: var(--accent); margin-bottom: 0; background: none; border: none; padding: 0; box-shadow: none; }
-  .range-val { font-family: var(--mono); font-size: 12px; color: var(--accent); min-width: 38px; text-align: right; font-weight: 600; }
-
-  .auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 20px; }
-  .auth-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 20px; padding: 40px 36px; width: 100%; max-width: 400px; box-shadow: var(--shadow-lg); }
-
-  .dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 200; background: var(--bg-elevated); border: 1px solid var(--border-med); border-radius: 12px; padding: 5px; box-shadow: var(--shadow-lg); }
-  .dropdown-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; color: var(--text-sec); transition: all 0.12s; }
-  .dropdown-item:hover { background: var(--bg-alt); color: var(--text); }
-  .divider { height: 1px; background: var(--border); margin: 4px 0; }
-
-  .modal-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 20px; }
-  .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 20px; padding: 28px 30px; width: 100%; max-width: 560px; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-lg); }
-  .modal-title { font-family: var(--display); font-size: 18px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-  .modal-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 22px; }
-
-  .toast-wrap { position: fixed; top: 16px; right: 16px; z-index: 999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
-  .toast { background: var(--bg-card); border: 1px solid var(--border-med); border-left: 3px solid var(--accent); border-radius: 10px; padding: 10px 14px; font-size: 12px; color: var(--text-sec); animation: fadeIn 0.2s ease; box-shadow: var(--shadow-lg); max-width: 280px; font-weight: 500; }
-
-  .recent-item { padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 12px; color: var(--text-sec); transition: all 0.12s; border: 1px solid transparent; }
-  .recent-item:hover { background: var(--bg-alt); color: var(--text); border-color: var(--border); }
-  .recent-tool-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-family: var(--mono); color: var(--text-muted); margin-bottom: 3px; }
-  .recent-title { font-size: 12px; font-weight: 500; color: var(--text-sec); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .recent-time { font-size: 10px; color: var(--text-muted); font-family: var(--mono); margin-top: 2px; }
-
-  .call-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 16px 18px; margin-bottom: 10px; cursor: pointer; transition: all 0.13s; }
-  .call-card:hover { border-color: var(--accent-border); box-shadow: var(--shadow); }
-
-  .settings-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 22px 24px; margin-bottom: 16px; box-shadow: var(--shadow); }
-  .settings-title { font-family: var(--display); font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-  .settings-sub { font-size: 12px; color: var(--text-muted); margin-bottom: 18px; }
-
-  .mobile-topbar { display: none; height: 52px; background: var(--bg-card); border-bottom: 1px solid var(--border); padding: 0 16px; align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0; }
-  .drawer-overlay { display: none; position: fixed; inset: 0; z-index: 98; background: rgba(0,0,0,0.4); }
-  .drawer { position: fixed; top: 0; left: 0; bottom: 0; width: 260px; z-index: 99; background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; transform: translateX(-100%); transition: transform 0.25s ease; }
-  .drawer.open { transform: translateX(0); }
-
-  @media (max-width: 768px) {
-    .shell { grid-template-columns: 1fr; grid-template-rows: 100vh; position: fixed; inset: 0; }
-    .sidebar { display: none; }
-    .mobile-topbar { display: flex; }
-    .drawer-overlay { display: block; }
-    .main { grid-template-rows: 52px 1fr; }
-    .topbar { display: none; }
-    .content-area { padding: 16px 16px 24px; }
-    .g2 { grid-template-columns: 1fr; gap: 10px; }
-    .g3 { grid-template-columns: 1fr; gap: 10px; }
-    .range-row { flex-wrap: wrap; }
-    .range-row label { min-width: 100%; }
-  }
-
-  @media (max-width: 480px) {
-    .auth-card { padding: 28px 20px; }
-    .card { padding: 16px; }
-    .content-area { padding: 12px 12px 20px; }
-  }
-`;
-
-// ─── HELPERS ─────────────────────────────────────────────────────────────────
-const timeAgo = (iso) => {
-  if (!iso) return "";
-  const m = Math.floor((Date.now() - new Date(iso)) / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-};
-const fmt = (d) => d ? new Date(d).toLocaleDateString("en-IE", { day: "numeric", month: "short", year: "numeric" }) : "";
-const scoreColor = (s) => s >= 75 ? "var(--green)" : s >= 50 ? "var(--amber)" : "var(--rose)";
-
-// Tool metadata — single source of truth for labels, icons, descriptions
-const TOOLS = [
+const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const CRM_DATA_METADATA_KEY = "crm_data";
+const ALLOWED_EMAIL_DOMAIN = "paceops.com";
+
+const demoClients = [
   {
-    id: "enrich",
-    label: "Prospect Research",
-    shortLabel: "Research",
-    icon: "🔍",
-    desc: "Pre-call intelligence brief — company snapshot, DMU map, trigger signals, smart opening angles.",
-    sessionType: "prospect_research",
-  },
-  {
-    id: "brief",
-    label: "Call Planner",
-    shortLabel: "Call Plan",
-    icon: "📋",
-    desc: "60-second pre-call brief with OctaQ-sequenced questions, DMU awareness, and word-for-word opener.",
-    sessionType: "call_brief",
-  },
-  {
-    id: "score",
-    label: "ICP Fit Score",
-    shortLabel: "ICP Score",
-    icon: "◆",
-    desc: "Score any prospect across 6 ICP dimensions plus DMU complexity and decision structure.",
-    sessionType: "icp_scoring",
-  },
-  {
-    id: "script",
-    label: "Call Script",
-    shortLabel: "Script",
-    icon: "✍️",
-    desc: "Word-for-word personalised script — Croc Brain filtered opener, OctaQ question, DMU-aware close.",
-    sessionType: "script_builder",
-  },
-  {
-    id: "coach",
-    label: "Call Review & Coach",
-    shortLabel: "Coaching",
-    icon: "🎙️",
-    desc: "Post-call coaching report — competency scores, OctaQ compliance, DMU progress, Lewin Force Field.",
-    sessionType: "call_coach",
-  },
-  {
-    id: "followup",
-    label: "Follow-up Writer",
-    shortLabel: "Follow-up",
-    icon: "✉️",
-    desc: "Human-sounding follow-up email or message — references specific call moments, one clear next step.",
-    sessionType: "follow_up",
-  },
-  {
-    id: "history",
-    label: "Call History",
-    shortLabel: "History",
-    icon: "📞",
-    desc: "Search and review all past call coaching reports.",
-    sessionType: "call_history",
+    id: "each-other",
+    name: "Example Client",
+    workspace: "Outbound delivery",
+    status: "Active",
+    owner: "Workspace Admin",
+    accounts: 4,
+    contacts: 8,
+    health: "Strong",
   },
 ];
 
-const getToolMeta = (id) => TOOLS.find(t => t.id === id) || { label: id, icon: "○", shortLabel: id };
-const getToolBySessionType = (type) => TOOLS.find(t => t.sessionType === type);
+const demoTeamMembers = [
+  { name: "Workspace Admin", role: "Account lead", initials: "WA", status: "Online" },
+  { name: "Campaign Manager", role: "Campaign operator", initials: "CM", status: "In call block" },
+];
 
-function Spinner() { return <div className="spinner spin" />; }
-function Toast({ toasts }) { return <div className="toast-wrap">{toasts.map(t => <div key={t.id} className="toast">{t.msg}</div>)}</div>; }
-function CopyBtn({ text }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button className="copy-btn" onClick={() => { navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}>
-      {copied ? "✓ copied" : "⊕ copy"}
-    </button>
-  );
-}
-
-// ─── AUTH ─────────────────────────────────────────────────────────────────────
-function AuthScreen({ onAuth, isDark, onToggleTheme }) {
-  const [mode, setMode] = useState("login");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
-
-  const submit = async () => {
-    setErr(""); setLoading(true);
-    try {
-      if (mode === "login") {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        onAuth(data.user);
-      } else {
-        const { data, error } = await supabase.auth.signUp({ email, password, options: { data: { full_name: name, display_name: name.split(" ")[0] } } });
-        if (error) throw error;
-        if (data.user) onAuth(data.user);
-        else setErr("Check your email to confirm your account.");
-      }
-    } catch (e) { setErr(e.message); }
-    setLoading(false);
-  };
-
-  return (
-    <div className="auth-wrap">
-      <div style={{ position: "absolute", top: 16, right: 16 }}>
-        <button className="icon-btn" onClick={onToggleTheme}>{isDark ? "☀️" : "🌙"}</button>
-      </div>
-      <div className="auth-card fade-in">
-        <div style={{ textAlign: "center", marginBottom: 28 }}>
-          <div style={{ width: 48, height: 48, borderRadius: 13, background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px", boxShadow: "0 8px 20px rgba(12,105,200,0.35)" }}>
-            <span style={{ fontFamily: "var(--display)", fontSize: 20, fontWeight: 800, color: "#fff" }}>P</span>
-          </div>
-          <div style={{ fontFamily: "var(--display)", fontSize: 22, fontWeight: 800, color: "var(--text)", marginBottom: 4 }}>Pace<em style={{ color: "var(--accent)", fontStyle: "normal" }}>AI</em></div>
-          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>ProspectMastery® Intelligence Platform</div>
-        </div>
-        <div style={{ display: "flex", background: "var(--bg)", borderRadius: "var(--r)", padding: 3, marginBottom: 20, border: "1px solid var(--border)" }}>
-          {["login", "signup"].map(m => (
-            <button key={m} onClick={() => setMode(m)} style={{ flex: 1, padding: "7px 12px", borderRadius: "7px", fontSize: 13, fontWeight: 600, cursor: "pointer", border: "none", background: mode === m ? "var(--accent)" : "none", color: mode === m ? "#fff" : "var(--text-sec)", transition: "all 0.15s" }}>
-              {m === "login" ? "Sign in" : "Create account"}
-            </button>
-          ))}
-        </div>
-        {mode === "signup" && <><label>Full name</label><input type="text" placeholder="e.g. Solomon Snow" value={name} onChange={e => setName(e.target.value)} /></>}
-        <label>Email address</label>
-        <input type="email" placeholder="you@company.com" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
-        <label>Password</label>
-        <input type="password" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
-        {err && <div style={{ fontSize: 12, color: "var(--rose)", marginBottom: 10, padding: "8px 10px", background: "var(--rose-bg)", borderRadius: 7, border: "1px solid rgba(220,38,38,0.20)" }}>{err}</div>}
-        <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 4 }} onClick={submit} disabled={loading}>
-          {loading ? <><Spinner /> Working...</> : mode === "login" ? "Sign in →" : "Create account →"}
-        </button>
-        <div style={{ textAlign: "center", marginTop: 20, fontSize: 11, color: "var(--text-muted)" }}>Powered by PaceOps® ProspectMastery</div>
-      </div>
-    </div>
-  );
-}
-
-// ─── PROJECT SELECTOR ─────────────────────────────────────────────────────────
-function ProjectSelector({ projects, activeProject, onSelect, onNew }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef();
-  useEffect(() => {
-    const fn = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", fn);
-    return () => document.removeEventListener("mousedown", fn);
-  }, []);
-  return (
-    <div ref={ref} style={{ position: "relative" }}>
-      <div className="project-btn" onClick={() => setOpen(o => !o)}>
-        {activeProject ? <>
-          <div className="project-dot" style={{ background: activeProject.colour || "var(--accent)" }} />
-          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeProject.name}</span>
-        </> : <span>Select project</span>}
-        <span style={{ color: "var(--text-muted)", fontSize: 9, marginLeft: "auto" }}>▾</span>
-      </div>
-      {open && (
-        <div className="dropdown">
-          <div style={{ fontSize: 10, color: "var(--text-muted)", padding: "4px 10px 6px", letterSpacing: 1, fontWeight: 700, textTransform: "uppercase" }}>Projects</div>
-          {projects.map(p => (
-            <div key={p.id} className="dropdown-item" onClick={() => { onSelect(p); setOpen(false); }}>
-              <div className="project-dot" style={{ background: p.colour || "var(--accent)" }} />
-              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-              {activeProject?.id === p.id && <span style={{ color: "var(--accent)", fontSize: 11 }}>✓</span>}
-            </div>
-          ))}
-          <div className="divider" />
-          <div className="dropdown-item" onClick={() => { onNew(); setOpen(false); }}>
-            <span style={{ color: "var(--accent)" }}>+</span><span>New project</span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── NEW PROJECT MODAL ────────────────────────────────────────────────────────
-function NewProjectModal({ user, onSave, onClose }) {
-  const [form, setForm] = useState({ name: "", company_name: "", industry: "", company_size: "" });
-  const [loading, setLoading] = useState(false);
-  const submit = async () => {
-    if (!form.name.trim() || !form.company_name.trim()) return;
-    setLoading(true);
-    const { data, error } = await supabase.from("projects").insert({
-      owner_id: user.id, ...form,
-      colour: ["#0C69C8","#00C2E0","#059669","#D97706","#7C3AED"][Math.floor(Math.random() * 5)],
-    }).select().single();
-    if (!error && data) {
-      await supabase.from("project_members").insert({ project_id: data.id, user_id: user.id, role: "owner" });
-      onSave(data);
-    }
-    setLoading(false);
-  };
-  return (
-    <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal fade-in">
-        <div className="modal-title">New Project</div>
-        <div className="modal-sub">Each project targets one company — Stripe, Santander, Philips etc.</div>
-        <div className="g2">
-          <div><label>Project name *</label><input type="text" placeholder="e.g. Stripe — Pipeline Build" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
-          <div><label>Company name *</label><input type="text" placeholder="e.g. Stripe" value={form.company_name} onChange={e => setForm({ ...form, company_name: e.target.value })} /></div>
-        </div>
-        <div className="g2">
-          <div><label>Industry</label><input type="text" placeholder="e.g. Fintech" value={form.industry} onChange={e => setForm({ ...form, industry: e.target.value })} /></div>
-          <div><label>Company size</label>
-            <select value={form.company_size} onChange={e => setForm({ ...form, company_size: e.target.value })}>
-              <option value="">Unknown</option>
-              {["1-10","11-50","51-200","201-500","501-1000","1000+"].map(s => <option key={s}>{s}</option>)}
-            </select>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-          <button className="btn btn-outline" style={{ flex: 1, justifyContent: "center" }} onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" style={{ flex: 2, justifyContent: "center" }} onClick={submit} disabled={loading || !form.name || !form.company_name}>
-            {loading ? <><Spinner /> Creating...</> : "Create project →"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── RECENT SESSIONS — smart labels based on tool type ───────────────────────
-function RecentSessions({ sessions, onSelect, activeTool }) {
-  const toolSessions = sessions.filter(s => {
-    const tool = getToolBySessionType(s.session_type);
-    return tool ? tool.id === activeTool : false;
-  });
-  const otherSessions = sessions.filter(s => {
-    const tool = getToolBySessionType(s.session_type);
-    return tool ? tool.id !== activeTool : true;
-  });
-  const displayed = [...toolSessions, ...otherSessions].slice(0, 12);
-
-  if (!displayed.length) return (
-    <div style={{ padding: "6px 10px", fontSize: 12, color: "var(--text-muted)" }}>No recent activity</div>
-  );
-
-  return (
-    <div>
-      {displayed.map(s => {
-        const tool = getToolBySessionType(s.session_type);
-        const isCurrentTool = tool?.id === activeTool;
-        return (
-          <div key={s.id} className="recent-item" onClick={() => onSelect && onSelect(s)}>
-            <div className="recent-tool-badge">
-              <span style={{ fontSize: 10 }}>{tool?.icon || "○"}</span>
-              <span style={{ color: isCurrentTool ? "var(--accent)" : "var(--text-muted)" }}>
-                {tool?.shortLabel || s.session_type}
-              </span>
-            </div>
-            <div className="recent-title">{s.title || "Untitled session"}</div>
-            <div className="recent-time">{timeAgo(s.last_message_at)}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── PROSPECT RESEARCH (was Enrichment) ──────────────────────────────────────
-function ProspectEnrichment({ user, activeProject, addToast }) {
-  const [form, setForm] = useState({ name: "", company: "", role: "", industry: "" });
-  const [result, setResult] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const run = async () => {
-    if (!form.name || !form.company) return;
-    setLoading(true); setResult("");
-    const sys = `${PM_CORE}
-
-TASK: Prospect Research Brief. Use ProspectMastery SEARCH stage framework.
-
-Apply Module 7 DMU thinking — identify likely decision-making structure, who the problem owner vs budget owner might be, and what informal influence dynamics are likely at this company size/industry.
-
-Apply Module 5 OctaQ thinking — which discovery categories are most relevant for this prospect, what question angles will resonate.
-
-Apply Module 1 Buyer Journey thinking — identify which gate this prospect is likely at (Oblivious/Credible/Relevant/Interesting/Preference) and what that means for how you open.
-
-Apply Croc Brain filtering — all suggested hooks and openers must pass the Simple, Clear, Non-threatening, Intriguing test.
-
-FORMAT YOUR RESPONSE EXACTLY AS FOLLOWS:
-
-COMPANY SNAPSHOT
-(size estimate, revenue band, what they do, centralised vs decentralised decision-making, direction of travel)
-
-ROLE INTELLIGENCE
-(what this person likely owns, their KPIs, their pain points, their likely position in the DMU — are they the DM, recommender, influencer, or end user?)
-
-DMU MAP
-(who else is likely in the decision — probable Decision Maker, likely Procurement/Professional Buyer angle, key Influencers to identify, potential Detractors to watch for)
-
-BUYER JOURNEY GATE
-(which gate are they likely at and why — Oblivious/Credible/Relevant/Interesting/Preference — and what this means for your approach)
-
-TRIGGER SIGNALS
-(3 specific things that might make them receptive right now — company news, role change, industry trend, etc.)
-
-CROC BRAIN OPENER
-(One Croc Brain–filtered opening statement or question — Simple, Clear, Non-threatening, Intriguing — that will pass their filter and buy you 60 seconds)
-
-SMART OCTAQ QUESTIONS
-(3 sharp questions sequenced from Business Background → Decision Making → Discovery categories, specific to this prospect's world)
-
-OBJECTIONS TO EXPECT
-(2-3 likely pushbacks with ProspectMastery flip responses)
-
-POS STAGE RECOMMENDATION
-(which POS stage to open at and why — Profile/Search/Connect/Engage/Assess/Influence)
-
-Be specific. No generic advice. Think like a top 1% SDR who has done their homework.`;
-    try {
-      const userMsg = `Prospect: ${form.name}\nCompany: ${form.company}\nRole: ${form.role || "Unknown"}\nIndustry: ${form.industry || "Unknown"}`;
-      const text = await callClaude([{ role: "user", content: userMsg }], sys);
-      setResult(text);
-      const { data: sess } = await supabase.from("ai_sessions").insert({ user_id: user.id, project_id: activeProject?.id || null, session_type: "prospect_research", title: `Research: ${form.name} @ ${form.company}`, context_snapshot: { form } }).select().single();
-      if (sess) await supabase.from("ai_messages").insert([{ session_id: sess.id, role: "user", content: userMsg, tool_used: "prospect_research" }, { session_id: sess.id, role: "assistant", content: text, tool_used: "prospect_research" }]);
-      addToast("Research brief saved");
-    } catch (e) { setResult("Error: " + e.message); }
-    setLoading(false);
-  };
-
-  return (
-    <div className="fade-in">
-      <div className="page-header">
-        <div className="page-title"><span className="page-accent" />Prospect Research</div>
-        <div className="page-sub">Full pre-call intelligence brief — SEARCH stage prep with DMU map, Buyer Journey gate, Croc Brain–filtered opener, and OctaQ question sequence built in.</div>
-      </div>
-      <div className="card">
-        <div className="card-label">Who are you researching?</div>
-        <div className="g2">
-          <div><label>Full name *</label><input type="text" placeholder="e.g. Sarah Mitchell" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
-          <div><label>Company *</label><input type="text" placeholder="e.g. Stripe" value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} /></div>
-        </div>
-        <div className="g2">
-          <div><label>Their job title</label><input type="text" placeholder="e.g. VP of Sales" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} /></div>
-          <div><label>Industry</label><input type="text" placeholder="e.g. Fintech" value={form.industry} onChange={e => setForm({ ...form, industry: e.target.value })} /></div>
-        </div>
-        <button className="btn btn-primary" onClick={run} disabled={loading || !form.name || !form.company}>
-          {loading ? <><Spinner /> Researching...</> : "◈ Build research brief"}
-        </button>
-      </div>
-      {loading && <div className="loading-row"><Spinner /> Running ProspectMastery research protocol...</div>}
-      {result && (
-        <div className="card">
-          <div className="card-label">Research brief — {form.name} @ {form.company}<CopyBtn text={result} /></div>
-          <div className="result-box">{result}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── CALL PLANNER (was Call Brief) ───────────────────────────────────────────
-function CallBrief({ user, activeProject, addToast }) {
-  const [form, setForm] = useState({ prospect: "", company: "", product: "", objective: "book_meeting", context: "", pos_stage: "engage", buyer_gate: "oblivious" });
-  const [result, setResult] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const run = async () => {
-    if (!form.prospect || !form.company) return;
-    setLoading(true); setResult("");
-    const sys = `${PM_CORE}
-
-TASK: Pre-Call Planner (60-second read format). Build a ProspectMastery-aligned call plan.
-
-Apply Module 1 — the Croc Brain test. The opening line MUST be Simple, Clear, Non-threatening, and Intriguing. It must pass the croc brain filter — "Is this an emergency? Can this be ignored?"
-
-Apply OctaQ Module 5 — sequence questions naturally so the call flows from Business Background → Decision Making → Discovery → Qualification → Challenge → Next Actions. Ask ONE sharp question at a time, never a list.
-
-Apply DMU Module 7 — flag who this person likely is in the buying unit and what that means for how to open and what to uncover.
-
-Calibrate to Buyer Gate: ${form.buyer_gate} — adjust the objective and approach accordingly.
-
-FORMAT YOUR RESPONSE EXACTLY AS FOLLOWS:
-
-OBJECTIVE
-(one sentence — what success looks like on this call)
-
-PROSPECT SNAPSHOT
-• [DMU role this person likely plays]
-• [Their likely top priority right now]
-• [One thing that makes them receptive]
-
-CROC BRAIN OPENER
-(word-for-word 15-second opener that passes Simple/Clear/Non-threatening/Intriguing — then [PAUSE])
-
-PERMISSION ASK
-(low-friction — "Does that make sense to talk about for 2 minutes?")
-
-KEY OCTAQ QUESTION
-(ONE sharp question from Business Background or Discovery category — specific to this company/role — then [PAUSE] and listen fully)
-
-QUALIFICATION ANGLE
-(ONE follow-up question to test urgency or cost of inaction)
-
-TOP VALUE PROPS
-1. [Specific, commercial, no buzzwords]
-2. [Specific, commercial, no buzzwords]
-
-LIKELY OBJECTIONS
-• [Objection] → [Flip response]
-• [Objection] → [Flip response]
-
-CALL CLOSE
-(exact words to ask for the next step — specific day/time ask, never leave without a committed next action)
-
-POS STAGE: ${form.pos_stage}`;
-
-    const content = `Prospect: ${form.prospect}\nCompany: ${form.company}\nProduct/Service: ${form.product || "outsourced SDR services"}\nObjective: ${form.objective}\nPOS Stage: ${form.pos_stage}\nBuyer Gate: ${form.buyer_gate}\nContext: ${form.context || "None"}`;
-    try {
-      const text = await callClaude([{ role: "user", content }], sys);
-      setResult(text);
-      const { data: sess } = await supabase.from("ai_sessions").insert({ user_id: user.id, project_id: activeProject?.id || null, session_type: "call_brief", title: `Call plan: ${form.prospect} @ ${form.company}`, context_snapshot: { form } }).select().single();
-      if (sess) await supabase.from("ai_messages").insert([{ session_id: sess.id, role: "user", content, tool_used: "call_brief" }, { session_id: sess.id, role: "assistant", content: text, tool_used: "call_brief" }]);
-      addToast("Call plan saved");
-    } catch (e) { setResult("Error: " + e.message); }
-    setLoading(false);
-  };
-
-  const objectives = [
-    { value: "book_meeting", label: "Book a discovery meeting" },
-    { value: "qualify", label: "Qualify the lead" },
-    { value: "reactivate", label: "Re-activate a cold lead" },
-    { value: "referral", label: "Get a referral or intro" },
-    { value: "permission_to_operate", label: "Permission to Operate" },
-  ];
-  const posStages = ["profile","search","connect","engage","assess","influence"];
-  const buyerGates = [
-    { value: "oblivious", label: "Oblivious — no awareness of us" },
-    { value: "credible", label: "Credible — knows who we are" },
-    { value: "relevant", label: "Relevant — sees potential fit" },
-    { value: "interesting", label: "Interesting — open to exploring" },
-    { value: "preference", label: "Preference — ready to commit" },
-  ];
-
-  return (
-    <div className="fade-in">
-      <div className="page-header">
-        <div className="page-title"><span className="page-accent" />Call Planner</div>
-        <div className="page-sub">60-second pre-call plan — Croc Brain opener, OctaQ-sequenced questions, DMU awareness, and buyer gate calibration built in.</div>
-      </div>
-      <div className="card">
-        <div className="card-label">Call setup</div>
-        <div className="g2">
-          <div><label>Prospect name *</label><input type="text" placeholder="e.g. James O'Brien" value={form.prospect} onChange={e => setForm({ ...form, prospect: e.target.value })} /></div>
-          <div><label>Company *</label><input type="text" placeholder="e.g. Santander" value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} /></div>
-        </div>
-        <div className="g2">
-          <div><label>What are you selling?</label><input type="text" placeholder="e.g. Outsourced SDR team" value={form.product} onChange={e => setForm({ ...form, product: e.target.value })} /></div>
-          <div><label>Call objective</label>
-            <select value={form.objective} onChange={e => setForm({ ...form, objective: e.target.value })}>
-              {objectives.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="g2">
-          <div><label>POS stage</label>
-            <select value={form.pos_stage} onChange={e => setForm({ ...form, pos_stage: e.target.value })}>
-              {posStages.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
-            </select>
-          </div>
-          <div><label>Where is this buyer? (buyer gate)</label>
-            <select value={form.buyer_gate} onChange={e => setForm({ ...form, buyer_gate: e.target.value })}>
-              {buyerGates.map(g => <option key={g.value} value={g.value}>{g.label}</option>)}
-            </select>
-          </div>
-        </div>
-        <label>Extra context (trigger event, previous interaction, LinkedIn insight...)</label>
-        <input type="text" placeholder="e.g. Just hired 3 new AEs, saw their LinkedIn post about pipeline..." value={form.context} onChange={e => setForm({ ...form, context: e.target.value })} />
-        <button className="btn btn-primary" onClick={run} disabled={loading || !form.prospect || !form.company}>
-          {loading ? <><Spinner /> Building...</> : "◉ Build call plan"}
-        </button>
-      </div>
-      {loading && <div className="loading-row"><Spinner /> Applying ProspectMastery framework...</div>}
-      {result && (
-        <div className="card">
-          <div className="card-label">Call plan — {form.prospect} @ {form.company}<CopyBtn text={result} /></div>
-          <div className="result-box">{result}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── ICP FIT SCORE (was ICP Scorer) ──────────────────────────────────────────
-function ICPScorer({ user, activeProject, addToast }) {
-  const [form, setForm] = useState({ company: "", industry: "", size: "51-200", role: "", budget: "unknown", pain: "", techStack: "" });
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  const run = async () => {
-    if (!form.company) return;
-    setLoading(true); setResult(null);
-    const sys = `${PM_CORE}
-
-TASK: ICP Fit Scoring Engine. Score this prospect against PaceOps' Ideal Customer Profile using all 10 ICP components from Module 1 (Industry, Company Size, Geography, Revenues, Buying Process, Decision Makers, Business Goals, Pain Points, Technology Stack, Attributes).
-
-Apply Module 7 DMU thinking — assess how complex the decision-making unit is likely to be, whether this is centralised or decentralised, and whether a professional buyer/procurement layer is likely.
-
-Apply Module 1 Buyer Journey thinking — which gate is this prospect likely at?
-
-Return ONLY valid JSON, no markdown, no preamble, no explanation outside the JSON.
-Format: {
-  "overall": 85,
-  "dimensions": {
-    "companyFit": 80,
-    "roleAuthority": 90,
-    "budgetSignal": 70,
-    "painAlignment": 95,
-    "timingSignal": 75,
-    "icpMatch": 80
+const demoCampaigns = [
+  {
+    id: "survey",
+    name: "Survey Outreach",
+    status: "Completed",
+    owner: "Campaign Manager",
+    channel: "Email and calls",
+    accounts: 18,
+    contacts: 42,
+    meetings: 4,
+    nextAction: "Review survey replies",
   },
-  "priority": "HIGH",
-  "buyer_gate": "oblivious",
-  "funnel_stage": "discovering",
-  "pos_recommendation": "engage",
-  "dmu_complexity": "medium",
-  "decision_structure": "centralised",
-  "verdict": "One clear sentence verdict",
-  "strengths": ["strength 1", "strength 2"],
-  "risks": ["risk 1"],
-  "croc_brain_hook": "One Croc Brain–filtered opening hook for this prospect — Simple, Clear, Non-threatening, Intriguing",
-  "nextAction": "Specific first move with OctaQ opening question angle",
-  "pm_approach": "Which ProspectMastery module and buyer gate strategy to lead with"
-}
-Priority: HIGH (75+), MEDIUM (50-74), LOW (<50)
-DMU complexity: low / medium / high
-Decision structure: centralised / decentralised / unknown
-Buyer gate: oblivious / credible / relevant / interesting / preference`;
+  {
+    id: "priority-targeting",
+    name: "Priority Account Targeting",
+    status: "Active",
+    owner: "Workspace Admin",
+    channel: "Research-led outbound",
+    accounts: 9,
+    contacts: 21,
+    meetings: 2,
+    nextAction: "Prioritise product, design, and research stakeholders",
+  },
+  {
+    id: "discovery-calls",
+    name: "Discovery Call Sprint",
+    status: "Active",
+    owner: "Campaign Manager",
+    channel: "Phone and LinkedIn",
+    accounts: 7,
+    contacts: 16,
+    meetings: 1,
+    nextAction: "Prepare call block",
+  },
+];
 
-    const content = `Company: ${form.company}\nIndustry: ${form.industry}\nSize: ${form.size}\nDecision Maker Role: ${form.role}\nBudget: ${form.budget}\nPain points: ${form.pain}\nTech stack: ${form.techStack}`;
-    try {
-      const text = await callClaude([{ role: "user", content }], sys);
-      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-      setResult(parsed);
-      const { data: sess } = await supabase.from("ai_sessions").insert({ user_id: user.id, project_id: activeProject?.id || null, session_type: "icp_scoring", title: `ICP score: ${form.company}`, context_snapshot: { form, result: parsed } }).select().single();
-      if (sess) await supabase.from("ai_messages").insert([{ session_id: sess.id, role: "user", content, tool_used: "icp_scoring" }, { session_id: sess.id, role: "assistant", content: text, tool_used: "icp_scoring" }]);
-      addToast(`${form.company}: ${parsed.priority} priority (${parsed.overall}/100)`);
-    } catch (e) { setResult({ error: e.message }); }
-    setLoading(false);
-  };
+const demoAccounts = [
+  {
+    id: "account-01",
+    name: "Target Account 01",
+    domain: "account-01.example",
+    owner: "Workspace Admin",
+    stage: "Researching",
+    status: "Priority",
+    industry: "Finance technology",
+    location: "United Kingdom / Ireland",
+    employees: "1,000+",
+    value: 68000,
+    lastActivity: "Persona map updated today",
+    nextAction: "Validate product design buying committee",
+    insight: "Product-led account with likely design operations and research maturity needs.",
+  },
+  {
+    id: "account-02",
+    name: "Target Account 02",
+    domain: "account-02.example",
+    owner: "Campaign Manager",
+    stage: "Contacted",
+    status: "Active",
+    industry: "Digital banking",
+    location: "London",
+    employees: "5,000+",
+    value: 84000,
+    lastActivity: "No answer logged yesterday",
+    nextAction: "Call UX research lead before 11:30",
+    insight: "Large digital change programme creates a useful research operations entry point.",
+  },
+  {
+    id: "account-03",
+    name: "Target Account 03",
+    domain: "account-03.example",
+    owner: "Workspace Admin",
+    stage: "Lead In",
+    status: "New",
+    industry: "Subscription software",
+    location: "London",
+    employees: "800+",
+    value: 52000,
+    lastActivity: "Imported from targeting list",
+    nextAction: "Find product operations contacts",
+    insight: "Fast team growth makes onboarding and product process consistency relevant.",
+  },
+  {
+    id: "account-04",
+    name: "Target Account 04",
+    domain: "account-04.example",
+    owner: "Campaign Manager",
+    stage: "Meeting",
+    status: "Warm",
+    industry: "Customer operations",
+    location: "Dublin",
+    employees: "600+",
+    value: 46000,
+    lastActivity: "Meeting booked for Friday",
+    nextAction: "Send discovery agenda",
+    insight: "Customer workflow complexity may connect design systems and product velocity.",
+  },
+];
 
-  const priorityTag = p => p === "HIGH" ? "tag-green" : p === "MEDIUM" ? "tag-amber" : "tag-rose";
-  const complexityTag = c => c === "low" ? "tag-green" : c === "medium" ? "tag-amber" : "tag-rose";
-  const gateColor = g => ({ oblivious: "var(--text-muted)", credible: "var(--teal)", relevant: "var(--amber)", interesting: "var(--green)", preference: "var(--accent)" }[g] || "var(--text-muted)");
+const demoContacts = [
+  {
+    id: "contact-01",
+    name: "Design Leader 01",
+    accountId: "account-01",
+    account: "Target Account 01",
+    role: "Head of Product Design",
+    persona: "Design leadership",
+    email: "contact-01@example.test",
+    phone: "+35315550101",
+    mobile: "+353871110101",
+    owner: "Workspace Admin",
+    status: "Researching",
+    lastTouch: "Profile enriched today",
+  },
+  {
+    id: "contact-02",
+    name: "UX Research Contact 01",
+    accountId: "account-02",
+    account: "Target Account 02",
+    role: "Senior UX Researcher",
+    persona: "Research operations",
+    email: "contact-02@example.test",
+    phone: "+442071110202",
+    mobile: "+447700900202",
+    owner: "Campaign Manager",
+    status: "Call back",
+    lastTouch: "Voicemail yesterday",
+  },
+  {
+    id: "contact-03",
+    name: "Product Operations Contact 01",
+    accountId: "account-03",
+    account: "Target Account 03",
+    role: "Product Operations Lead",
+    persona: "Product operations",
+    email: "contact-03@example.test",
+    phone: "+442071110303",
+    mobile: "+447700900303",
+    owner: "Workspace Admin",
+    status: "New",
+    lastTouch: "Added from list",
+  },
+  {
+    id: "contact-04",
+    name: "Design Systems Contact 01",
+    accountId: "account-04",
+    account: "Target Account 04",
+    role: "Design Systems Manager",
+    persona: "Design systems",
+    email: "contact-04@example.test",
+    phone: "+35315550404",
+    mobile: "+353871110404",
+    owner: "Campaign Manager",
+    status: "Meeting booked",
+    lastTouch: "Meeting confirmed",
+  },
+  {
+    id: "contact-05",
+    name: "Product Manager Contact 01",
+    accountId: "account-01",
+    account: "Target Account 01",
+    role: "Product Manager, Payments UX",
+    persona: "Product management",
+    email: "contact-05@example.test",
+    phone: "+35315550505",
+    mobile: "+353871110505",
+    owner: "Workspace Admin",
+    status: "Contacted",
+    lastTouch: "Email opened",
+  },
+  {
+    id: "contact-06",
+    name: "Digital Experience Contact 01",
+    accountId: "account-02",
+    account: "Target Account 02",
+    role: "Director of Digital Experience",
+    persona: "Digital leadership",
+    email: "contact-06@example.test",
+    phone: "+442071110606",
+    mobile: "+447700900606",
+    owner: "Campaign Manager",
+    status: "Priority",
+    lastTouch: "LinkedIn viewed",
+  },
+];
 
-  return (
-    <div className="fade-in">
-      <div className="page-header">
-        <div className="page-title"><span className="page-accent" />ICP Fit Score</div>
-        <div className="page-sub">Score any prospect across 6 dimensions — ICP fit, role authority, pain alignment, plus DMU complexity, buyer gate, and a Croc Brain opener.</div>
-      </div>
-      <div className="card">
-        <div className="card-label">Prospect profile</div>
-        <div className="g2">
-          <div><label>Company *</label><input type="text" placeholder="Company name" value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} /></div>
-          <div><label>Industry</label><input type="text" placeholder="e.g. Fintech" value={form.industry} onChange={e => setForm({ ...form, industry: e.target.value })} /></div>
-        </div>
-        <div className="g2">
-          <div><label>Company size</label>
-            <select value={form.size} onChange={e => setForm({ ...form, size: e.target.value })}>
-              {["1-10","11-50","51-200","201-500","501-1000","1000+"].map(s => <option key={s}>{s}</option>)}
-            </select>
-          </div>
-          <div><label>Decision maker role</label><input type="text" placeholder="e.g. Chief Revenue Officer" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} /></div>
-        </div>
-        <div className="g2">
-          <div><label>Budget signal</label>
-            <select value={form.budget} onChange={e => setForm({ ...form, budget: e.target.value })}>
-              <option value="unknown">Unknown</option>
-              <option value="confirmed">Confirmed budget</option>
-              <option value="likely">Likely has budget</option>
-              <option value="tight">Budget constrained</option>
-            </select>
-          </div>
-          <div><label>Tech stack</label><input type="text" placeholder="e.g. Salesforce, Outreach" value={form.techStack} onChange={e => setForm({ ...form, techStack: e.target.value })} /></div>
-        </div>
-        <label>Known pain points or trigger events</label>
-        <textarea placeholder="Hiring freezes, missed targets, new CRO, funding round, company rebrand..." value={form.pain} onChange={e => setForm({ ...form, pain: e.target.value })} style={{ minHeight: 64 }} />
-        <button className="btn btn-primary" onClick={run} disabled={loading || !form.company}>
-          {loading ? <><Spinner /> Scoring...</> : "◆ Score this prospect"}
-        </button>
-      </div>
-      {loading && <div className="loading-row"><Spinner /> Running ProspectMastery ICP analysis...</div>}
-      {result && !result.error && (
-        <div className="card fade-in">
-          <div className="card-label">ICP Fit Score — {form.company}</div>
-          <div className="g3" style={{ marginBottom: 20 }}>
-            <div className="metric-card">
-              <div className="metric-val" style={{ color: scoreColor(result.overall) }}>{result.overall}</div>
-              <div className="metric-lbl">Overall score</div>
-            </div>
-            <div className="metric-card">
-              <span className={`tag ${priorityTag(result.priority)}`}>{result.priority}</span>
-              <div className="metric-lbl" style={{ marginTop: 10 }}>Priority tier</div>
-            </div>
-            <div className="metric-card">
-              <span className="tag tag-teal" style={{ color: gateColor(result.buyer_gate), borderColor: gateColor(result.buyer_gate) + "40", background: gateColor(result.buyer_gate) + "12" }}>{result.buyer_gate}</span>
-              <div className="metric-lbl" style={{ marginTop: 10 }}>Buyer gate</div>
-            </div>
-          </div>
-          {Object.entries(result.dimensions || {}).map(([key, val]) => {
-            const labels = { companyFit: "Company Fit", roleAuthority: "Role Authority", budgetSignal: "Budget Signal", painAlignment: "Pain Alignment", timingSignal: "Timing Signal", icpMatch: "ICP Match" };
-            return (
-              <div className="score-row" key={key}>
-                <div className="score-header"><span>{labels[key] || key}</span><span style={{ color: scoreColor(val), fontWeight: 600 }}>{val}/100</span></div>
-                <div className="score-track"><div className="score-fill" style={{ width: val + "%", background: scoreColor(val) }} /></div>
-              </div>
-            );
-          })}
-          <div className="divider" style={{ margin: "16px 0" }} />
-          <div style={{ fontSize: 13, color: "var(--text-sec)", lineHeight: 1.9 }}>
-            <strong style={{ color: "var(--teal)" }}>Verdict: </strong>{result.verdict}<br /><br />
-            <strong>DMU complexity: </strong><span className={`tag ${complexityTag(result.dmu_complexity)}`}>{result.dmu_complexity || "unknown"}</span>
-            {result.decision_structure && <> &nbsp;<span className="tag tag-blue">{result.decision_structure}</span></>}<br /><br />
-            <strong>Recommended POS stage: </strong><span className="tag tag-blue">{result.pos_recommendation}</span><br /><br />
-            {result.croc_brain_hook && <><strong style={{ color: "var(--amber)" }}>Croc Brain opener: </strong>{result.croc_brain_hook}<br /><br /></>}
-            <strong>PM approach: </strong>{result.pm_approach}<br /><br />
-            <strong>Next action: </strong>{result.nextAction}
-            {result.strengths?.length > 0 && <><br /><br /><strong>Strengths: </strong>{result.strengths.join(" · ")}</>}
-            {result.risks?.length > 0 && <><br /><strong>Risks: </strong>{result.risks.join(" · ")}</>}
-          </div>
-        </div>
-      )}
-      {result?.error && <div className="result-box" style={{ color: "var(--rose)" }}>{result.error}</div>}
-    </div>
-  );
-}
+const pipelineColumns = [
+  { id: "lead", name: "Lead In" },
+  { id: "researching", name: "Researching" },
+  { id: "contacted", name: "Contacted" },
+  { id: "meeting", name: "Meeting" },
+  { id: "qualified", name: "Qualified" },
+];
 
-// ─── CALL SCRIPT ──────────────────────────────────────────────────────────────
-function ScriptBuilder({ user, activeProject, addToast }) {
-  const [form, setForm] = useState({ prospect: "", company: "", role: "", product: "", tone: "consultative", trigger: "", pos_stage: "engage", buyer_gate: "oblivious" });
-  const [result, setResult] = useState("");
-  const [loading, setLoading] = useState(false);
+const demoDeals = [
+  { id: "d1", account: "Target Account 03", contact: "Product Operations Contact 01", stage: "lead", value: 52000, owner: "Workspace Admin", due: "Today" },
+  { id: "d2", account: "Target Account 01", contact: "Design Leader 01", stage: "researching", value: 68000, owner: "Workspace Admin", due: "Tomorrow" },
+  { id: "d3", account: "Target Account 02", contact: "UX Research Contact 01", stage: "contacted", value: 84000, owner: "Campaign Manager", due: "Today" },
+  { id: "d4", account: "Target Account 04", contact: "Design Systems Contact 01", stage: "meeting", value: 46000, owner: "Campaign Manager", due: "Friday" },
+];
 
-  const run = async () => {
-    if (!form.prospect || !form.company) return;
-    setLoading(true); setResult("");
-    const sys = `${PM_CORE}
+const demoActivities = [
+  { type: "Call", title: "Voicemail left for UX Research Contact 01", account: "Target Account 02", time: "Yesterday", owner: "Campaign Manager" },
+  { type: "Research", title: "Design systems signal added", account: "Target Account 01", time: "Today", owner: "Workspace Admin" },
+  { type: "Meeting", title: "Discovery meeting booked", account: "Target Account 04", time: "Friday", owner: "Campaign Manager" },
+  { type: "Import", title: "Product operations contacts added", account: "Target Account 03", time: "Today", owner: "Workspace Admin" },
+];
 
-TASK: Cold Call Script (ProspectMastery Module 4 — Script to Success)
+const useDemoData = false;
+const initialClients = useDemoData ? demoClients : [];
+const initialTeamMembers = useDemoData ? demoTeamMembers : [];
+const initialCampaigns = useDemoData ? demoCampaigns : [];
+const initialAccounts = useDemoData ? demoAccounts : [];
+const initialContacts = useDemoData ? demoContacts : [];
+const initialDeals = useDemoData ? demoDeals : [];
+const initialActivities = useDemoData ? demoActivities : [];
+const initialResearchItems = [];
+const initialFiles = [];
 
-Write a personalised word-for-word script in ${form.tone} style for POS stage: ${form.pos_stage}
+const emptyClient = {
+  id: "none",
+  name: "No client selected",
+  workspace: "Create a client workspace",
+  status: "Empty",
+  owner: "Unassigned",
+  accounts: 0,
+  contacts: 0,
+  health: "Not started",
+};
 
-CRITICAL — MODULE 1 CROC BRAIN RULES:
-The prospect is receiving this call with their Croc Brain, not their Neocortex. The HOOK must be Simple, Clear, Non-threatening, and Intriguing. It must immediately answer "Why should I not hang up?" before the croc brain decides to ignore you. Do NOT open with a feature dump or company pitch.
+const emptyCampaign = {
+  id: "none",
+  name: "No campaign selected",
+  status: "Empty",
+  owner: "Unassigned",
+  channel: "Not configured",
+  accounts: 0,
+  contacts: 0,
+  meetings: 0,
+  nextAction: "Create a campaign to start building pipeline.",
+};
 
-Apply OctaQ Module 5 — the discovery question must be ONE sharp question from the most relevant OctaQ category for this prospect's buyer gate (${form.buyer_gate}) and POS stage. Never ask multiple questions at once.
+const callOutcomes = [
+  "Connected",
+  "No answer",
+  "Voicemail",
+  "Gatekeeper",
+  "Not interested",
+  "Call back",
+  "Meeting booked",
+  "Wrong number",
+];
 
-Apply DMU Module 7 — the permission ask and pain probe should be calibrated to where this person sits in the likely decision-making unit.
+const collaborativeActivityTypes = new Set([
+  "Call",
+  "Email",
+  "Import",
+  "Meeting",
+  "Research",
+  "Team",
+]);
 
-MANDATORY STRUCTURE — use EXACTLY these labels:
+const baseIntegrations = [
+  { name: "Cognism", icon: Target, status: "Available", note: "Use Contact Finder to preview target contacts and export results.", action: "Open Contact Finder", view: "cognism" },
+  { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with redeemed phone numbers.", action: "Open Calls", view: "calls" },
+  { name: "OpenAI", icon: Bot, status: "Available", note: "Used in account intelligence and script generation when an API key is configured.", action: "Add account", workflow: "account" },
+  { name: "CSV Import", icon: Upload, status: "Planned", note: "CSV source tracking exists. Full import mapping is not connected yet.", action: "Open Files", view: "files" },
+  { name: "HubSpot", icon: Database, status: "Not connected", note: "HubSpot sync is not implemented in this workspace yet.", action: "", view: "" },
+];
 
-HOOK
-(Specific, Croc Brain–filtered — reference something from their world: LinkedIn post, company news, role change, industry trend. Make them think "how do they know that?" — then [PAUSE])
+const navItems = [
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "clients", label: "Clients", icon: Building2 },
+  { id: "campaigns", label: "Campaigns", icon: Megaphone },
+  { id: "accounts", label: "Accounts", icon: BriefcaseBusiness },
+  { id: "contacts", label: "Contacts", icon: Contact },
+  { id: "cognism", label: "Cognism", icon: Target },
+  { id: "pipeline", label: "Pipeline", icon: KanbanSquare },
+  { id: "calls", label: "Calls", icon: Phone },
+  { id: "research", label: "Research", icon: FileText },
+  { id: "integrations", label: "Integrations", icon: Plug },
+  { id: "settings", label: "Settings", icon: Settings },
+];
 
-BRIDGE
-(One sentence connecting their world to what you offer — focus on the problem you solve, not what you sell)
+const currency = new Intl.NumberFormat("en-GB", {
+  style: "currency",
+  currency: "GBP",
+  maximumFractionDigits: 0,
+});
 
-PERMISSION ASK
-(Low-friction — "Does that make sense to talk about for 90 seconds?" — [PAUSE])
-
-PAIN PROBE
-(ONE sharp OctaQ-aligned insightful question for this specific role/company — then [PAUSE] and LISTEN. Do not ask two questions.)
-
-VALUE STATEMENT
-(Specific, commercial, no buzzwords — one sentence with a real outcome)
-
-SOFT CLOSE
-(Clear ask for a specific next step — "Are you free Thursday at 10am for 20 minutes?" Never "let me know when works")
-
-Use [PAUSE] markers strategically. Write like a top performer actually speaks. Keep it human.`;
-
-    const content = `Prospect: ${form.prospect}, ${form.role || "decision maker"} at ${form.company}\nProduct: ${form.product || "outsourced SDR / prospecting services"}\nTone: ${form.tone}\nPOS stage: ${form.pos_stage}\nBuyer gate: ${form.buyer_gate}\nPersonalisation trigger: ${form.trigger || "Use their role and company type"}`;
-    try {
-      const text = await callClaude([{ role: "user", content }], sys);
-      setResult(text);
-      const { data: sess } = await supabase.from("ai_sessions").insert({ user_id: user.id, project_id: activeProject?.id || null, session_type: "script_builder", title: `Script: ${form.prospect} @ ${form.company}`, context_snapshot: { form } }).select().single();
-      if (sess) await supabase.from("ai_messages").insert([{ session_id: sess.id, role: "user", content, tool_used: "script_builder" }, { session_id: sess.id, role: "assistant", content: text, tool_used: "script_builder" }]);
-      addToast("Script saved");
-    } catch (e) { setResult("Error: " + e.message); }
-    setLoading(false);
-  };
-
-  const buyerGates = [
-    { value: "oblivious", label: "Oblivious — no awareness of us" },
-    { value: "credible", label: "Credible — knows who we are" },
-    { value: "relevant", label: "Relevant — sees potential fit" },
-    { value: "interesting", label: "Interesting — open to exploring" },
-  ];
-
-  return (
-    <div className="fade-in">
-      <div className="page-header">
-        <div className="page-title"><span className="page-accent" />Call Script</div>
-        <div className="page-sub">Word-for-word script — Croc Brain filtered hook, OctaQ-sequenced single question, DMU-aware positioning, clear close with specific ask.</div>
-      </div>
-      <div className="card">
-        <div className="card-label">Script parameters</div>
-        <div className="g2">
-          <div><label>Prospect name *</label><input type="text" placeholder="e.g. Claire Dunne" value={form.prospect} onChange={e => setForm({ ...form, prospect: e.target.value })} /></div>
-          <div><label>Company *</label><input type="text" placeholder="e.g. Philips" value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} /></div>
-        </div>
-        <div className="g2">
-          <div><label>Their job title</label><input type="text" placeholder="e.g. Head of Sales Operations" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} /></div>
-          <div><label>What are you selling?</label><input type="text" placeholder="e.g. Outsourced SDR team" value={form.product} onChange={e => setForm({ ...form, product: e.target.value })} /></div>
-        </div>
-        <div className="g2">
-          <div><label>Script tone</label>
-            <select value={form.tone} onChange={e => setForm({ ...form, tone: e.target.value })}>
-              <option value="consultative">Consultative & curious</option>
-              <option value="confident">Confident & direct</option>
-              <option value="challenger">Challenger — provoke thinking</option>
-              <option value="brief">Hyper-brief (30 seconds)</option>
-            </select>
-          </div>
-          <div><label>Where is this buyer?</label>
-            <select value={form.buyer_gate} onChange={e => setForm({ ...form, buyer_gate: e.target.value })}>
-              {buyerGates.map(g => <option key={g.value} value={g.value}>{g.label}</option>)}
-            </select>
-          </div>
-        </div>
-        <div><label>POS stage</label>
-          <select value={form.pos_stage} onChange={e => setForm({ ...form, pos_stage: e.target.value })} style={{ maxWidth: 260 }}>
-            {["profile","search","connect","engage","assess","influence"].map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
-          </select>
-        </div>
-        <label>Personalisation trigger (LinkedIn post, company news, role change, hiring activity...)</label>
-        <input type="text" placeholder="e.g. Posted about hiring 4 new AEs, won a major contract, just rebranded..." value={form.trigger} onChange={e => setForm({ ...form, trigger: e.target.value })} />
-        <button className="btn btn-primary" onClick={run} disabled={loading || !form.prospect || !form.company}>
-          {loading ? <><Spinner /> Writing...</> : "◇ Generate script"}
-        </button>
-      </div>
-      {loading && <div className="loading-row"><Spinner /> Crafting Croc Brain–filtered ProspectMastery script...</div>}
-      {result && (
-        <div className="card">
-          <div className="card-label">Script — {form.prospect} @ {form.company}<CopyBtn text={result} /></div>
-          <div className="result-box">{result}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── CALL REVIEW & COACH ──────────────────────────────────────────────────────
-function CallCoach({ user, activeProject, addToast }) {
-  const [form, setForm] = useState({ transcript: "", outcome: "voicemail", talkRatio: 65, duration: 3, objections: 1, pos_stage: "engage" });
-  const [result, setResult] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const run = async () => {
-    setLoading(true); setResult("");
-    const sys = `${PM_CORE}
-
-TASK: Call Review & Coaching Report (ProspectMastery Coaching Framework)
-
-You are an elite PaceOps call coach. Be direct. Real coaches tell the truth.
-
-Apply the Lewin Force Field — identify restraining forces (what held the rep back) and driving forces (what to build on).
-
-CROC BRAIN CHECK: Did the rep open with a Croc Brain–filtered hook? Was the opener Simple, Clear, Non-threatening, Intriguing? Or did they lead with a product dump that the croc brain immediately filtered out?
-
-OctaQ COMPLIANCE: Did the rep move through Business Background → Decision Making → Discovery → Qualification stages? Did they ask ONE sharp question and then actually listen, or did they fire multiple surface-level questions?
-
-DMU PROGRESS: Did the rep uncover who else is involved in the decision? Did they identify the decision structure (centralised/decentralised)?
-
-BUYER GATE MOVEMENT: Did the rep move the buyer along the gate journey (Oblivious → Credible → Relevant → Interesting → Preference)?
-
-FORMAT YOUR RESPONSE EXACTLY AS FOLLOWS:
-
-CALL RATING: [X/10]
-
-COMPETENCY SCORES
-• Organised (prep & structure): X/10
-• Curiosity (depth of questioning): X/10
-• Active Listening (prospect talk time & response quality): X/10
-• Persistence (handling objections): X/10
-• Resilience (recovery from pushback): X/10
-
-CROC BRAIN ASSESSMENT
-(Did the opener pass the filter? Simple/Clear/Non-threatening/Intriguing — what worked, what should change)
-
-OCTAQ COMPLIANCE
-(Which stages were covered: Business Background / Decision Making / Discovery / Qualification / Challenge / Budget / Timeframes / Next Actions — which were missed)
-
-DMU PROGRESS
-(Did rep uncover decision structure? Yes / Partial / No — what was found and what was missed)
-
-BUYER GATE MOVEMENT
-(Which gate did the prospect start at, which gate did they end at — did the rep earn progression?)
-
-WHAT WORKED
-• [Specific moment 1]
-• [Specific moment 2]
-
-BIGGEST MISS
-(The single most impactful issue — be direct)
-
-LINE-BY-LINE MOMENTS
-• "[What was said]" → Better: "[Improved version]"
-• "[What was said]" → Better: "[Improved version]"
-
-LEWIN FORCE FIELD — RESTRAINING FORCES
-(What psychological or behavioural forces held this rep back)
-
-DRILL THIS WEEK
-(One specific practice exercise to fix the biggest miss)
-
-ONE CHANGE FOR NEXT CALL
-(The single most impactful change — make it specific and actionable)`;
-
-    const content = `Call outcome: ${form.outcome}\nPOS stage: ${form.pos_stage}\nRep talk ratio: ${form.talkRatio}%\nDuration: ${form.duration} minutes\nObjections handled: ${form.objections}\nTranscript/notes: ${form.transcript || "None — coach on metrics only"}`;
-    try {
-      const text = await callClaude([{ role: "user", content }], sys, 1600);
-      setResult(text);
-      const { data: review } = await supabase.from("call_reviews").insert({ user_id: user.id, project_id: activeProject?.id || null, called_at: new Date().toISOString(), duration_minutes: parseFloat(form.duration) || null, call_outcome: form.outcome, rep_talk_ratio: form.talkRatio, objection_count: form.objections, pos_stage: form.pos_stage, transcript: form.transcript || null, coaching_feedback: text, post_call_notes: form.transcript }).select().single();
-      if (review) {
-        const { data: sess } = await supabase.from("ai_sessions").insert({ user_id: user.id, project_id: activeProject?.id || null, session_type: "call_coach", title: `Call review — ${fmt(new Date())} (${form.outcome.replace(/_/g," ")})`, context_snapshot: { form, call_review_id: review.id } }).select().single();
-        if (sess) await supabase.from("ai_messages").insert([{ session_id: sess.id, role: "user", content, tool_used: "call_coach" }, { session_id: sess.id, role: "assistant", content: text, tool_used: "call_coach" }]);
-      }
-      addToast("Call review saved");
-    } catch (e) { setResult("Error: " + e.message); }
-    setLoading(false);
-  };
-
-  const outcomes = [
-    { value: "meeting_booked", label: "✓ Meeting booked" },
-    { value: "callback_requested", label: "Callback requested" },
-    { value: "not_interested", label: "Not interested" },
-    { value: "voicemail", label: "Left voicemail" },
-    { value: "gatekeeper", label: "Blocked by gatekeeper" },
-    { value: "no_answer", label: "No answer" },
-  ];
-
-  return (
-    <div className="fade-in">
-      <div className="page-header">
-        <div className="page-title"><span className="page-accent" />Call Review & Coach</div>
-        <div className="page-sub">ProspectMastery coaching report — competency scores, Croc Brain assessment, OctaQ compliance, buyer gate movement, Lewin Force Field, and one change for next call.</div>
-      </div>
-      <div className="card">
-        <div className="card-label">Call data</div>
-        <div className="g2">
-          <div><label>Call outcome</label>
-            <select value={form.outcome} onChange={e => setForm({ ...form, outcome: e.target.value })}>
-              {outcomes.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </div>
-          <div><label>POS stage</label>
-            <select value={form.pos_stage} onChange={e => setForm({ ...form, pos_stage: e.target.value })}>
-              {["profile","search","connect","engage","assess","influence"].map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="range-row"><label>Rep talk ratio</label><input type="range" min={20} max={90} step={5} value={form.talkRatio} onChange={e => setForm({ ...form, talkRatio: +e.target.value })} /><span className="range-val">{form.talkRatio}%</span></div>
-        <div className="range-row"><label>Duration (minutes)</label><input type="range" min={1} max={30} step={1} value={form.duration} onChange={e => setForm({ ...form, duration: +e.target.value })} /><span className="range-val">{form.duration}m</span></div>
-        <div className="range-row"><label>Objections handled</label><input type="range" min={0} max={8} step={1} value={form.objections} onChange={e => setForm({ ...form, objections: +e.target.value })} /><span className="range-val">{form.objections}</span></div>
-        <label>Paste transcript or write what happened on the call</label>
-        <textarea placeholder="Paste full transcript or write key moments, what was said, how prospect responded..." value={form.transcript} onChange={e => setForm({ ...form, transcript: e.target.value })} style={{ minHeight: 120 }} />
-        <button className="btn btn-primary" onClick={run} disabled={loading}>
-          {loading ? <><Spinner /> Reviewing...</> : "◎ Get coaching feedback"}
-        </button>
-      </div>
-      {loading && <div className="loading-row"><Spinner /> ProspectMastery coach reviewing your call...</div>}
-      {result && (
-        <div className="card">
-          <div className="card-label">Coaching report — {fmt(new Date())}<CopyBtn text={result} /></div>
-          <div className="result-box">{result}</div>
-        </div>
-      )}
-    </div>
-  );
+function cloneRecords(records) {
+  return records.map(record => ({ ...record }));
 }
 
-// ─── FOLLOW-UP WRITER ─────────────────────────────────────────────────────────
-function FollowupDrafter({ user, activeProject, addToast }) {
-  const [form, setForm] = useState({ prospect: "", company: "", outcome: "meeting_booked", summary: "", format: "email", pos_stage: "engage" });
-  const [result, setResult] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const run = async () => {
-    if (!form.prospect) return;
-    setLoading(true); setResult("");
-    const sys = `${PM_CORE}
-
-TASK: Post-Call Follow-up (ProspectMastery MultiTouch Cadence — CONNECT stage)
-
-Apply Croc Brain rules — the subject line or opening sentence must pass the Simple, Clear, Non-threatening, Intriguing test. No "Hope this finds you well." No corporate fluff. Write like a human who genuinely wants to help.
-
-Apply OctaQ — if a discovery insight emerged on the call (pain point, timeline, DMU member mentioned), reference it specifically to show you were listening.
-
-Apply DMU awareness — if another stakeholder was mentioned, subtly acknowledge that where appropriate.
-
-RULES:
-- Under 120 words for email, under 70 for LinkedIn/WhatsApp
-- Reference at least one specific thing from the call
-- One clear next step only — with specific day/time if meeting was booked (e.g. "Looking forward to speaking on Thursday at 10am")
-- No "I hope this finds you well" — ever
-- No "just following up" — ever
-- No corporate buzzwords
-- Write like a real person`;
-
-    const content = `Prospect: ${form.prospect} at ${form.company || "their company"}\nOutcome: ${form.outcome}\nPOS stage: ${form.pos_stage}\nCall highlights: ${form.summary || "General prospecting call"}\nFormat: ${form.format}`;
-    try {
-      const text = await callClaude([{ role: "user", content }], sys);
-      setResult(text);
-      const { data: sess } = await supabase.from("ai_sessions").insert({ user_id: user.id, project_id: activeProject?.id || null, session_type: "follow_up", title: `Follow-up: ${form.prospect} @ ${form.company || "unknown"}`, context_snapshot: { form } }).select().single();
-      if (sess) await supabase.from("ai_messages").insert([{ session_id: sess.id, role: "user", content, tool_used: "follow_up" }, { session_id: sess.id, role: "assistant", content: text, tool_used: "follow_up" }]);
-      addToast("Follow-up saved");
-    } catch (e) { setResult("Error: " + e.message); }
-    setLoading(false);
-  };
-
-  return (
-    <div className="fade-in">
-      <div className="page-header">
-        <div className="page-title"><span className="page-accent" />Follow-up Writer</div>
-        <div className="page-sub">Human-sounding follow-up — Croc Brain filtered subject/opener, references specific call moments, one clear next step, no corporate fluff.</div>
-      </div>
-      <div className="card">
-        <div className="card-label">Call summary</div>
-        <div className="g2">
-          <div><label>Prospect name *</label><input type="text" placeholder="e.g. Tom Walsh" value={form.prospect} onChange={e => setForm({ ...form, prospect: e.target.value })} /></div>
-          <div><label>Company</label><input type="text" placeholder="e.g. Kodak Alaris" value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} /></div>
-        </div>
-        <div className="g2">
-          <div><label>What happened on the call?</label>
-            <select value={form.outcome} onChange={e => setForm({ ...form, outcome: e.target.value })}>
-              <option value="meeting_booked">Meeting was booked ✓</option>
-              <option value="send_info">Send info first, then follow up</option>
-              <option value="callback_requested">They promised a callback</option>
-              <option value="not_interested">Not now — move to nurture</option>
-              <option value="referral">Referred to someone else</option>
-            </select>
-          </div>
-          <div><label>Send via</label>
-            <select value={form.format} onChange={e => setForm({ ...form, format: e.target.value })}>
-              <option value="email">Email</option>
-              <option value="LinkedIn message">LinkedIn message</option>
-              <option value="WhatsApp message">WhatsApp</option>
-            </select>
-          </div>
-        </div>
-        <label>Key moments from the call (pain points mentioned, who else was mentioned, what they said about timing...)</label>
-        <textarea placeholder="e.g. Struggling to hit pipeline targets, 3 new AEs starting Q3, CFO needs to sign off, mentioned they're reviewing their tools in Jan..." value={form.summary} onChange={e => setForm({ ...form, summary: e.target.value })} />
-        <button className="btn btn-primary" onClick={run} disabled={loading || !form.prospect}>
-          {loading ? <><Spinner /> Writing...</> : "◐ Write follow-up"}
-        </button>
-      </div>
-      {loading && <div className="loading-row"><Spinner /> Writing your ProspectMastery follow-up...</div>}
-      {result && (
-        <div className="card">
-          <div className="card-label">Follow-up {form.format} — {form.prospect}<CopyBtn text={result} /></div>
-          <div className="result-box">{result}</div>
-        </div>
-      )}
-    </div>
-  );
+function hydrateIntegrations(savedIntegrations = []) {
+  return baseIntegrations.map(integration => {
+    const saved = savedIntegrations.find(item => item.name === integration.name) || {};
+    return { ...integration, ...saved, icon: integration.icon };
+  });
 }
 
-// ─── CALL HISTORY ─────────────────────────────────────────────────────────────
-function CallHistory({ user, activeProject }) {
-  const [reviews, setReviews] = useState([]);
-  const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState(null);
+function createInitialCrmData() {
+  return {
+    clients: cloneRecords(initialClients),
+    teamMembers: cloneRecords(initialTeamMembers),
+    campaigns: cloneRecords(initialCampaigns),
+    accounts: cloneRecords(initialAccounts),
+    contacts: cloneRecords(initialContacts),
+    deals: cloneRecords(initialDeals),
+    activities: cloneRecords(initialActivities),
+    researchItems: cloneRecords(initialResearchItems),
+    files: cloneRecords(initialFiles),
+    integrations: hydrateIntegrations(),
+    pipelineStages: cloneRecords(pipelineColumns),
+  };
+}
 
-  useEffect(() => { loadReviews(); }, [activeProject]);
+function normalizeCrmData(data) {
+  const initial = createInitialCrmData();
+  if (!data || typeof data !== "object") return initial;
+  return {
+    ...initial,
+    ...data,
+    clients: Array.isArray(data.clients) ? data.clients : initial.clients,
+    teamMembers: Array.isArray(data.teamMembers) ? data.teamMembers : initial.teamMembers,
+    campaigns: Array.isArray(data.campaigns) ? data.campaigns : initial.campaigns,
+    accounts: Array.isArray(data.accounts) ? data.accounts : initial.accounts,
+    contacts: Array.isArray(data.contacts) ? data.contacts : initial.contacts,
+    deals: Array.isArray(data.deals) ? data.deals : initial.deals,
+    activities: Array.isArray(data.activities) ? data.activities : initial.activities,
+    researchItems: Array.isArray(data.researchItems) ? data.researchItems : initial.researchItems,
+    files: Array.isArray(data.files) ? data.files : initial.files,
+    integrations: hydrateIntegrations(Array.isArray(data.integrations) ? data.integrations : []),
+    pipelineStages: Array.isArray(data.pipelineStages) && data.pipelineStages.length
+      ? pipelineColumns.map(column => {
+        const saved = data.pipelineStages.find(item => item.id === column.id);
+        return { ...column, name: saved?.name || column.name };
+      })
+      : initial.pipelineStages,
+  };
+}
 
-  const loadReviews = async () => {
-    setLoading(true);
-    let query = supabase.from("call_reviews").select("*").eq("user_id", user.id).order("called_at", { ascending: false }).limit(100);
-    if (activeProject) query = query.eq("project_id", activeProject.id);
-    const { data } = await query;
-    setReviews(data || []);
-    setLoading(false);
+function serializeCrmData(data) {
+  const { workspaceUsers: _workspaceUsers, ...records } = data;
+  return {
+    ...records,
+    integrations: records.integrations.map(integration => ({
+      name: integration.name,
+      status: integration.status,
+      note: integration.note,
+    })),
+  };
+}
+
+function isAllowedEmail(email) {
+  return String(email || "").trim().toLowerCase().endsWith(`@${ALLOWED_EMAIL_DOMAIN}`);
+}
+
+function getStorageKey(userId) {
+  return `paceops-crm:${userId || "local"}`;
+}
+
+function getUiStateKey(userId) {
+  return `paceops-crm-ui:${userId || "local"}`;
+}
+
+function loadCrmData(userId) {
+  if (typeof window === "undefined" || !userId) return createInitialCrmData();
+  const raw = window.localStorage.getItem(getStorageKey(userId));
+  if (!raw) return createInitialCrmData();
+  try {
+    return normalizeCrmData(JSON.parse(raw));
+  } catch {
+    return createInitialCrmData();
+  }
+}
+
+function loadUiState(userId) {
+  if (typeof window === "undefined" || !userId) return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(getUiStateKey(userId)) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveUiState(userId, state) {
+  if (typeof window === "undefined" || !userId) return;
+  window.localStorage.setItem(getUiStateKey(userId), JSON.stringify(state));
+}
+
+function saveCrmData(userId, data) {
+  if (typeof window === "undefined" || !userId) return;
+  window.localStorage.setItem(getStorageKey(userId), JSON.stringify(serializeCrmData(data)));
+}
+
+async function loadSyncedCrmData(userId, organizationId) {
+  if (!supabase || !organizationId) return loadCrmData(userId);
+  const { data, error } = await supabase
+    .from("organizations")
+    .select("metadata")
+    .eq("id", organizationId)
+    .single();
+
+  if (error) throw error;
+
+  const syncedData = data?.metadata?.[CRM_DATA_METADATA_KEY];
+  if (syncedData && typeof syncedData === "object") {
+    return normalizeCrmData(syncedData);
+  }
+
+  const localData = loadCrmData(userId);
+  await saveSyncedCrmData(organizationId, localData);
+  return localData;
+}
+
+async function saveSyncedCrmData(organizationId, data) {
+  if (!supabase || !organizationId) return;
+  const { data: current, error: loadError } = await supabase
+    .from("organizations")
+    .select("metadata")
+    .eq("id", organizationId)
+    .single();
+
+  if (loadError) throw loadError;
+
+  const metadata = current?.metadata && typeof current.metadata === "object" ? current.metadata : {};
+  const nextMetadata = {
+    ...metadata,
+    [CRM_DATA_METADATA_KEY]: serializeCrmData(data),
+    crm_data_updated_at: new Date().toISOString(),
   };
 
-  const searchResults = reviews.filter(r => {
-    if (!search) return true;
-    return [r.transcript, r.post_call_notes, r.coaching_feedback, r.call_outcome].join(" ").toLowerCase().includes(search.toLowerCase());
+  const { error } = await supabase
+    .from("organizations")
+    .update({ metadata: nextMetadata })
+    .eq("id", organizationId);
+
+  if (error) throw error;
+}
+
+async function loadWorkspaceUsers(organizationId) {
+  if (!supabase || !organizationId) return [];
+  const { data, error } = await supabase
+    .from("users")
+    .select("id,email,display_name,full_name,role,status")
+    .eq("organization_id", organizationId)
+    .eq("status", "active")
+    .order("display_name", { ascending: true });
+
+  if (error) throw error;
+
+  return (data || []).map(workspaceUser => {
+    const name = workspaceUser.display_name || workspaceUser.full_name || workspaceUser.email?.split("@")[0] || "Workspace user";
+    return {
+      id: workspaceUser.id,
+      email: workspaceUser.email,
+      name,
+      role: titleCase(workspaceUser.role || "member"),
+      initials: accountInitial(name),
+      status: "Active",
+    };
+  });
+}
+
+function makeId(prefix) {
+  const randomId = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${randomId}`;
+}
+
+function makeActivity(type, title, account = "Workspace", owner = "Workspace user", extra = {}) {
+  return {
+    id: makeId("activity"),
+    type,
+    title,
+    account,
+    time: "Just now",
+    owner,
+    ...extra,
+  };
+}
+
+function titleCase(value) {
+  return String(value || "")
+    .split(/[\s-_]+/)
+    .filter(Boolean)
+    .map(part => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function refreshCrmData(data) {
+  const workspaceUsers = Array.isArray(data.workspaceUsers) ? data.workspaceUsers : [];
+  const clientsWithCounts = data.clients.map(client => {
+    const clientAccounts = data.accounts.filter(account => account.clientId === client.id);
+    const clientContacts = data.contacts.filter(contact => contact.clientId === client.id);
+    return {
+      ...client,
+      accounts: clientAccounts.length,
+      contacts: clientContacts.length,
+      health: clientAccounts.length || clientContacts.length ? "Active" : "Needs setup",
+    };
   });
 
-  const outcomeColor = (o) => ({ meeting_booked: "var(--green)", callback_requested: "var(--teal)", not_interested: "var(--rose)", voicemail: "var(--text-muted)", gatekeeper: "var(--amber)", no_answer: "var(--text-muted)" }[o] || "var(--text-muted)");
+  const campaignsWithCounts = data.campaigns.map(campaign => ({
+    ...campaign,
+    accounts: data.accounts.filter(account => account.clientId === campaign.clientId).length,
+    contacts: data.contacts.filter(contact => contact.clientId === campaign.clientId).length,
+  }));
+
+  return {
+    ...data,
+    workspaceUsers,
+    clients: clientsWithCounts,
+    campaigns: campaignsWithCounts,
+  };
+}
+
+const CrmDataContext = createContext(createInitialCrmData());
+
+function useCrmData() {
+  return useContext(CrmDataContext);
+}
+
+function accountInitial(name) {
+  const initials = String(name || "")
+    .split(" ")
+    .map(part => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  return initials || "PO";
+}
+
+function StatusBadge({ children, tone = "neutral" }) {
+  return <span className={`status-badge ${tone}`}>{children}</span>;
+}
+
+function PhoneLink({ number, label = "Call" }) {
+  if (!number) return <span className="muted-inline">No number</span>;
+  return (
+    <a className="call-link" href={`tel:${number}`}>
+      <Phone size={14} />
+      <span>{label}</span>
+    </a>
+  );
+}
+
+function getRedeemedPhoneNumber(contact) {
+  return contact?.redeemed === true && contact?.phoneNumber ? String(contact.phoneNumber) : "";
+}
+
+function AircallDialButton({ contact, label = "Call" }) {
+  const phoneNumber = getRedeemedPhoneNumber(contact);
+  const [status, setStatus] = useState("idle");
+  const [message, setMessage] = useState("");
+  const canDial = Boolean(phoneNumber && contact?.id);
+
+  async function dialContact() {
+    setStatus("loading");
+    setMessage("");
+
+    try {
+      const { data } = supabase ? await supabase.auth.getSession() : { data: null };
+      const token = data?.session?.access_token;
+      if (!token) throw new Error("Sign in before sending numbers to Aircall.");
+
+      const response = await fetch("/api/aircall/dial", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ phoneNumber, contactId: contact.id }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Aircall dial failed");
+      setStatus("success");
+      setMessage(payload.message || "Number sent to Aircall.");
+    } catch (dialError) {
+      setStatus("error");
+      setMessage(dialError.message || "Aircall dial failed");
+    }
+  }
 
   return (
-    <div className="fade-in">
-      <div className="page-header">
-        <div className="page-title"><span className="page-accent" />Call History</div>
-        <div className="page-sub">All past call coaching reports — search by transcript content, outcome, or date.</div>
-      </div>
-      <div style={{ position: "relative", marginBottom: 16 }}>
-        <input type="text" placeholder="Search by transcript content, outcome, notes..." value={search} onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 36 }} />
-        <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-60%)", color: "var(--text-muted)", fontSize: 14, pointerEvents: "none" }}>⌕</span>
-      </div>
-      {loading ? <div className="loading-row"><Spinner /> Loading call history...</div> :
-        searchResults.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)", fontSize: 13 }}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>📞</div>
-            {search ? "No calls match your search" : "No call reviews yet — use Call Review & Coach to get started"}
-          </div>
-        ) : searchResults.map(r => (
-          <div key={r.id} className="call-card" onClick={() => setSelected(r)}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span className="tag" style={{ background: `${outcomeColor(r.call_outcome)}12`, color: outcomeColor(r.call_outcome), border: `1px solid ${outcomeColor(r.call_outcome)}30` }}>
-                    {r.call_outcome?.replace(/_/g, " ")}
-                  </span>
-                  {r.pos_stage && <span className="tag tag-blue">{r.pos_stage}</span>}
-                  <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--mono)", marginLeft: "auto" }}>{timeAgo(r.called_at)}</span>
-                </div>
-                <div style={{ display: "flex", gap: 16, fontSize: 12, color: "var(--text-sec)" }}>
-                  {r.duration_minutes && <span>⏱ {r.duration_minutes}m</span>}
-                  {r.rep_talk_ratio && <span>🎙 {r.rep_talk_ratio}% rep</span>}
-                  {r.objection_count > 0 && <span>🛡 {r.objection_count} objections</span>}
-                </div>
-                {r.coaching_feedback && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.5 }}>{r.coaching_feedback.slice(0, 120)}...</div>}
-              </div>
-              <div style={{ fontSize: 16, color: "var(--text-muted)" }}>›</div>
-            </div>
-          </div>
-        ))
-      }
-      {selected && (
-        <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && setSelected(null)}>
-          <div className="modal">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-              <div className="modal-title">Call Review</div>
-              <CopyBtn text={[selected.transcript, selected.coaching_feedback].filter(Boolean).join("\n\n---\n\n")} />
-            </div>
-            <div className="modal-sub">{fmt(selected.called_at)} · {selected.call_outcome?.replace(/_/g, " ")} · {selected.duration_minutes}m · {selected.rep_talk_ratio}% rep talk</div>
-            {selected.transcript && <>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Transcript / Notes</div>
-              <div className="result-box" style={{ marginBottom: 14, maxHeight: 200, overflowY: "auto", fontSize: 12 }}>{selected.transcript}</div>
-            </>}
-            {selected.coaching_feedback && <>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Coaching Feedback</div>
-              <div className="result-box" style={{ maxHeight: 300, overflowY: "auto" }}>{selected.coaching_feedback}</div>
-            </>}
-            <button className="btn btn-outline" style={{ width: "100%", justifyContent: "center", marginTop: 16 }} onClick={() => setSelected(null)}>Close</button>
-          </div>
-        </div>
-      )}
+    <div className="aircall-dial">
+      <span>{phoneNumber || "Redeem required"}</span>
+      <button className="secondary-button" type="button" disabled={!canDial || status === "loading"} onClick={dialContact}>
+        <Phone size={16} />
+        {status === "loading" ? "Dialing" : label}
+      </button>
+      {message ? <small className={status === "error" ? "dial-error" : "dial-success"}>{message}</small> : null}
     </div>
   );
 }
 
-// ─── ACCOUNT SETTINGS ─────────────────────────────────────────────────────────
-function AccountSettings({ user, addToast, isDark, onToggleTheme }) {
-  const [email, setEmail] = useState(user.email || "");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [emailLoading, setEmailLoading] = useState(false);
-  const [passLoading, setPassLoading] = useState(false);
-  const [err, setErr] = useState("");
+function PageHeader({ title, eyebrow, description, children }) {
+  return (
+    <header className="page-header">
+      <div>
+        <div className="eyebrow">{eyebrow}</div>
+        <h1>{title}</h1>
+        <p>{description}</p>
+      </div>
+      <div className="page-actions">{children}</div>
+    </header>
+  );
+}
 
-  const updateEmail = async () => {
-    if (!email || email === user.email) return;
-    setEmailLoading(true); setErr("");
-    const { error } = await supabase.auth.updateUser({ email });
-    if (error) setErr(error.message);
-    else addToast("Confirmation sent to new email address");
-    setEmailLoading(false);
-  };
+function Sidebar({ activeView, onNavigate }) {
+  return (
+    <aside className="sidebar" aria-label="Primary navigation">
+      <div className="sidebar-logo">
+        <img src={logoUrl} alt="PaceOps" />
+      </div>
+      <nav className="sidebar-nav">
+        {navItems.map(item => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              className={`sidebar-button ${activeView === item.id ? "active" : ""}`}
+              type="button"
+              title={item.label}
+              aria-label={item.label}
+              onClick={() => onNavigate(item.id)}
+            >
+              <Icon size={20} />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+    </aside>
+  );
+}
 
-  const updatePassword = async () => {
-    if (!newPassword) return;
-    if (newPassword !== confirmPassword) { setErr("Passwords don't match"); return; }
-    if (newPassword.length < 6) { setErr("Password must be at least 6 characters"); return; }
-    setPassLoading(true); setErr("");
-    const { error } = await supabase.auth.updateUser({ password: newPassword });
-    if (error) setErr(error.message);
-    else { addToast("Password updated successfully"); setNewPassword(""); setConfirmPassword(""); }
-    setPassLoading(false);
-  };
+function TopBar({
+  canGoBack,
+  onBack,
+  activeClient,
+  activeCampaign,
+  onClientChange,
+  onCampaignChange,
+  isDark,
+  onThemeToggle,
+  drawerOpen,
+  onDrawerToggle,
+  search,
+  onSearchChange,
+  searchResults,
+  onSearchSelect,
+  onLogout,
+  loggingOut,
+}) {
+  const { clients, campaigns } = useCrmData();
 
   return (
-<div className="fade-in">
-  <div className="page-header" style={{ textAlign: "center" }}>
-    <div className="page-title" style={{ justifyContent: "center" }}>
-      Account Settings
-    </div>
-    <div className="page-sub">Manage your email, password, and display preferences.</div>
-  </div>
-
-  {err && <div style={{ marginBottom: 16, padding: "10px 14px", background: "var(--rose-bg)", border: "1px solid rgba(220,38,38,0.20)", borderRadius: 10, fontSize: 13, color: "var(--rose)" }}>{err}</div>}
-
-  <div className="settings-section">
-    <div className="settings-title" style={{ textAlign: "center" }}>Profile</div>
-    <div className="settings-sub" style={{ textAlign: "center" }}>Your account information</div>
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "24px 16px", background: "var(--bg)", borderRadius: 10, border: "1px solid var(--border)" }}>
-      <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--accent-sub)", border: "2px solid var(--accent-border)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--display)", fontSize: 22, fontWeight: 700, color: "var(--accent)" }}>
-        {(user.email || "?")[0].toUpperCase()}
+    <header className="topbar">
+      <div className="topbar-leading">
+        {canGoBack && (
+          <button className="back-button" type="button" onClick={onBack} aria-label="Go back">
+            <ArrowLeft size={16} />
+          </button>
+        )}
+        <div className="switchers">
+          <label>
+            <span>Client</span>
+            <select value={activeClient.id} onChange={event => onClientChange(event.target.value)}>
+              {clients.length
+                ? clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)
+                : <option value="none">No clients yet</option>}
+            </select>
+            <ChevronDown size={14} />
+          </label>
+          <label>
+            <span>Campaign</span>
+            <select value={activeCampaign.id} onChange={event => onCampaignChange(event.target.value)}>
+              {campaigns.length
+                ? campaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)
+                : <option value="none">No campaigns yet</option>}
+            </select>
+            <ChevronDown size={14} />
+          </label>
+        </div>
       </div>
-      <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)", marginBottom: 3 }}>{user.user_metadata?.full_name || user.email?.split("@")[0]}</div>
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{user.email}</div>
+
+      <div className="global-search">
+        <Search size={18} />
+        <input
+          value={search}
+          onChange={event => onSearchChange(event.target.value)}
+          placeholder="Search accounts, contacts, campaigns"
+          aria-label="Global search"
+        />
+        {search.length > 1 && (
+          <div className="search-results">
+            {searchResults.length ? searchResults.map(result => (
+              <button key={`${result.type}-${result.id}`} type="button" onClick={() => onSearchSelect(result)}>
+                <span>{result.type}</span>
+                <strong>{result.title}</strong>
+                <small>{result.meta}</small>
+              </button>
+            )) : <div className="search-empty">No matching records</div>}
+          </div>
+        )}
       </div>
-    </div>
-  </div>
 
-  <div className="settings-section">
-    <div className="settings-title">Change email address</div>
-    <div className="settings-sub">A confirmation link will be sent to your new email</div>
-    <label>New email address</label>
-    <input type="email" placeholder="new@email.com" value={email} onChange={e => setEmail(e.target.value)} />
-    <button className="btn btn-primary btn-sm" onClick={updateEmail} disabled={emailLoading || email === user.email || !email}>
-      {emailLoading ? <><Spinner /> Updating...</> : "Update email"}
-    </button>
-  </div>
+      <div className="topbar-actions">
+        <button className="icon-action" type="button" onClick={onDrawerToggle} aria-label="Toggle assistant drawer">
+          <PanelRight size={18} />
+          <span>{drawerOpen ? "Hide" : "AI"}</span>
+        </button>
+        <button className="icon-action" type="button" onClick={onThemeToggle} aria-label="Toggle theme">
+          {isDark ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
+        <button className="icon-action logout-action" type="button" onClick={onLogout} disabled={loggingOut}>
+          <LogOut size={18} />
+          <span>{loggingOut ? "Signing out" : "Log out"}</span>
+        </button>
+      </div>
+    </header>
+  );
+}
 
-  <div className="settings-section">
-    <div className="settings-title">Change password</div>
-    <div className="settings-sub">Must be at least 6 characters</div>
-    <label>New password</label>
-    <input type="password" placeholder="••••••••" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
-    <label>Confirm new password</label>
-    <input type="password" placeholder="••••••••" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} />
-    <button className="btn btn-primary btn-sm" onClick={updatePassword} disabled={passLoading || !newPassword}>
-      {passLoading ? <><Spinner /> Updating...</> : "Update password"}
-    </button>
-  </div>
+function MetricCard({ label, value, detail, icon }) {
+  return (
+    <section className="metric-card">
+      <div>
+        <p>{label}</p>
+        <strong>{value}</strong>
+        <span>{detail}</span>
+      </div>
+      {createElement(icon, { size: 20 })}
+    </section>
+  );
+}
 
-  <div className="settings-section">
-    <div className="settings-title" style={{ textAlign: "center" }}>Appearance</div>
-    <div className="settings-sub" style={{ textAlign: "center" }}>Choose your preferred theme</div>
-    <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-      {[{ label: "☀️ Light", val: false }, { label: "🌙 Dark", val: true }].map(t => (
-        <button key={t.label} onClick={() => isDark !== t.val && onToggleTheme()} style={{ padding: "9px 20px", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: "pointer", border: "1px solid", borderColor: isDark === t.val ? "var(--accent)" : "var(--border-med)", background: isDark === t.val ? "var(--accent-sub)" : "var(--bg)", color: isDark === t.val ? "var(--accent)" : "var(--text-sec)", transition: "all 0.15s" }}>
-          {t.label}
+function FilterBar({ label = "Current view" }) {
+  const [activeFilter, setActiveFilter] = useState("Priority");
+  const filters = ["Priority", "Owner", "Last activity"];
+
+  return (
+    <div className="filter-bar">
+      <div>
+        <ListFilter size={16} />
+        <span>{label}</span>
+      </div>
+      {filters.map(filter => (
+        <button
+          key={filter}
+          className={`secondary-button ${activeFilter === filter ? "selected-filter" : ""}`}
+          type="button"
+          onClick={() => setActiveFilter(filter)}
+        >
+          {filter}
         </button>
       ))}
     </div>
-  </div>
-</div>
   );
 }
 
-// ─── PANELS MAP ───────────────────────────────────────────────────────────────
-const PANELS = {
-  enrich:   ProspectEnrichment,
-  brief:    CallBrief,
-  score:    ICPScorer,
-  script:   ScriptBuilder,
-  coach:    CallCoach,
-  followup: FollowupDrafter,
-  history:  CallHistory,
-};
-
-// ─── SIDEBAR CONTENT ──────────────────────────────────────────────────────────
-function SidebarContent({ user, activeTool, setActiveTool, projects, activeProject, setActiveProject, setShowNewProject, sessions, onSignOut }) {
-  return (
-    <>
-      <div className="sidebar-top">
-        <div className="brand">
-          <div className="brand-mark">P</div>
-          <div className="brand-name">Pace<em>AI</em></div>
-        </div>
-        <ProjectSelector projects={projects} activeProject={activeProject} onSelect={setActiveProject} onNew={() => setShowNewProject(true)} />
-      </div>
-      <div className="sidebar-scroll">
-        <div className="nav-section">Recent Activity</div>
-        <RecentSessions sessions={sessions} activeTool={activeTool} />
-        <div className="nav-section" style={{ marginTop: 8 }}>Tools</div>
-        {TOOLS.map((t, i) => (
-          <div key={t.id} className={`nav-item ${activeTool === t.id ? "active" : ""}`} style={{ animationDelay: `${i * 0.03}s` }} onClick={() => setActiveTool(t.id)} title={t.desc}>
-            <span className="nav-icon">{t.icon}</span>
-            <span style={{ flex: 1 }}>{t.label}</span>
-            <div className="nav-dot" />
-          </div>
-        ))}
-        <div className="divider" style={{ margin: "12px 0" }} />
-        <div className={`nav-item ${activeTool === "settings" ? "active" : ""}`} onClick={() => setActiveTool("settings")}>
-          <span className="nav-icon">⚙️</span>
-          <span style={{ flex: 1 }}>Settings</span>
-        </div>
-      </div>
-      <div className="sidebar-bottom">
-        <div className="user-row">
-          <div className="user-avatar">{(user.email || "?")[0].toUpperCase()}</div>
-          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
-            {user.user_metadata?.display_name || user.email?.split("@")[0]}
-          </span>
-        </div>
-        <div className="nav-item" onClick={onSignOut} style={{ cursor: "pointer" }}>
-          <span className="nav-icon">⎋</span>
-          <span>Sign out</span>
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
-export default function App() {
-  const [user, setUser] = useState(undefined);
-  const [isDark, setIsDark] = useState(() => {
-    try { return localStorage.getItem("pace-theme") !== "light"; } catch { return true; }
-  });
-  const C = isDark ? DARK : LIGHT;
-
-  const toggleTheme = useCallback(() => {
-    setIsDark(v => {
-      const next = !v;
-      try { localStorage.setItem("pace-theme", next ? "dark" : "light"); } catch {}
-      return next;
-    });
-  }, []);
-
-  const [activeTool, setActiveTool] = useState("enrich");
-  const [projects, setProjects] = useState([]);
-  const [activeProject, setActiveProject] = useState(null);
-  const [sessions, setSessions] = useState([]);
-  const [showNewProject, setShowNewProject] = useState(false);
-  const [toasts, setToasts] = useState([]);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-
-  useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => setUser(user ?? null));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => setUser(session?.user ?? null));
-    return () => subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!user) return;
-    supabase.from("projects").select("*").eq("owner_id", user.id).order("created_at", { ascending: false })
-      .then(({ data }) => { setProjects(data || []); if (data?.length && !activeProject) setActiveProject(data[0]); });
-  }, [user]);
-
-  useEffect(() => {
-    if (!user) return;
-    supabase.from("ai_sessions").select("*").eq("user_id", user.id).order("last_message_at", { ascending: false }).limit(20)
-      .then(({ data }) => setSessions(data || []));
-  }, [user, activeTool]);
-
-  const addToast = useCallback((msg) => {
-    const id = Date.now();
-    setToasts(t => [...t, { id, msg }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3000);
-  }, []);
-
-  const signOut = async () => { await supabase.auth.signOut(); setUser(null); };
-
-  const handleSetActiveTool = (id) => {
-    setActiveTool(id);
-    setDrawerOpen(false);
-  };
-
-  if (user === undefined) return (
-    <>
-      <style>{makeStyles(C)}</style>
-      <div style={{ background: "var(--bg)", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div className="spinner spin" style={{ width: 32, height: 32, borderWidth: 3 }} />
-      </div>
-    </>
-  );
-
-  if (!user) return (
-    <>
-      <style>{makeStyles(C)}</style>
-      <AuthScreen onAuth={u => setUser(u)} isDark={isDark} onToggleTheme={toggleTheme} />
-      <Toast toasts={toasts} />
-    </>
-  );
-
-  const Panel = activeTool === "settings" ? AccountSettings : PANELS[activeTool];
-  const activeToolMeta = getToolMeta(activeTool);
-
-  const sidebarProps = {
-    user, activeTool, setActiveTool: handleSetActiveTool,
-    projects, activeProject, setActiveProject,
-    setShowNewProject, sessions, onSignOut: signOut,
-  };
+function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount }) {
+  const { deals, campaigns, accounts, teamMembers } = useCrmData();
+  const pipelineValue = deals.reduce((total, deal) => total + deal.value, 0);
+  const bookedMeetings = campaigns.reduce((total, campaign) => total + campaign.meetings, 0);
 
   return (
     <>
-      <style>{makeStyles(C)}</style>
+      <PageHeader
+        eyebrow={`${activeClient.name} workspace`}
+        title="Sales workspace"
+        description="A focused view of campaigns, accounts, calls, and research activity for the current client."
+      >
+        <button className="secondary-button" type="button" onClick={() => onNavigate("research")}>
+          <FileText size={16} />
+          Open research
+        </button>
+        <button className="primary-button" type="button" onClick={() => onNavigate("calls")}>
+          <Phone size={16} />
+          Create call block
+        </button>
+      </PageHeader>
 
-      {drawerOpen && <div className="drawer-overlay" onClick={() => setDrawerOpen(false)} />}
-      <div className={`drawer ${drawerOpen ? "open" : ""}`}>
-        <SidebarContent {...sidebarProps} />
+      <div className="metrics-grid">
+        <MetricCard label="Active campaign" value={campaigns.length ? activeCampaign.name : "No campaign yet"} detail={activeCampaign.nextAction} icon={Megaphone} />
+        <MetricCard label="Priority accounts" value={accounts.length} detail={accounts.length ? "Ready for review" : "Add accounts to build pipeline"} icon={BriefcaseBusiness} />
+        <MetricCard label="Open pipeline" value={currency.format(pipelineValue)} detail="Across current client workspace" icon={KanbanSquare} />
+        <MetricCard label="Meetings booked" value={bookedMeetings} detail={bookedMeetings ? "From active campaigns" : "No meetings logged yet"} icon={CalendarDays} />
       </div>
 
-      <div className="shell">
-        <div className="sidebar">
-          <SidebarContent {...sidebarProps} />
-        </div>
-        <div className="main">
-          <div className="mobile-topbar">
-            <button className="icon-btn" onClick={() => setDrawerOpen(true)}>☰</button>
-            <div className="brand">
-              <div className="brand-mark" style={{ width: 26, height: 26, fontSize: 11 }}>P</div>
-              <div className="brand-name" style={{ fontSize: 14 }}>Pace<em>AI</em></div>
+      <div className="dashboard-grid single">
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Next best action</span>
+              <h2>Build your first workspace records</h2>
             </div>
-            <button className="icon-btn" onClick={toggleTheme}>{isDark ? "☀️" : "🌙"}</button>
+            <StatusBadge tone="accent">Setup</StatusBadge>
           </div>
-          <div className="topbar">
-            {activeToolMeta && <span style={{ fontSize: 15 }}>{activeToolMeta.icon}</span>}
-            <span className="topbar-title">
-              {activeTool === "settings" ? "Account Settings" : activeToolMeta?.label}
-            </span>
-            {activeProject && <span className="topbar-sub">· {activeProject.company_name}</span>}
-            <div className="topbar-right">
-              {activeProject && (
-                <div className="pill-status">
-                  <div className="pulse-dot" />
-                  {activeProject.pos_stage || "profile"}
+          {accounts.length ? (
+            <div className="action-list">
+              {accounts.slice(0, 4).map(account => (
+              <button key={account.id} type="button" onClick={() => onOpenAccount(account.id)}>
+                <span className="record-avatar">{accountInitial(account.name)}</span>
+                <span>
+                  <strong>{account.name}</strong>
+                  <small>{account.nextAction}</small>
+                </span>
+                <ArrowRight size={16} />
+              </button>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={Target} title="No accounts yet" text="Create or import accounts, then add contacts and deals to start building pipeline." />
+          )}
+        </section>
+      </div>
+
+      <div className="content-grid two">
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Activity timeline</span>
+              <h2>Recent client activity</h2>
+            </div>
+          </div>
+          <ActivityTimeline collaborativeOnly />
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Team</span>
+              <h2>Delivery team</h2>
+            </div>
+          </div>
+          {teamMembers.length ? (
+            <div className="team-list">
+              {teamMembers.map(member => (
+              <div key={member.name} className="team-row">
+                <span>{member.initials}</span>
+                <div>
+                  <strong>{member.name}</strong>
+                  <small>{member.role}</small>
                 </div>
-              )}
-              <button className="icon-btn" onClick={toggleTheme} title="Toggle theme">
-                {isDark ? "☀️" : "🌙"}
+                <StatusBadge>{member.status}</StatusBadge>
+              </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={Users} title="No team members yet" text="Invite teammates once your organization workspace is ready." />
+          )}
+        </section>
+      </div>
+    </>
+  );
+}
+
+function ClientsPage({ onOpenClient, onNewClient, onEditClient }) {
+  const { clients } = useCrmData();
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Clients"
+        title="Client workspaces"
+        description="Manage the client layer before moving into campaigns, accounts, contacts, and delivery workflows."
+      >
+        <button className="primary-button" type="button" onClick={onNewClient}>
+          <Plus size={16} />
+          New client
+        </button>
+      </PageHeader>
+      <section className="panel">
+        {clients.length ? <DataTable
+          columns={["Client", "Workspace", "Owner", "Accounts", "Contacts", "Health", ""]}
+          rows={clients.map(client => [
+            <RecordName key="client" name={client.name} meta={client.status} />,
+            client.workspace,
+            client.owner,
+            client.accounts,
+            client.contacts,
+            <StatusBadge key="health" tone="success">{client.health}</StatusBadge>,
+            <div key="actions" className="row-actions">
+              <button className="text-button" type="button" onClick={event => {
+                event.stopPropagation();
+                onEditClient(client);
+              }}>Edit</button>
+              <button className="text-button" type="button" onClick={event => {
+                event.stopPropagation();
+                onOpenClient(client.id);
+              }}>Open</button>
+            </div>,
+          ])}
+          rowActions={clients.map(client => () => onOpenClient(client.id))}
+        /> : <EmptyState icon={Building2} title="No clients yet" text="Create your first client to start managing campaigns, accounts, contacts, and pipeline." />}
+      </section>
+    </>
+  );
+}
+
+function ClientDetailPage({ client, onOpenCampaign, onEditClient, onNewCampaign, onNewAccount }) {
+  const { campaigns, accounts, contacts, activities } = useCrmData();
+  const clientCampaigns = campaigns.filter(campaign => campaign.clientId === client.id);
+  const clientAccounts = accounts.filter(account => account.clientId === client.id);
+  const clientContacts = contacts.filter(contact => contact.clientId === client.id);
+  const clientCalls = activities.filter(activity => activity.type === "Call" && clientAccounts.some(account => account.name === activity.account));
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Client detail"
+        title={client.name}
+        description="A client-level view for campaign coverage, workspace health, account progress, and team ownership."
+      >
+        <button className="secondary-button" type="button" onClick={() => onEditClient(client)}>Edit client</button>
+        <button className="secondary-button" type="button" onClick={onNewCampaign}>New campaign</button>
+        <button className="primary-button" type="button" onClick={onNewAccount}>Add account</button>
+      </PageHeader>
+      <div className="metrics-grid">
+        <MetricCard label="Campaigns" value={clientCampaigns.length} detail={clientCampaigns.length ? "Campaigns in this client" : "Create the first campaign"} icon={Megaphone} />
+        <MetricCard label="Accounts" value={clientAccounts.length} detail={clientAccounts.length ? "Accounts assigned" : "Add target accounts"} icon={BriefcaseBusiness} />
+        <MetricCard label="Contacts" value={clientContacts.length} detail={clientContacts.length ? "Contacts mapped" : "Add contacts after accounts"} icon={Users} />
+        <MetricCard label="Calls logged" value={clientCalls.length} detail={clientCalls.length ? "Recent call activity" : "No calls logged yet"} icon={Phone} />
+      </div>
+      <div className="content-grid two">
+        <section className="panel">
+          <div className="panel-header"><h2>Client campaigns</h2></div>
+          <CampaignList compact onOpenCampaign={onOpenCampaign} />
+        </section>
+        <section className="panel">
+          <div className="panel-header"><h2>Workspace notes</h2></div>
+          <div className="detail-list">
+            <div><span>Primary goal</span><strong>{client.workspace}</strong></div>
+            <div><span>Data posture</span><strong>CRM data is created inside this signed-in workspace.</strong></div>
+            <div><span>Next review</span><strong>{activities[0]?.title || "Add activity to build the workspace timeline"}</strong></div>
+          </div>
+        </section>
+      </div>
+    </>
+  );
+}
+
+function CampaignsPage({ onOpenCampaign, onEditCampaign, onNewCampaign, onImport }) {
+  return (
+    <>
+      <PageHeader
+        eyebrow="Campaigns"
+        title="Campaign command"
+        description="Switch between survey follow-up and current account targeting without losing client context."
+      >
+        <button className="secondary-button" type="button" onClick={onImport}>
+          <Upload size={16} />
+          CSV import
+        </button>
+        <button className="primary-button" type="button" onClick={onNewCampaign}>
+          <Plus size={16} />
+          New campaign
+        </button>
+      </PageHeader>
+      <FilterBar label="Campaign filters" />
+      <CampaignList onOpenCampaign={onOpenCampaign} onEditCampaign={onEditCampaign} />
+    </>
+  );
+}
+
+function CampaignList({ onOpenCampaign, onEditCampaign, compact = false }) {
+  const { campaigns } = useCrmData();
+
+  return (
+    <section className={compact ? "" : "panel"}>
+      {campaigns.length ? <div className={compact ? "campaign-list compact" : "campaign-grid"}>
+        {campaigns.map(campaign => (
+          <article
+            key={campaign.id}
+            className={`campaign-card ${compact ? "compact" : ""}`}
+            onClick={compact && onOpenCampaign ? () => onOpenCampaign(campaign.id) : undefined}
+          >
+            <div className="campaign-card-head">
+              <span className="record-avatar">{campaign.name.slice(0, 2).toUpperCase()}</span>
+              <div>
+                <h2>{campaign.name}</h2>
+                <p>{campaign.channel}</p>
+              </div>
+              <StatusBadge tone={campaign.status === "Active" ? "success" : "neutral"}>{campaign.status}</StatusBadge>
+            </div>
+            <div className="mini-stats">
+              <span>{campaign.accounts} accounts</span>
+              <span>{campaign.contacts} contacts</span>
+              <span>{campaign.meetings} meetings</span>
+            </div>
+            <button className={compact ? "icon-action" : "text-button"} type="button" onClick={event => {
+              event.stopPropagation();
+              onOpenCampaign?.(campaign.id);
+            }} aria-label={`View ${campaign.name}`}>
+              {compact ? <ArrowRight size={16} /> : <>View campaign <ArrowRight size={14} /></>}
+            </button>
+            {!compact && (
+              <button className="text-button" type="button" onClick={event => {
+                event.stopPropagation();
+                onEditCampaign?.(campaign);
+              }}>Edit</button>
+            )}
+          </article>
+        ))}
+      </div> : <EmptyState icon={Megaphone} title="No campaigns yet" text="Create a campaign when you are ready to run outreach, call blocks, or research workflows." />}
+    </section>
+  );
+}
+
+function CampaignDetailPage({ campaign, onNavigate, onOpenAccount, onEditCampaign }) {
+  const { accounts, workspaceUsers } = useCrmData();
+  const assignedUserIds = Array.isArray(campaign.memberIds) ? campaign.memberIds : [];
+  const assignedUsers = (workspaceUsers || []).filter(workspaceUser => assignedUserIds.includes(workspaceUser.id));
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Campaign detail"
+        title={campaign.name}
+        description={campaign.nextAction}
+      >
+        <button className="secondary-button" type="button" onClick={() => onEditCampaign(campaign)}>Edit campaign</button>
+        <button className="secondary-button" type="button" onClick={() => onNavigate("contacts")}>Contacts</button>
+        <button className="primary-button" type="button" onClick={() => onNavigate("calls")}>Call queue</button>
+      </PageHeader>
+      <div className="metrics-grid">
+        <MetricCard label="Accounts" value={campaign.accounts} detail="In campaign scope" icon={BriefcaseBusiness} />
+        <MetricCard label="Contacts" value={campaign.contacts} detail="Mapped to personas" icon={Users} />
+        <MetricCard label="Meetings" value={campaign.meetings} detail="Booked so far" icon={CalendarDays} />
+        <MetricCard label="Owner" value={campaign.owner} detail={campaign.channel} icon={UserRound} />
+      </div>
+      <section className="panel">
+        <div className="panel-header"><h2>Campaign account focus</h2></div>
+        {accounts.length ? <AccountTable onOpenAccount={onOpenAccount} /> : <EmptyState icon={BriefcaseBusiness} title="No campaign accounts yet" text="Add accounts to this client to create campaign focus." />}
+      </section>
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <span className="eyebrow">Team</span>
+            <h2>Campaign users</h2>
+          </div>
+          <button className="text-button" type="button" onClick={() => onEditCampaign(campaign)}>Manage users</button>
+        </div>
+        {assignedUsers.length ? (
+          <div className="team-list">
+            {assignedUsers.map(member => (
+              <div key={member.id} className="team-row">
+                <span>{member.initials}</span>
+                <div>
+                  <strong>{member.name}</strong>
+                  <small>{member.email}</small>
+                </div>
+                <StatusBadge>{member.role}</StatusBadge>
+              </div>
+            ))}
+          </div>
+        ) : <EmptyState icon={Users} title="No users assigned" text="Add PaceOps users to make this campaign visible as collaborative work." />}
+      </section>
+    </>
+  );
+}
+
+function AccountsPage({ onOpenAccount, onEditAccount, onNewAccount, onImport }) {
+  const { accounts } = useCrmData();
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Accounts"
+        title="Target accounts"
+        description="Account-based prospecting workspace for a fresh target account list."
+      >
+        <button className="secondary-button" type="button" onClick={onImport}>
+          <Upload size={16} />
+          Import list
+        </button>
+        <button className="primary-button" type="button" onClick={onNewAccount}>
+          <Plus size={16} />
+          Add account
+        </button>
+      </PageHeader>
+      <FilterBar label="Account filters" />
+      <section className="panel">
+        {accounts.length ? <AccountTable onOpenAccount={onOpenAccount} onEditAccount={onEditAccount} /> : <EmptyState icon={BriefcaseBusiness} title="No accounts yet" text="Add accounts manually or import a CSV to start building your target list." />}
+      </section>
+    </>
+  );
+}
+
+function AccountTable({ onOpenAccount, onEditAccount }) {
+  const { accounts } = useCrmData();
+
+  return (
+    <DataTable
+      columns={["Account", "Owner", "Stage", "Value", "Last activity", "Next action", ""]}
+      rows={accounts.map(account => [
+        <RecordName key="account" name={account.name} meta={`${account.industry} - ${account.domain}`} />,
+        account.owner,
+        <StatusBadge key="stage" tone={account.status === "Priority" ? "accent" : "neutral"}>{account.stage}</StatusBadge>,
+        currency.format(account.value),
+        account.lastActivity,
+        account.nextAction,
+        <div key="actions" className="row-actions">
+          <button className="text-button" type="button" onClick={() => onEditAccount?.(account)}>Edit</button>
+          <button className="text-button" type="button" onClick={() => onOpenAccount(account.id)}>Open</button>
+        </div>,
+      ])}
+    />
+  );
+}
+
+function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResearch, onNewContact, onNewDeal }) {
+  const { contacts, deals } = useCrmData();
+  const accountContacts = contacts.filter(contact => contact.accountId === account.id);
+  const accountDeals = deals.filter(deal => deal.account === account.name);
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Account detail"
+        title={account.name}
+        description={account.insight}
+      >
+        <button className="secondary-button" type="button" onClick={() => onEditAccount(account)}>Edit account</button>
+        <button className="secondary-button" type="button">
+          <ExternalLink size={16} />
+          {account.domain}
+        </button>
+        <button className="primary-button" type="button" onClick={() => onQueueResearch(account.id)}>
+          <Sparkles size={16} />
+          Research brief
+        </button>
+      </PageHeader>
+      <div className="record-hero">
+        <span className="record-avatar large">{accountInitial(account.name)}</span>
+        <div className="detail-list inline">
+          <div><span>Owner</span><strong>{account.owner}</strong></div>
+          <div><span>Stage</span><strong>{account.stage}</strong></div>
+          <div><span>Location</span><strong>{account.location}</strong></div>
+          <div><span>Employees</span><strong>{account.employees}</strong></div>
+        </div>
+      </div>
+      <div className="content-grid two">
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Contacts</h2>
+            <button className="text-button" type="button" onClick={() => onNewContact(account.id)}>Add contact</button>
+          </div>
+          {accountContacts.length ? <div className="compact-list">
+            {accountContacts.map(contact => (
+              <button key={contact.id} type="button" onClick={() => onOpenContact(contact.id)}>
+                <span>
+                  <strong>{contact.name}</strong>
+                  <small>{contact.role}</small>
+                </span>
+                <span className="muted-inline">{getRedeemedPhoneNumber(contact) || "Redeem required"}</span>
+              </button>
+            ))}
+          </div> : <EmptyState icon={Contact} title="No contacts on this account" text="Add contacts to map stakeholders and build the call queue." />}
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Deals</h2>
+            <button className="text-button" type="button" onClick={() => onNewDeal(account.id)}>New deal</button>
+          </div>
+          {accountDeals.length ? <div className="detail-list">
+            {accountDeals.map(deal => (
+              <div key={deal.id}>
+                <span>{deal.stage}</span>
+                <strong>{currency.format(deal.value)} with {deal.contact}</strong>
+              </div>
+            ))}
+          </div> : <EmptyState icon={KanbanSquare} title="No deals for this account" text="Create a deal when there is a qualified opportunity to track." />}
+        </section>
+      </div>
+      {account.scripts && (
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Account intelligence</span>
+              <h2>Outreach scripts</h2>
+            </div>
+          </div>
+          <div className="script-grid">
+            <div>
+              <span>Call opener</span>
+              <p>{account.scripts.callOpener}</p>
+            </div>
+            <div>
+              <span>Voicemail</span>
+              <p>{account.scripts.voicemail}</p>
+            </div>
+            <div>
+              <span>Email</span>
+              <strong>{account.scripts.emailSubject}</strong>
+              <p>{account.scripts.emailBody}</p>
+            </div>
+            <div>
+              <span>LinkedIn note</span>
+              <p>{account.scripts.linkedinNote}</p>
+            </div>
+            <div>
+              <span>Discovery question</span>
+              <p>{account.scripts.discoveryQuestion}</p>
+            </div>
+          </div>
+        </section>
+      )}
+      <section className="panel">
+        <div className="panel-header"><h2>Activity timeline</h2></div>
+        <ActivityTimeline account={account.name} />
+      </section>
+    </>
+  );
+}
+
+function ContactsPage({ onOpenContact, onEditContact, onNewContact, onImport }) {
+  const { contacts } = useCrmData();
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Contacts"
+        title="Contacts and personas"
+        description="UX, product, design, and research stakeholders linked to the active account list."
+      >
+        <button className="secondary-button" type="button" onClick={onImport}>
+          <Upload size={16} />
+          Import contacts
+        </button>
+        <button className="primary-button" type="button" onClick={() => onNewContact()}>
+          <Plus size={16} />
+          Add contact
+        </button>
+      </PageHeader>
+      <FilterBar label="Contact filters" />
+      <section className="panel">
+        {contacts.length ? <ContactTable onOpenContact={onOpenContact} onEditContact={onEditContact} /> : <EmptyState icon={Contact} title="No contacts yet" text="Add contacts after creating accounts, or import a contact list when CSV import is connected." />}
+      </section>
+    </>
+  );
+}
+
+function ContactTable({ onOpenContact, onEditContact }) {
+  const { contacts } = useCrmData();
+
+  return (
+    <DataTable
+      columns={["Contact", "Account", "Persona", "Owner", "Status", "Revealed phone", ""]}
+      rows={contacts.map(contact => [
+        <RecordName key="contact" name={contact.name} meta={contact.role} />,
+        contact.account,
+        contact.persona,
+        contact.owner,
+        <StatusBadge key="status" tone={contact.status === "Meeting booked" ? "success" : "neutral"}>{contact.status}</StatusBadge>,
+        <AircallDialButton key="aircall" contact={contact} />,
+        <div key="actions" className="row-actions">
+          <button className="text-button" type="button" onClick={() => onEditContact?.(contact)}>Edit</button>
+          <button className="text-button" type="button" onClick={() => onOpenContact(contact.id)}>Open</button>
+        </div>,
+      ])}
+    />
+  );
+}
+
+function ContactDetailPage({ contact, onEditContact, onLogCall, onDraftEmail }) {
+  const { accounts } = useCrmData();
+  const [outcome, setOutcome] = useState("Connected");
+  const [notes, setNotes] = useState("");
+  const account = accounts.find(item => item.id === contact.accountId);
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Contact detail"
+        title={contact.name}
+        description={`${contact.role} at ${contact.account}. ${contact.lastTouch}.`}
+      >
+        <button className="secondary-button" type="button" onClick={() => onEditContact(contact)}>Edit contact</button>
+        <AircallDialButton contact={contact} />
+        <button className="primary-button" type="button" onClick={() => onDraftEmail(contact.id)}>
+          <Mail size={16} />
+          Draft email
+        </button>
+      </PageHeader>
+      <div className="record-hero">
+        <span className="record-avatar large">{accountInitial(contact.name)}</span>
+        <div className="detail-list inline">
+          <div><span>Account</span><strong>{contact.account}</strong></div>
+          <div><span>Persona</span><strong>{contact.persona}</strong></div>
+          <div><span>Owner</span><strong>{contact.owner}</strong></div>
+          <div><span>Status</span><strong>{contact.status}</strong></div>
+        </div>
+      </div>
+      <div className="content-grid two">
+        <section className="panel">
+          <div className="panel-header"><h2>Contact details</h2></div>
+          <div className="detail-list">
+            <div><span>Email</span><strong>{contact.email}</strong></div>
+            <div><span>Revealed phone</span><strong>{getRedeemedPhoneNumber(contact) || "Redeem required"}</strong></div>
+            <div><span>Cognism status</span><strong>{contact.redeemed ? "Redeemed" : "Preview-only or not redeemed"}</strong></div>
+            <div><span>Account signal</span><strong>{account?.insight}</strong></div>
+          </div>
+        </section>
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Aircall MVP</span>
+              <h2>Log call outcome</h2>
+            </div>
+          </div>
+          <div className="call-logger">
+            <div className="call-actions">
+              <AircallDialButton contact={contact} />
+            </div>
+            <label>
+              Outcome
+              <select value={outcome} onChange={event => setOutcome(event.target.value)}>
+                {callOutcomes.map(item => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+            <textarea value={notes} placeholder="Notes, objections, next step" onChange={event => setNotes(event.target.value)} />
+            <button className="primary-button" type="button" onClick={() => {
+              onLogCall({ contactId: contact.id, outcome, notes });
+              setNotes("");
+            }}>Save outcome</button>
+          </div>
+        </section>
+      </div>
+    </>
+  );
+}
+
+function PipelinePage({ onOpenAccount, onMoveDeal, onNewDeal, onUpdateStages }) {
+  const { deals, accounts, pipelineStages } = useCrmData();
+  const [draggedDealId, setDraggedDealId] = useState("");
+  const [dropStage, setDropStage] = useState("");
+  const [editingStages, setEditingStages] = useState(false);
+  const [draftStages, setDraftStages] = useState(() => cloneRecords(pipelineStages || pipelineColumns));
+
+  function saveStages() {
+    const nextStages = draftStages.map((stage, index) => ({
+      ...stage,
+      name: stage.name.trim() || pipelineColumns[index]?.name || stage.id,
+    }));
+    onUpdateStages(nextStages);
+    setEditingStages(false);
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Pipeline"
+        title="Opportunity board"
+        description="Drag deals between stages to keep account movement current."
+      >
+        <button className="secondary-button" type="button" onClick={() => {
+          if (!editingStages) setDraftStages(cloneRecords(pipelineStages || pipelineColumns));
+          setEditingStages(value => !value);
+        }}>
+          <Settings size={16} />
+          Stage settings
+        </button>
+        <button className="primary-button" type="button" onClick={() => onNewDeal()}>
+          <Plus size={16} />
+          New deal
+        </button>
+      </PageHeader>
+      {editingStages && (
+        <section className="panel pipeline-settings-panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Pipeline stages</span>
+              <h2>Rename stages</h2>
+            </div>
+          </div>
+          <div className="stage-editor-grid">
+            {draftStages.map((stage, index) => (
+              <FormField key={stage.id} label={`Stage ${index + 1}`}>
+                <input
+                  value={stage.name}
+                  onChange={event => setDraftStages(current => current.map(item => item.id === stage.id ? { ...item, name: event.target.value } : item))}
+                />
+              </FormField>
+            ))}
+          </div>
+          <div className="stage-editor-actions">
+            <button className="secondary-button" type="button" onClick={() => {
+              setDraftStages(cloneRecords(pipelineStages || pipelineColumns));
+              setEditingStages(false);
+            }}>Cancel</button>
+            <button className="primary-button" type="button" onClick={saveStages}>Save stages</button>
+          </div>
+        </section>
+      )}
+      <div className="pipeline-board">
+        {(pipelineStages || pipelineColumns).map(column => {
+          const columnDeals = deals.filter(deal => deal.stage === column.id);
+          return (
+            <section
+              key={column.id}
+              className={`pipeline-column ${dropStage === column.id ? "drop-target" : ""}`}
+              onDragOver={event => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDropStage(column.id);
+              }}
+              onDragLeave={event => {
+                if (!event.currentTarget.contains(event.relatedTarget)) setDropStage("");
+              }}
+              onDrop={event => {
+                event.preventDefault();
+                const dealId = event.dataTransfer.getData("text/plain") || draggedDealId;
+                setDraggedDealId("");
+                setDropStage("");
+                if (dealId) onMoveDeal(dealId, column.id);
+              }}
+            >
+              <div className="pipeline-column-head">
+                <strong>{column.name}</strong>
+                <span>{columnDeals.length}</span>
+              </div>
+              {columnDeals.map(deal => {
+                const account = accounts.find(item => item.name === deal.account);
+                return (
+                  <article
+                    key={deal.id}
+                    className={`pipeline-card ${draggedDealId === deal.id ? "dragging" : ""}`}
+                    draggable
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => account && onOpenAccount(account.id)}
+                    onKeyDown={event => {
+                      if (event.key === "Enter") account && onOpenAccount(account.id);
+                    }}
+                    onDragStart={event => {
+                      setDraggedDealId(deal.id);
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", deal.id);
+                    }}
+                    onDragEnd={() => {
+                      setDraggedDealId("");
+                      setDropStage("");
+                    }}
+                  >
+                    <strong>{deal.account}</strong>
+                    <span>{deal.contact}</span>
+                    <div>
+                      <small>{deal.owner}</small>
+                      <small>{currency.format(deal.value)}</small>
+                    </div>
+                    <StatusBadge>{deal.due}</StatusBadge>
+                  </article>
+                );
+              })}
+            </section>
+          );
+        })}
+      </div>
+      {!deals.length && (
+        <section className="panel empty-board-panel">
+          <EmptyState icon={KanbanSquare} title="No deals in the pipeline yet" text="Create accounts and contacts first, then add deals to start tracking pipeline." />
+        </section>
+      )}
+    </>
+  );
+}
+
+function CallsPage({ onOpenContact, onLogCall, onStartCallBlock }) {
+  const { contacts } = useCrmData();
+  const [outcome, setOutcome] = useState("Connected");
+  const [contactId, setContactId] = useState("");
+  const [notes, setNotes] = useState("");
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Calls"
+        title="Call workspace"
+        description="Aircall dialing is enabled only for contacts with redeemed phone numbers. Outcome logging writes to the CRM activity timeline."
+      >
+        <button className="secondary-button" type="button">
+          <Phone size={16} />
+          Aircall backend
+        </button>
+        <button className="primary-button" type="button" onClick={onStartCallBlock}>
+          <Clock size={16} />
+          Start call block
+        </button>
+      </PageHeader>
+      <div className="content-grid calls-layout">
+        <section className="panel">
+          <div className="panel-header"><h2>Today call queue</h2></div>
+          {contacts.length ? <DataTable
+            columns={["Contact", "Account", "Status", "Revealed phone", ""]}
+            rows={contacts.slice(0, 5).map(contact => [
+              <RecordName key="contact" name={contact.name} meta={contact.role} />,
+              contact.account,
+              contact.status,
+              <AircallDialButton key="aircall" contact={contact} />,
+              <button key="open" className="text-button" type="button" onClick={() => onOpenContact(contact.id)}>Log</button>,
+            ])}
+          /> : <EmptyState icon={Phone} title="No calls queued" text="Add contacts with phone numbers to create your first call block." />}
+        </section>
+        <section className="panel call-sidebar">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Call outcome</span>
+              <h2>Manual log</h2>
+            </div>
+          </div>
+          <div className="call-logger">
+            <label>
+              Contact
+              <select value={contactId || contacts[0]?.id || ""} onChange={event => setContactId(event.target.value)}>
+                {contacts.length
+                  ? contacts.map(contact => <option key={contact.id} value={contact.id}>{contact.name}</option>)
+                  : <option value="">No contacts yet</option>}
+              </select>
+            </label>
+            <label>
+              Outcome
+              <select value={outcome} onChange={event => setOutcome(event.target.value)}>
+                {callOutcomes.map(item => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+            <textarea value={notes} placeholder="Notes, objections, next step" onChange={event => setNotes(event.target.value)} />
+            <button className="primary-button" type="button" disabled={!contacts.length} onClick={() => {
+              onLogCall({ contactId: contactId || contacts[0]?.id, outcome, notes });
+              setNotes("");
+            }}>Save outcome</button>
+          </div>
+        </section>
+      </div>
+    </>
+  );
+}
+
+function ResearchPage({ onOpenAccount, onAddSource, onQueueResearch }) {
+  const { accounts, researchItems } = useCrmData();
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Research"
+        title="Account intelligence"
+        description="Research cards stay linked to accounts. AI actions will become audited jobs later."
+      >
+        <button className="secondary-button" type="button" onClick={onAddSource}>
+          <Upload size={16} />
+          Add source
+        </button>
+        <button className="primary-button" type="button" onClick={() => onQueueResearch()}>
+          <Sparkles size={16} />
+          Queue research
+        </button>
+      </PageHeader>
+      {researchItems.length > 0 && (
+        <section className="panel research-queue-panel">
+          <div className="panel-header"><h2>Research queue</h2></div>
+          <div className="detail-list">
+            {researchItems.map(item => (
+              <div key={item.id}>
+                <span>{item.account}</span>
+                <strong>{item.title}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      <div className="research-grid">
+        {accounts.length ? accounts.map(account => (
+          <article key={account.id} className="research-card">
+            <div className="research-card-head">
+              <span className="record-avatar">{accountInitial(account.name)}</span>
+              <StatusBadge tone={account.status === "Priority" ? "accent" : "neutral"}>{account.status}</StatusBadge>
+            </div>
+            <h2>{account.name}</h2>
+            <p>{account.insight}</p>
+            <div className="detail-list">
+              <div><span>Data gap</span><strong>Buying committee validation</strong></div>
+              <div><span>Suggested angle</span><strong>{account.nextAction}</strong></div>
+            </div>
+            <button className="text-button" type="button" onClick={() => onOpenAccount(account.id)}>
+              Open account <ArrowRight size={14} />
+            </button>
+          </article>
+        )) : <section className="panel"><EmptyState icon={FileText} title="No research records yet" text="Research summaries will appear after accounts are added and research jobs are created." /></section>}
+      </div>
+    </>
+  );
+}
+
+function parseLines(value) {
+  return String(value || "")
+    .split(/[\n,]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function AvailabilityValue({ value }) {
+  return (
+    <span className={`availability-value ${value ? "available" : ""}`}>
+      {value ? <CheckCircle2 size={14} /> : <Circle size={14} />}
+      {value ? "Available" : "Not available"}
+    </span>
+  );
+}
+
+const cognismExportColumns = [
+  ["company", "Company"],
+  ["contactName", "Contact name"],
+  ["jobTitle", "Job title"],
+  ["seniority", "Seniority"],
+  ["department", "Department"],
+  ["location", "Location"],
+  ["linkedinAvailable", "LinkedIn available"],
+  ["emailAvailable", "Email available"],
+  ["mobileAvailable", "Mobile available"],
+  ["directDialAvailable", "Direct dial available"],
+  ["matchScore", "Match score"],
+  ["cognismContactId", "Cognism preview/contact ID"],
+  ["assignedUsers", "Assigned users"],
+];
+
+function exportCellValue(value) {
+  if (typeof value === "boolean") return value ? "Available" : "Not available";
+  return value ?? "";
+}
+
+function csvEscape(value) {
+  const stringValue = String(exportCellValue(value));
+  return /[",\n]/.test(stringValue) ? `"${stringValue.replaceAll('"', '""')}"` : stringValue;
+}
+
+function downloadTextFile(filename, mimeType, contents) {
+  const blob = new Blob([contents], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportCognismResults(results, format, assignedUsers = []) {
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const assignedUserText = assignedUsers.map(user => `${user.name} <${user.email}>`).join("; ");
+  const exportResults = results.map(result => ({
+    ...result,
+    assignedUsers: assignedUserText,
+  }));
+
+  if (format === "json") {
+    downloadTextFile(
+      `cognism-preview-${timestamp}.json`,
+      "application/json;charset=utf-8",
+      JSON.stringify({ mode: "preview_only", estimatedCreditsUsed: 0, assignedUsers, results: exportResults }, null, 2),
+    );
+    return;
+  }
+
+  if (format === "xls") {
+    const headerCells = cognismExportColumns.map(([, label]) => `<th>${label}</th>`).join("");
+    const rows = exportResults.map(result => (
+      `<tr>${cognismExportColumns.map(([key]) => `<td>${String(exportCellValue(result[key])).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</td>`).join("")}</tr>`
+    )).join("");
+
+    downloadTextFile(
+      `cognism-preview-${timestamp}.xls`,
+      "application/vnd.ms-excel;charset=utf-8",
+      `<table><thead><tr>${headerCells}</tr></thead><tbody>${rows}</tbody></table>`,
+    );
+    return;
+  }
+
+  const header = cognismExportColumns.map(([, label]) => csvEscape(label)).join(",");
+  const rows = exportResults.map(result => cognismExportColumns.map(([key]) => csvEscape(result[key])).join(","));
+  downloadTextFile(
+    `cognism-preview-${timestamp}.csv`,
+    "text/csv;charset=utf-8",
+    [header, ...rows].join("\n"),
+  );
+}
+
+function CognismContactFinder() {
+  const { workspaceUsers = [] } = useCrmData();
+  const [companiesText, setCompaniesText] = useState("");
+  const [roleQuery, setRoleQuery] = useState("");
+  const [suggestedRoles, setSuggestedRoles] = useState([]);
+  const [selectedRoles, setSelectedRoles] = useState([]);
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const [maxPerCompany, setMaxPerCompany] = useState(1);
+  const [requireEmailOrMobile, setRequireEmailOrMobile] = useState(false);
+  const [customRolesText, setCustomRolesText] = useState("");
+  const [results, setResults] = useState([]);
+  const [meta, setMeta] = useState({ mode: "preview_only", estimatedCreditsUsed: 0, maxPerCompany: 1, requireEmailOrMobile: false });
+  const [status, setStatus] = useState("idle");
+  const [roleStatus, setRoleStatus] = useState("idle");
+  const [roleMode, setRoleMode] = useState("");
+  const [error, setError] = useState("");
+  const roleOptions = suggestedRoles;
+  const selectedUsers = workspaceUsers.filter(user => selectedUserIds.includes(user.id));
+
+  function toggleRole(role) {
+    setSelectedRoles(current => current.includes(role)
+      ? current.filter(item => item !== role)
+      : [...current, role]);
+  }
+
+  function toggleUser(userId) {
+    setSelectedUserIds(current => current.includes(userId)
+      ? current.filter(id => id !== userId)
+      : [...current, userId]);
+  }
+
+  async function loadRoleSuggestions() {
+    setError("");
+    setRoleStatus("loading");
+
+    try {
+      const response = await fetch("/api/cognism/roles", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: roleQuery }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Role suggestion failed");
+      const roles = Array.isArray(payload.roles) ? payload.roles : [];
+      setSuggestedRoles(roles);
+      setSelectedRoles(roles);
+      setRoleMode(payload.mode || "fallback");
+      setRoleStatus("done");
+    } catch (roleError) {
+      setError(roleError.message || "Role suggestion failed");
+      setRoleStatus("error");
+    }
+  }
+
+  async function previewContacts() {
+    const companies = parseLines(companiesText);
+    const customRoles = parseLines(customRolesText);
+    const targetTitles = [...new Set([...selectedRoles, ...customRoles])];
+    const requestedMax = Math.max(Number(maxPerCompany) || 1, 1);
+
+    if (!companies.length) {
+      setError("Add at least one company or domain.");
+      return;
+    }
+
+    if (!targetTitles.length) {
+      setError("Describe what you are looking for, generate role options, or add target roles manually.");
+      return;
+    }
+
+    setError("");
+    setStatus("loading");
+    setResults([]);
+
+    try {
+      const response = await fetch("/api/cognism/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companies, targetTitles, maxPerCompany: requestedMax, requireEmailOrMobile }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Preview request failed");
+      setMeta({
+        mode: payload.mode,
+        estimatedCreditsUsed: payload.estimatedCreditsUsed,
+        maxPerCompany: payload.maxPerCompany,
+        requireEmailOrMobile: Boolean(payload.requireEmailOrMobile),
+      });
+      setResults(Array.isArray(payload.results) ? payload.results : []);
+      setStatus("done");
+    } catch (previewError) {
+      setError(previewError.message || "Preview request failed");
+      setStatus("error");
+    }
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Cognism preview"
+        title="Contact finder"
+        description="Search preview contacts per company using server-side Cognism search only."
+      >
+        <button className="secondary-button" type="button" disabled>
+          <LockKeyhole size={16} />
+          Redeem disabled in test mode
+        </button>
+        <button className="primary-button" type="button" onClick={previewContacts} disabled={status === "loading"}>
+          <Search size={16} />
+          {status === "loading" ? "Previewing" : "Preview contacts"}
+        </button>
+      </PageHeader>
+
+      <div className="cognism-layout">
+        <section className="panel cognism-controls">
+          <div className="panel-header">
+            <div>
+            <span className="eyebrow">Search inputs</span>
+            <h2>Any client or account list</h2>
+          </div>
+          <StatusBadge tone="accent">Configurable max</StatusBadge>
+        </div>
+          <label className="form-field">
+            <span>What are you looking for?</span>
+            <input
+              value={roleQuery}
+              onChange={event => setRoleQuery(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  loadRoleSuggestions();
+                }
+              }}
+              placeholder="UX, cyber security, finance buyer, procurement, engineering leadership"
+            />
+          </label>
+          <button className="secondary-button role-suggest-button" type="button" onClick={loadRoleSuggestions} disabled={roleStatus === "loading" || !roleQuery.trim()}>
+            <Sparkles size={16} />
+            {roleStatus === "loading" ? "Loading roles" : "Load role options"}
+          </button>
+          <label className="form-field">
+            <span>Companies or domains</span>
+            <textarea
+              value={companiesText}
+              onChange={event => setCompaniesText(event.target.value)}
+              placeholder={"Microsoft\nadobe.com\nAtlassian"}
+            />
+          </label>
+          <label className="form-field">
+            <span>Max contacts per company</span>
+            <input
+              type="number"
+              min="1"
+              value={maxPerCompany}
+              onChange={event => setMaxPerCompany(event.target.value)}
+              onBlur={() => setMaxPerCompany(current => Math.max(Number(current) || 1, 1))}
+              aria-label="Max contacts per company"
+            />
+          </label>
+          <div className="finder-availability-filters">
+            <label className={`role-choice ${requireEmailOrMobile ? "selected" : ""}`}>
+              <input type="checkbox" checked={requireEmailOrMobile} onChange={event => setRequireEmailOrMobile(event.target.checked)} />
+              <span>Must include email or mobile</span>
+            </label>
+          </div>
+          <div className="finder-user-select">
+            <div className="panel-header compact-header">
+              <div>
+                <span className="eyebrow">Users</span>
+                <h2>Assign results</h2>
+              </div>
+              <StatusBadge>{selectedUserIds.length} selected</StatusBadge>
+            </div>
+            <div className="role-actions">
+              <button className="secondary-button" type="button" onClick={() => setSelectedUserIds(workspaceUsers.map(user => user.id))} disabled={!workspaceUsers.length}>
+                <CheckCircle2 size={16} />
+                Select all
+              </button>
+              <button className="secondary-button" type="button" onClick={() => setSelectedUserIds([])} disabled={!selectedUserIds.length}>
+                <Circle size={16} />
+                Deselect all
               </button>
             </div>
+            {workspaceUsers.length ? (
+              <div className="role-choice-grid compact-choice-grid">
+                {workspaceUsers.map(user => (
+                  <label key={user.id} className={`role-choice ${selectedUserIds.includes(user.id) ? "selected" : ""}`}>
+                    <input type="checkbox" checked={selectedUserIds.includes(user.id)} onChange={() => toggleUser(user.id)} />
+                    <span>{user.name}<small>{user.email}</small></span>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <EmptyState icon={Users} title="No users found" text="PaceOps users will appear here after they sign in to the CRM." />
+            )}
           </div>
-          <div className="content-area">
-            {activeTool === "settings"
-              ? <AccountSettings user={user} addToast={addToast} isDark={isDark} onToggleTheme={toggleTheme} />
-              : <Panel key={activeTool} user={user} activeProject={activeProject} addToast={addToast} />
-            }
+          <label className="form-field">
+            <span>Optional manual role titles, one per line or comma-separated</span>
+            <textarea
+              value={customRolesText}
+              onChange={event => setCustomRolesText(event.target.value)}
+              placeholder={"Use this only if the generated options miss a title.\nChief Information Security Officer\nVP Engineering, Head of Procurement"}
+            />
+          </label>
+        </section>
+
+        <section className="panel cognism-roles">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Role options</span>
+              <h2>Select target titles</h2>
+            </div>
+            <StatusBadge>{selectedRoles.length} selected</StatusBadge>
           </div>
-        </div>
+          <div className="role-actions">
+            <button className="secondary-button" type="button" onClick={() => setSelectedRoles(roleOptions)} disabled={!roleOptions.length}>
+              <CheckCircle2 size={16} />
+              Select all
+            </button>
+            <button className="secondary-button" type="button" onClick={() => setSelectedRoles([])} disabled={!roleOptions.length && !selectedRoles.length}>
+              <Circle size={16} />
+              Deselect all
+            </button>
+            {roleMode ? <StatusBadge>{roleMode === "openai" ? "OpenAI suggested" : "Fallback suggested"}</StatusBadge> : null}
+          </div>
+          {roleOptions.length ? (
+            <div className="role-choice-grid">
+              {roleOptions.map(role => (
+              <label key={role} className={`role-choice ${selectedRoles.includes(role) ? "selected" : ""}`}>
+                <input type="checkbox" checked={selectedRoles.includes(role)} onChange={() => toggleRole(role)} />
+                <span>{role}</span>
+              </label>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={Sparkles} title="No role options loaded" text="Enter what you are looking for, then load role options." />
+          )}
+        </section>
       </div>
 
-      {showNewProject && (
-        <NewProjectModal user={user} onClose={() => setShowNewProject(false)} onSave={(p) => {
-          setProjects(prev => [p, ...prev]);
-          setActiveProject(p);
-          setShowNewProject(false);
-          addToast(`Project "${p.name}" created`);
-        }} />
-      )}
-
-      <Toast toasts={toasts} />
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <span className="eyebrow">Preview results</span>
+            <h2>Cognism matches</h2>
+          </div>
+          <div className="cognism-meta">
+            <StatusBadge tone="success">{meta.mode}</StatusBadge>
+            <StatusBadge>Credits: {meta.estimatedCreditsUsed}</StatusBadge>
+            <StatusBadge>Max: {meta.maxPerCompany}</StatusBadge>
+            {meta.requireEmailOrMobile ? <StatusBadge>Email or mobile required</StatusBadge> : null}
+          </div>
+        </div>
+        <div className="results-summary">
+          <div>
+            <span>Matches</span>
+            <strong>{results.length}</strong>
+          </div>
+          <div>
+            <span>Email available</span>
+            <strong>{results.filter(result => result.emailAvailable).length}</strong>
+          </div>
+          <div>
+            <span>Mobile available</span>
+            <strong>{results.filter(result => result.mobileAvailable).length}</strong>
+          </div>
+          <div>
+            <span>Direct dial</span>
+            <strong>{results.filter(result => result.directDialAvailable).length}</strong>
+          </div>
+        </div>
+        <div className="export-actions">
+          <button className="secondary-button" type="button" disabled={!results.length} onClick={() => exportCognismResults(results, "csv", selectedUsers)}>
+            <FileText size={16} />
+            Export CSV
+          </button>
+          <button className="secondary-button" type="button" disabled={!results.length} onClick={() => exportCognismResults(results, "xls", selectedUsers)}>
+            <FileText size={16} />
+            Export Excel
+          </button>
+          <button className="secondary-button" type="button" disabled={!results.length} onClick={() => exportCognismResults(results, "json", selectedUsers)}>
+            <FileText size={16} />
+            Export JSON
+          </button>
+        </div>
+        {error ? <div className="form-error">{error}</div> : null}
+        <div className="table-wrap">
+          <table className="data-table cognism-table">
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Contact name</th>
+                <th>Job title</th>
+                <th>Seniority</th>
+                <th>Department</th>
+                <th>Location</th>
+                <th>LinkedIn available</th>
+                <th>Email available</th>
+                <th>Mobile available</th>
+                <th>Direct dial available</th>
+                <th>Match score</th>
+                <th>Cognism preview/contact ID</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.length ? results.map(result => (
+                <tr key={`${result.company}-${result.cognismContactId || result.contactName}`}>
+                  <td>{result.company || "Not available"}</td>
+                  <td>{result.contactName || "Not available"}</td>
+                  <td>{result.jobTitle || "Not available"}</td>
+                  <td>{result.seniority || "Not available"}</td>
+                  <td>{result.department || "Not available"}</td>
+                  <td>{result.location || "Not available"}</td>
+                  <td><AvailabilityValue value={result.linkedinAvailable} /></td>
+                  <td><AvailabilityValue value={result.emailAvailable} /></td>
+                  <td><AvailabilityValue value={result.mobileAvailable} /></td>
+                  <td><AvailabilityValue value={result.directDialAvailable} /></td>
+                  <td>{result.matchScore}</td>
+                  <td>{result.cognismContactId || "Not available"}</td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan="13" className="empty-table-cell">
+                    {status === "done" ? "No preview matches returned." : "Run a preview to see Cognism contact metadata."}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </>
+  );
+}
+
+function IntegrationsPage({ onNavigate, onOpenWorkflow }) {
+  const { integrations } = useCrmData();
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Integrations"
+        title="Connection centre"
+        description="Active and planned external services for contact search, calling, account intelligence, and imports."
+      />
+      <div className="integration-grid">
+        {integrations.map(integration => {
+          const Icon = integration.icon;
+          const isAvailable = Boolean(integration.view || integration.workflow);
+          return (
+            <article key={integration.name} className="integration-card">
+              <div>
+                <span className="integration-icon"><Icon size={20} /></span>
+                <StatusBadge tone={["Available", "Partial"].includes(integration.status) ? "success" : "neutral"}>{integration.status}</StatusBadge>
+              </div>
+              <h2>{integration.name}</h2>
+              <p>{integration.note}</p>
+              {isAvailable ? (
+                <button className="secondary-button" type="button" onClick={() => integration.workflow ? onOpenWorkflow(integration.workflow) : onNavigate(integration.view)}>
+                  {integration.action}
+                </button>
+              ) : (
+                <StatusBadge>Not actionable yet</StatusBadge>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdateProfile }) {
+  const { teamMembers, clients, workspaceUsers } = useCrmData();
+  const visibleTeamMembers = workspaceUsers?.length ? workspaceUsers : teamMembers;
+  const metadata = user?.user_metadata || {};
+  const nameParts = String(metadata.full_name || "").trim().split(" ").filter(Boolean);
+  const [profileValues, setProfileValues] = useState({
+    firstName: metadata.first_name || nameParts[0] || "",
+    lastName: metadata.last_name || nameParts.slice(1).join(" ") || "",
+  });
+  const [profileStatus, setProfileStatus] = useState("idle");
+  const [profileError, setProfileError] = useState("");
+
+  async function submitProfile(event) {
+    event.preventDefault();
+    setProfileStatus("saving");
+    setProfileError("");
+    try {
+      await onUpdateProfile({
+        firstName: profileValues.firstName.trim(),
+        lastName: profileValues.lastName.trim(),
+      });
+      setProfileStatus("saved");
+    } catch (error) {
+      setProfileStatus("idle");
+      setProfileError(error?.message || "Could not update profile.");
+    }
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Settings"
+        title="Workspace settings"
+        description="Tenant, team, preference, and security settings for the CRM workspace."
+      >
+        <button className="primary-button" type="button" onClick={onInviteTeamMember}>
+          <Plus size={16} />
+          Invite teammate
+        </button>
+      </PageHeader>
+      <div className="content-grid two">
+        <section className="panel">
+          <div className="panel-header"><h2>Account profile</h2></div>
+          <form className="profile-settings-form" onSubmit={submitProfile}>
+            <FormField label="Email">
+              <input value={user?.email || ""} disabled />
+            </FormField>
+            <FormField label="First name">
+              <input
+                value={profileValues.firstName}
+                onChange={event => {
+                  setProfileStatus("idle");
+                  setProfileValues(current => ({ ...current, firstName: event.target.value }));
+                }}
+                placeholder="First name"
+              />
+            </FormField>
+            <FormField label="Last name">
+              <input
+                value={profileValues.lastName}
+                onChange={event => {
+                  setProfileStatus("idle");
+                  setProfileValues(current => ({ ...current, lastName: event.target.value }));
+                }}
+                placeholder="Last name"
+              />
+            </FormField>
+            {profileError ? <div className="form-error">{profileError}</div> : null}
+            <button className="primary-button" type="submit" disabled={profileStatus === "saving"}>
+              <UserRound size={16} />
+              {profileStatus === "saving" ? "Saving" : profileStatus === "saved" ? "Saved" : "Save profile"}
+            </button>
+          </form>
+        </section>
+        <section className="panel">
+          <div className="panel-header"><h2>Team members</h2></div>
+          {visibleTeamMembers.length ? <div className="team-list">
+            {visibleTeamMembers.map(member => (
+              <div key={member.id || member.name} className="team-row">
+                <span>{member.initials}</span>
+                <div>
+                  <strong>{member.name}</strong>
+                  <small>{member.email || member.role}</small>
+                </div>
+                <StatusBadge>{member.status}</StatusBadge>
+              </div>
+            ))}
+          </div> : <EmptyState icon={Users} title="No teammates yet" text="Invite a teammate to start assigning accounts, calls, and research." />}
+        </section>
+        <section className="panel">
+          <div className="panel-header"><h2>Preferences</h2></div>
+          <div className="settings-list">
+            <div>
+              <span>Theme</span>
+              <button className="secondary-button" type="button" onClick={onThemeToggle}>
+                {isDark ? <Sun size={16} /> : <Moon size={16} />}
+                {isDark ? "Light mode" : "Dark mode"}
+              </button>
+            </div>
+            <div>
+              <span>Default client</span>
+              <strong>{clients[0]?.name || "Create a client first"}</strong>
+            </div>
+            <div>
+              <span>Security posture</span>
+              <strong>RLS-ready schema, no frontend API keys</strong>
+            </div>
+          </div>
+        </section>
+      </div>
+    </>
+  );
+}
+
+function FilesPage({ onUploadFile }) {
+  const { files } = useCrmData();
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Files"
+        title="Source files"
+        description="A lightweight entry point for future CSV imports, call notes, research packs, and mapping files."
+      >
+        <button className="primary-button" type="button" onClick={onUploadFile}>
+          <Upload size={16} />
+          Add source file
+        </button>
+      </PageHeader>
+      <section className="panel">
+        {files.length ? <DataTable
+          columns={["File", "Source", "Rows", "Status", "Added"]}
+          rows={files.map(file => [
+            <RecordName key="file" name={file.name} meta={file.objectType} />,
+            file.source,
+            file.rows,
+            <StatusBadge key="status" tone="accent">{file.status}</StatusBadge>,
+            file.createdAt,
+          ])}
+        /> : <EmptyState
+          icon={FileText}
+          title="No files added yet"
+          text="CSV import and file summariser workflows will attach source files to clients, accounts, and campaigns."
+        />}
+      </section>
+    </>
+  );
+}
+
+function ActivityTimeline({ account, collaborativeOnly = false }) {
+  const { activities } = useCrmData();
+  const filtered = activities.filter(item => {
+    if (account && item.account !== account) return false;
+    if (collaborativeOnly && !collaborativeActivityTypes.has(item.type)) return false;
+    return true;
+  });
+  if (!filtered.length) {
+    return <EmptyState icon={Clock} title="No activity yet" text="Calls, emails, imports, research, meetings, and team actions will appear here once your team starts working." />;
+  }
+  return (
+    <div className="timeline">
+      {filtered.map(item => (
+        <div key={item.id || `${item.title}-${item.time}`} className="timeline-item">
+          <span />
+          <div>
+            <strong>{item.title}</strong>
+            <small>{item.type} - {item.account} - {item.time} - {item.owner}</small>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RecordName({ name, meta }) {
+  return (
+    <div className="record-name">
+      <span className="record-avatar">{accountInitial(name)}</span>
+      <div>
+        <strong>{name}</strong>
+        <small>{meta}</small>
+      </div>
+    </div>
+  );
+}
+
+function DataTable({ columns, rows, rowActions = [] }) {
+  return (
+    <div className="table-wrap">
+      <table className="data-table">
+        <thead>
+          <tr>{columns.map(column => <th key={column}>{column}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr
+              key={index}
+              className={rowActions[index] ? "clickable-row" : undefined}
+              onClick={rowActions[index]}
+              tabIndex={rowActions[index] ? 0 : undefined}
+              onKeyDown={event => {
+                if (!rowActions[index] || !["Enter", " "].includes(event.key)) return;
+                event.preventDefault();
+                rowActions[index]();
+              }}
+            >
+              {row.map((cell, cellIndex) => <td key={`${index}-${cellIndex}`}>{cell}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function EmptyState({ icon, title, text }) {
+  return (
+    <div className="empty-state">
+      {createElement(icon, { size: 28 })}
+      <h2>{title}</h2>
+      <p>{text}</p>
+    </div>
+  );
+}
+
+async function ensureWorkspace(user) {
+  if (!supabase || !user) return;
+  if (!isAllowedEmail(user.email)) {
+    throw new Error(`Only @${ALLOWED_EMAIL_DOMAIN} email addresses can access this CRM.`);
+  }
+  const { data, error } = await supabase.rpc("bootstrap_current_user", {
+    user_email: user.email,
+    user_display_name: user.user_metadata?.full_name || user.email?.split("@")[0] || "Workspace user",
+  });
+
+  if (error) throw error;
+  return data;
+}
+
+function AuthPanel({ initialMode = "signin", onAuthenticate }) {
+  const [mode, setMode] = useState(initialMode);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const canSubmit = email.trim().length > 3 && password.trim().length >= 6;
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!canSubmit) return;
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!isAllowedEmail(normalizedEmail)) {
+      setError(`Use your @${ALLOWED_EMAIL_DOMAIN} email address to access PaceOps/CRM.`);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      if (!supabase) throw new Error("Authentication is not configured yet.");
+      const credentials = { email: normalizedEmail, password };
+      const { data, error: authError } = mode === "signin"
+        ? await supabase.auth.signInWithPassword(credentials)
+        : await supabase.auth.signUp(credentials);
+      if (authError) throw authError;
+      if (mode === "signup" && !data.session) {
+        setError("Check your email to confirm your account, then sign in.");
+        return;
+      }
+      const user = data.user || data.session?.user;
+      if (!user) {
+        setError("Check your email to confirm your account, then sign in.");
+        return;
+      }
+      await ensureWorkspace(user);
+      onAuthenticate(user);
+    } catch (authError) {
+      const message = String(authError?.message || "").toLowerCase();
+      if (message.includes("invalid login")) setError("Email or password is incorrect.");
+      else if (message.includes("already registered")) setError("An account already exists for that email.");
+      else if (message.includes("failed to fetch")) setError("Could not connect to Supabase. Check the project URL and keys.");
+      else setError(authError?.message || "Could not complete authentication.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="auth-panel auth-card">
+          <div className="auth-brand">
+            <img src={logoUrl} alt="PaceOps" />
+            <div>
+              <strong>PaceOps/CRM</strong>
+              <span>Prospecting workspace</span>
+            </div>
+          </div>
+
+          <div className="auth-copy">
+            <span className="eyebrow">Workspace access</span>
+            <h1>{mode === "signin" ? "Open your workspace" : "Create a workspace"}</h1>
+            <p>Manage clients, campaigns, accounts, contacts, calls, and research from one PaceOps operating system.</p>
+          </div>
+
+          <form className="auth-form" onSubmit={submit}>
+            <div className="auth-tabs" role="tablist" aria-label="Authentication mode">
+              <button type="button" className={mode === "signin" ? "active" : ""} onClick={() => setMode("signin")}>
+                Sign in
+              </button>
+              <button type="button" className={mode === "signup" ? "active" : ""} onClick={() => setMode("signup")}>
+                Create account
+              </button>
+            </div>
+
+            <label>
+              Work email
+              <span>
+                <Mail size={16} />
+                <input
+                  value={email}
+                  type="email"
+                  autoComplete="email"
+                  placeholder={`name@${ALLOWED_EMAIL_DOMAIN}`}
+                  onChange={event => setEmail(event.target.value)}
+                />
+              </span>
+            </label>
+
+            <label>
+              Password
+              <span>
+                <LockKeyhole size={16} />
+                <input
+                  value={password}
+                  type={showPassword ? "text" : "password"}
+                  autoComplete={mode === "signin" ? "current-password" : "new-password"}
+                  placeholder="Minimum 6 characters"
+                  onChange={event => setPassword(event.target.value)}
+                />
+                <button type="button" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </span>
+            </label>
+
+            {error && <div className="auth-error">{error}</div>}
+
+            <button className="primary-button auth-submit" type="submit" disabled={!canSubmit}>
+              <LogIn size={16} />
+              {loading ? "Working..." : mode === "signin" ? "Sign in" : "Create account"}
+            </button>
+          </form>
+    </section>
+  );
+}
+
+function HomePage({ isDark, onThemeToggle, onAuthenticate }) {
+  const [authMode, setAuthMode] = useState("signin");
+
+  return (
+    <div className={`auth-app marketing-app ${isDark ? "dark" : "light"}`}>
+      <header className="marketing-nav">
+        <a className="marketing-brand" href="#top">
+          <img src={logoUrl} alt="PaceOps" />
+          <span>PaceOps/CRM</span>
+        </a>
+        <nav>
+          <a href="#about">About</a>
+          <a href="#contact">Contact</a>
+        </nav>
+        <div>
+          <a className="phone-pill" href="tel:+448438092108">+44 (0) 8438092108</a>
+          <button className="secondary-button" type="button" onClick={onThemeToggle}>
+            {isDark ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          <a className="primary-button" href="#auth" onClick={() => setAuthMode("signin")}>Sign in</a>
+        </div>
+      </header>
+
+      <main id="top" className="marketing-shell">
+        <section className="home-single-page">
+          <div id="about" className="company-summary">
+            <span className="eyebrow">PaceOps/CRM</span>
+            <h1>Client account management for PaceOps teams.</h1>
+            <p>PaceOps is a professional services prospecting hub focused on human-personalised outreach, data-driven insight, and sales development operations.</p>
+            <p>PaceOps/CRM is the internal workspace for managing clients, campaigns, accounts, contacts, calls, research, and pipeline activity.</p>
+
+            <div id="contact" className="contact-card">
+              <h2>Contact</h2>
+              <div className="contact-list">
+                <a href="tel:+448438092108">+44 (0) 8438092108</a>
+                <a href="tel:+3530216017406">+353 (0) 21 601 7406</a>
+                <a href="tel:+12159953839">+1 215 995 3839</a>
+                <a href="mailto:enquiries@paceops.com">enquiries@paceops.com</a>
+              </div>
+              <div className="address-list">
+                <p><strong>UK</strong> The Bradfield Centre, Cambridge Science Park, Cambridge, CB4 0GA</p>
+                <p><strong>Ireland</strong> The Guinness Enterprise Centre, Taylor's Lane, Dublin, D08 ET2R</p>
+                <p><strong>US</strong> 1442 Pottstown Pike, Unit 3242, West Chester, PA 19380</p>
+              </div>
+            </div>
+          </div>
+
+          <div id="auth" className="home-auth">
+            <AuthPanel key={authMode} initialMode={authMode} onAuthenticate={onAuthenticate} />
+          </div>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function RightDrawer({ open, activeView, selectedAccount, activeCampaign }) {
+  if (!open) return null;
+
+  return (
+    <aside className="right-drawer">
+      <div className="drawer-head">
+        <span className="assistant-mark"><Bot size={15} /></span>
+        <div>
+          <strong>AI research assistant</strong>
+          <small>Workflow guidance</small>
+        </div>
+      </div>
+      <section>
+        <span className="eyebrow">Context</span>
+        <h2>{selectedAccount?.name || activeCampaign.name}</h2>
+        <p>{selectedAccount?.insight || activeCampaign.nextAction}</p>
+      </section>
+      <section>
+        <span className="eyebrow">Suggested next step</span>
+        <div className="drawer-task">
+          <CheckCircle2 size={16} />
+          <span>{selectedAccount?.nextAction || "Review campaign accounts before the next call block"}</span>
+        </div>
+      </section>
+      <section>
+        <span className="eyebrow">Data gaps</span>
+        <ul className="drawer-list">
+          <li>Confirm buying committee roles</li>
+          <li>Validate current CRM ownership</li>
+          <li>Map product, UX, and design stakeholders</li>
+        </ul>
+      </section>
+      <section>
+        <span className="eyebrow">Current page</span>
+        <p>{activeView.replace("-", " ")}</p>
+      </section>
+    </aside>
+  );
+}
+
+function FormField({ label, children }) {
+  return (
+    <label className="form-field">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+const clientWorkspaceOptions = [
+  "Prospecting workspace",
+  "Sales workspace",
+  "Strategic account workspace",
+  "Enterprise account workspace",
+  "Client workspace",
+  "Professional services workspace",
+  "Agency workspace",
+  "Account management workspace",
+  "Customer success workspace",
+  "Research workspace",
+];
+
+const clientIndustryOptions = [
+  "Technology",
+  "SaaS",
+  "Payments",
+  "Financial technology",
+  "Cloud infrastructure",
+  "Advertising technology",
+  "Professional services",
+  "UX consultancy",
+  "Product design",
+  "Design agency",
+  "B2B services",
+  "Financial services",
+  "Healthcare",
+];
+
+function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, selectedContactId, data) {
+  const context = workflow?.context || {};
+  if (context.record) return { ...context.record };
+  const accountId = context.accountId || selectedAccountId || data.accounts[0]?.id || "";
+  const account = data.accounts.find(item => item.id === accountId);
+  const contactId = context.contactId || selectedContactId || data.contacts.find(item => item.accountId === accountId)?.id || data.contacts[0]?.id || "";
+  const clientId = context.clientId || account?.clientId || activeClientId || data.clients[0]?.id || "";
+
+  switch (workflow.type) {
+    case "client":
+      return { name: "", workspace: "Prospecting workspace", owner: "Workspace user", industry: "", website: "" };
+    case "campaign":
+      return { clientId, name: "", channel: "Research-led outbound", status: "draft", nextAction: "Define account focus and first call block", memberIds: [] };
+    case "account":
+      return { clientId, name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || "Lead In", status: "New", nextAction: "Map buying committee", insight: "" };
+    case "contact":
+      return { accountId, name: "", role: "", persona: "Product leadership", email: "", phone: "", mobile: "", status: "New" };
+    case "deal":
+      return { accountId, contactId, stage: "lead", value: "0", due: "Today", owner: "Workspace user" };
+    case "call":
+      return { contactId, outcome: "Connected", notes: "" };
+    case "research":
+      return { accountId, title: "Account research brief", summary: "", dataGap: "Buying committee validation" };
+    case "file":
+      return { name: "", source: "CSV import", objectType: "accounts", rows: "0" };
+    case "team":
+      return { name: "", role: "Team member", status: "Invited" };
+    case "email":
+      return { contactId, subject: "Follow-up", body: "" };
+    case "audit":
+      return { note: "Review who can connect integrations and where activity is logged." };
+    default:
+      return {};
+  }
+}
+
+function getWorkflowTitle(type) {
+  if (type?.startsWith("edit-")) {
+    return `Edit ${type.replace("edit-", "").replace("-", " ")}`;
+  }
+
+  return {
+    client: "New client",
+    campaign: "New campaign",
+    account: "Add account",
+    contact: "Add contact",
+    deal: "New deal",
+    call: "Log call outcome",
+    research: "Queue research",
+    file: "Add source file",
+    team: "Invite teammate",
+    email: "Draft email",
+    audit: "Audit model",
+  }[type] || "CRM workflow";
+}
+
+function getWorkflowPrerequisite(type, data) {
+  if (["campaign", "account"].includes(type) && !data.clients.length) {
+    return { message: "Create a client first. Campaigns and accounts belong inside a client workspace.", nextType: "client", nextLabel: "Create client" };
+  }
+  if (["contact", "deal", "research"].includes(type) && !data.accounts.length) {
+    return { message: "Add an account first. Contacts, deals, and research need an account to attach to.", nextType: data.clients.length ? "account" : "client", nextLabel: data.clients.length ? "Add account" : "Create client" };
+  }
+  if (["call", "email"].includes(type) && !data.contacts.length) {
+    return { message: "Add a contact first. Calls and email drafts need a contact record.", nextType: data.accounts.length ? "contact" : data.clients.length ? "account" : "client", nextLabel: data.accounts.length ? "Add contact" : data.clients.length ? "Add account" : "Create client" };
+  }
+  return null;
+}
+
+function WorkflowModal({
+  workflow,
+  activeClientId,
+  selectedAccountId,
+  selectedContactId,
+  onClose,
+  onSubmit,
+  onSwitchWorkflow,
+}) {
+  const data = useCrmData();
+  const pipelineStages = data.pipelineStages || pipelineColumns;
+  const [values, setValues] = useState(() => getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, selectedContactId, data));
+  const [companyLookupEnabled, setCompanyLookupEnabled] = useState(false);
+  const [companyLookupStatus, setCompanyLookupStatus] = useState("idle");
+  const [clientTouchedFields, setClientTouchedFields] = useState({ workspace: false, industry: false, website: false });
+  const [accountLookupEnabled, setAccountLookupEnabled] = useState(false);
+  const [accountLookupStatus, setAccountLookupStatus] = useState("idle");
+  const [accountScriptStatus, setAccountScriptStatus] = useState("idle");
+  const [accountTouchedFields, setAccountTouchedFields] = useState({
+    domain: false,
+    industry: false,
+    location: false,
+    employees: false,
+    nextAction: false,
+    insight: false,
+  });
+  const prerequisite = getWorkflowPrerequisite(workflow.type, data);
+
+  function update(field, value, options = {}) {
+    if (workflow.type === "client" && options.markTouched) {
+      setClientTouchedFields(current => ({ ...current, [field]: true }));
+    }
+    if (workflow.type === "account" && options.markTouched) {
+      setAccountTouchedFields(current => ({ ...current, [field]: true }));
+    }
+    setValues(current => ({ ...current, [field]: value }));
+  }
+
+  async function runCompanyLookup() {
+    if (!companyLookupEnabled || values.name.trim().length < 2 || companyLookupStatus === "loading") return;
+    setCompanyLookupStatus("loading");
+    try {
+      const response = await fetch("/api/client-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: values.name }),
+      });
+      const suggestions = await response.json();
+      if (!response.ok) throw new Error(suggestions.error || "Company lookup failed");
+      setValues(current => ({
+        ...current,
+        workspace: clientTouchedFields.workspace ? current.workspace : suggestions.workspace || current.workspace,
+        industry: clientTouchedFields.industry ? current.industry : suggestions.industry || current.industry,
+        website: clientTouchedFields.website ? current.website : suggestions.website || current.website,
+      }));
+      setCompanyLookupStatus(suggestions.source === "web_search" ? "found" : "fallback");
+    } catch {
+      setCompanyLookupStatus("failed");
+    }
+  }
+
+  async function runAccountLookup() {
+    if (!accountLookupEnabled || values.name.trim().length < 2 || accountLookupStatus === "loading") return;
+    const clientName = data.clients.find(client => client.id === values.clientId)?.name || "";
+    setAccountLookupStatus("loading");
+    try {
+      const response = await fetch("/api/account-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: values.name, clientName }),
+      });
+      const suggestions = await response.json();
+      if (!response.ok) throw new Error(suggestions.error || "Account lookup failed");
+      setValues(current => ({
+        ...current,
+        domain: accountTouchedFields.domain ? current.domain : suggestions.domain || current.domain,
+        industry: accountTouchedFields.industry ? current.industry : suggestions.industry || current.industry,
+        location: accountTouchedFields.location ? current.location : suggestions.location || current.location,
+        employees: accountTouchedFields.employees ? current.employees : suggestions.employees || current.employees,
+        nextAction: accountTouchedFields.nextAction ? current.nextAction : suggestions.nextAction || current.nextAction,
+        insight: accountTouchedFields.insight ? current.insight : suggestions.insight || current.insight,
+        evidence: suggestions.evidence || current.evidence || [],
+      }));
+      setAccountLookupStatus(["web_search", "openai_web"].includes(suggestions.source) ? "found" : "fallback");
+    } catch {
+      setAccountLookupStatus("failed");
+    }
+  }
+
+  async function runAccountScriptGeneration() {
+    if (!accountLookupEnabled || values.name.trim().length < 2 || accountScriptStatus === "loading") return;
+    setAccountScriptStatus("loading");
+    try {
+      const response = await fetch("/api/account-scripts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Script generation failed");
+      setValues(current => ({ ...current, scripts: payload.scripts || current.scripts }));
+      setAccountScriptStatus(payload.mode === "openai" ? "found" : "fallback");
+    } catch {
+      setAccountScriptStatus("failed");
+    }
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    if (prerequisite) return;
+    onSubmit(workflow.type, values, workflow.context || {});
+  }
+
+  function accountOptions() {
+    return data.accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>);
+  }
+
+  function contactOptions() {
+    const filtered = values.accountId ? data.contacts.filter(contact => contact.accountId === values.accountId) : data.contacts;
+    const options = filtered.length ? filtered : data.contacts;
+    return options.map(contact => <option key={contact.id} value={contact.id}>{contact.name}</option>);
+  }
+
+  function renderFields() {
+    const fieldType = workflow.type.startsWith("edit-") ? workflow.type.replace("edit-", "") : workflow.type;
+
+    switch (fieldType) {
+      case "client":
+        return (
+          <>
+            <datalist id="client-workspace-options">
+              {clientWorkspaceOptions.map(option => <option key={option} value={option} />)}
+            </datalist>
+            <datalist id="client-industry-options">
+              {clientIndustryOptions.map(option => <option key={option} value={option} />)}
+            </datalist>
+            <FormField label="Client name">
+              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Company name" />
+            </FormField>
+            <label className="company-lookup-toggle">
+              <span>
+                <Sparkles size={16} />
+                Enable company lookup
+              </span>
+              <input
+                type="checkbox"
+                checked={companyLookupEnabled}
+                onChange={event => {
+                  setCompanyLookupEnabled(event.target.checked);
+                  setCompanyLookupStatus("idle");
+                }}
+              />
+            </label>
+            {companyLookupEnabled && (
+              <button className="secondary-button lookup-button" type="button" onClick={runCompanyLookup} disabled={values.name.trim().length < 2 || companyLookupStatus === "loading"}>
+                <Search size={16} />
+                {companyLookupStatus === "loading" ? "Searching..." : "Find details"}
+              </button>
+            )}
+            {companyLookupEnabled && companyLookupStatus !== "idle" && (
+              <div className={`lookup-status ${companyLookupStatus}`}>
+                {companyLookupStatus === "loading" && "Searching web..."}
+                {companyLookupStatus === "found" && "Details found from web search."}
+                {companyLookupStatus === "fallback" && "Used a best-effort suggestion."}
+                {companyLookupStatus === "failed" && "Could not search right now."}
+              </div>
+            )}
+            <FormField label="Workspace">
+              <input list="client-workspace-options" value={values.workspace} onChange={event => update("workspace", event.target.value, { markTouched: true })} placeholder="Strategic account workspace" />
+            </FormField>
+            <FormField label="Industry">
+              <input list="client-industry-options" value={values.industry} onChange={event => update("industry", event.target.value, { markTouched: true })} placeholder="Technology, payments, UX consultancy" />
+            </FormField>
+            <FormField label="Website">
+              <input value={values.website} onChange={event => update("website", event.target.value, { markTouched: true })} placeholder="https://company.com" />
+            </FormField>
+          </>
+        );
+      case "campaign":
+        return (
+          <>
+            <FormField label="Client">
+              <select value={values.clientId} onChange={event => update("clientId", event.target.value)}>
+                {data.clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
+              </select>
+            </FormField>
+            <FormField label="Campaign name">
+              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Priority account campaign" />
+            </FormField>
+            <FormField label="Channel">
+              <input value={values.channel} onChange={event => update("channel", event.target.value)} placeholder="Email and calls" />
+            </FormField>
+            <FormField label="Status">
+              <select value={values.status} onChange={event => update("status", event.target.value)}>
+                <option value="draft">Draft</option>
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+              </select>
+            </FormField>
+            <FormField label="Next action">
+              <input value={values.nextAction} onChange={event => update("nextAction", event.target.value)} placeholder="Define target account list" />
+            </FormField>
+            <FormField label="Campaign users">
+              <select
+                multiple
+                value={Array.isArray(values.memberIds) ? values.memberIds : []}
+                onChange={event => update("memberIds", Array.from(event.target.selectedOptions, option => option.value))}
+              >
+                {(data.workspaceUsers || []).map(workspaceUser => (
+                  <option key={workspaceUser.id} value={workspaceUser.id}>{workspaceUser.name} - {workspaceUser.email}</option>
+                ))}
+              </select>
+            </FormField>
+          </>
+        );
+      case "account":
+        return (
+          <>
+            <FormField label="Client">
+              <select value={values.clientId} onChange={event => update("clientId", event.target.value)}>
+                {data.clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
+              </select>
+            </FormField>
+            <FormField label="Account name">
+              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Account name" />
+            </FormField>
+            <label className="company-lookup-toggle">
+              <span>
+                <Sparkles size={16} />
+                Enable account intelligence
+              </span>
+              <input
+                type="checkbox"
+                checked={accountLookupEnabled}
+                onChange={event => {
+                  setAccountLookupEnabled(event.target.checked);
+                  setAccountLookupStatus("idle");
+                  setAccountScriptStatus("idle");
+                }}
+              />
+            </label>
+            {accountLookupEnabled && (
+              <div className="lookup-actions">
+                <button className="secondary-button lookup-button" type="button" onClick={runAccountLookup} disabled={values.name.trim().length < 2 || accountLookupStatus === "loading"}>
+                  <Search size={16} />
+                  {accountLookupStatus === "loading" ? "Searching..." : "Find details"}
+                </button>
+                <button className="secondary-button lookup-button" type="button" onClick={runAccountScriptGeneration} disabled={values.name.trim().length < 2 || accountScriptStatus === "loading"}>
+                  <Sparkles size={16} />
+                  {accountScriptStatus === "loading" ? "Writing..." : "Build scripts"}
+                </button>
+              </div>
+            )}
+            {accountLookupEnabled && accountLookupStatus !== "idle" && (
+              <div className={`lookup-status ${accountLookupStatus}`}>
+                {accountLookupStatus === "loading" && "Searching web..."}
+                {accountLookupStatus === "found" && "Details found from web lookup."}
+                {accountLookupStatus === "fallback" && "Web lookup unavailable. Filled only safe guesses."}
+                {accountLookupStatus === "failed" && "Could not search right now."}
+              </div>
+            )}
+            {accountLookupEnabled && accountScriptStatus !== "idle" && (
+              <div className={`lookup-status ${accountScriptStatus}`}>
+                {accountScriptStatus === "loading" && "Generating scripts..."}
+                {accountScriptStatus === "found" && "Scripts generated with GPT."}
+                {accountScriptStatus === "fallback" && "Used backup script templates."}
+                {accountScriptStatus === "failed" && "Could not generate scripts right now."}
+              </div>
+            )}
+            <FormField label="Domain">
+              <input value={values.domain} onChange={event => update("domain", event.target.value, { markTouched: true })} placeholder="company.com" />
+            </FormField>
+            <FormField label="Industry">
+              <input value={values.industry} onChange={event => update("industry", event.target.value, { markTouched: true })} placeholder="Technology" />
+            </FormField>
+            <FormField label="Location">
+              <input value={values.location} onChange={event => update("location", event.target.value, { markTouched: true })} placeholder="United Kingdom" />
+            </FormField>
+            <FormField label="Employees">
+              <input value={values.employees} onChange={event => update("employees", event.target.value, { markTouched: true })} placeholder="Employee range" />
+            </FormField>
+            <FormField label="Pipeline value">
+              <input type="number" min="0" value={values.value} onChange={event => update("value", event.target.value)} />
+            </FormField>
+            <FormField label="Stage">
+              <select value={values.stage} onChange={event => update("stage", event.target.value)}>
+                {pipelineStages.map(column => <option key={column.id} value={column.name}>{column.name}</option>)}
+              </select>
+            </FormField>
+            <FormField label="Next action">
+              <input value={values.nextAction} onChange={event => update("nextAction", event.target.value, { markTouched: true })} placeholder="Map buying committee" />
+            </FormField>
+            <FormField label="Research signal">
+              <textarea value={values.insight} onChange={event => update("insight", event.target.value, { markTouched: true })} placeholder="What makes this account relevant?" />
+            </FormField>
+            {values.scripts && (
+              <section className="script-preview">
+                <div>
+                  <span>Call opener</span>
+                  <p>{values.scripts.callOpener}</p>
+                </div>
+                <div>
+                  <span>Email</span>
+                  <p><strong>{values.scripts.emailSubject}</strong></p>
+                  <p>{values.scripts.emailBody}</p>
+                </div>
+                <div>
+                  <span>Voicemail</span>
+                  <p>{values.scripts.voicemail}</p>
+                </div>
+                <div>
+                  <span>LinkedIn note</span>
+                  <p>{values.scripts.linkedinNote}</p>
+                </div>
+              </section>
+            )}
+          </>
+        );
+      case "contact":
+        return (
+          <>
+            <FormField label="Account">
+              <select value={values.accountId} onChange={event => update("accountId", event.target.value)}>
+                {accountOptions()}
+              </select>
+            </FormField>
+            <FormField label="Contact name">
+              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Contact name" />
+            </FormField>
+            <FormField label="Role">
+              <input value={values.role} onChange={event => update("role", event.target.value)} placeholder="Head of Product" />
+            </FormField>
+            <FormField label="Persona">
+              <input value={values.persona} onChange={event => update("persona", event.target.value)} placeholder="Product leadership" />
+            </FormField>
+            <FormField label="Email">
+              <input type="email" value={values.email} onChange={event => update("email", event.target.value)} placeholder="name@company.com" />
+            </FormField>
+            <FormField label="Phone">
+              <input value={values.phone} onChange={event => update("phone", event.target.value)} placeholder="+44..." />
+            </FormField>
+            <FormField label="Mobile">
+              <input value={values.mobile} onChange={event => update("mobile", event.target.value)} placeholder="+44..." />
+            </FormField>
+          </>
+        );
+      case "deal":
+        return (
+          <>
+            <FormField label="Account">
+              <select value={values.accountId} onChange={event => update("accountId", event.target.value)}>
+                {accountOptions()}
+              </select>
+            </FormField>
+            <FormField label="Primary contact">
+              <select value={values.contactId} onChange={event => update("contactId", event.target.value)}>
+                <option value="">No primary contact</option>
+                {contactOptions()}
+              </select>
+            </FormField>
+            <FormField label="Stage">
+              <select value={values.stage} onChange={event => update("stage", event.target.value)}>
+                {pipelineStages.map(column => <option key={column.id} value={column.id}>{column.name}</option>)}
+              </select>
+            </FormField>
+            <FormField label="Value">
+              <input type="number" min="0" value={values.value} onChange={event => update("value", event.target.value)} />
+            </FormField>
+            <FormField label="Due">
+              <input value={values.due} onChange={event => update("due", event.target.value)} placeholder="Today" />
+            </FormField>
+          </>
+        );
+      case "call":
+        return (
+          <>
+            <FormField label="Contact">
+              <select value={values.contactId} onChange={event => update("contactId", event.target.value)}>
+                {data.contacts.map(contact => <option key={contact.id} value={contact.id}>{contact.name}</option>)}
+              </select>
+            </FormField>
+            <FormField label="Outcome">
+              <select value={values.outcome} onChange={event => update("outcome", event.target.value)}>
+                {callOutcomes.map(outcome => <option key={outcome}>{outcome}</option>)}
+              </select>
+            </FormField>
+            <FormField label="Notes">
+              <textarea value={values.notes} onChange={event => update("notes", event.target.value)} placeholder="Notes, objections, next step" />
+            </FormField>
+          </>
+        );
+      case "research":
+        return (
+          <>
+            <FormField label="Account">
+              <select value={values.accountId} onChange={event => update("accountId", event.target.value)}>
+                {accountOptions()}
+              </select>
+            </FormField>
+            <FormField label="Research title">
+              <input value={values.title} onChange={event => update("title", event.target.value)} />
+            </FormField>
+            <FormField label="Summary">
+              <textarea value={values.summary} onChange={event => update("summary", event.target.value)} placeholder="Summarise the research angle or question" />
+            </FormField>
+            <FormField label="Data gap">
+              <input value={values.dataGap} onChange={event => update("dataGap", event.target.value)} placeholder="Buying committee validation" />
+            </FormField>
+          </>
+        );
+      case "file":
+        return (
+          <>
+            <FormField label="File name">
+              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="target-accounts.csv" />
+            </FormField>
+            <FormField label="Source">
+              <select value={values.source} onChange={event => update("source", event.target.value)}>
+                <option>CSV import</option>
+                <option>Research pack</option>
+                <option>Call notes</option>
+              </select>
+            </FormField>
+            <FormField label="Record type">
+              <select value={values.objectType} onChange={event => update("objectType", event.target.value)}>
+                <option value="accounts">Accounts</option>
+                <option value="contacts">Contacts</option>
+                <option value="research">Research</option>
+              </select>
+            </FormField>
+            <FormField label="Rows">
+              <input type="number" min="0" value={values.rows} onChange={event => update("rows", event.target.value)} />
+            </FormField>
+          </>
+        );
+      case "team":
+        return (
+          <>
+            <FormField label="Name">
+              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Team member name" />
+            </FormField>
+            <FormField label="Role">
+              <input value={values.role} onChange={event => update("role", event.target.value)} placeholder="Account lead" />
+            </FormField>
+            <FormField label="Status">
+              <select value={values.status} onChange={event => update("status", event.target.value)}>
+                <option>Invited</option>
+                <option>Online</option>
+                <option>In call block</option>
+              </select>
+            </FormField>
+          </>
+        );
+      case "email":
+        return (
+          <>
+            <FormField label="Contact">
+              <select value={values.contactId} onChange={event => update("contactId", event.target.value)}>
+                {data.contacts.map(contact => <option key={contact.id} value={contact.id}>{contact.name}</option>)}
+              </select>
+            </FormField>
+            <FormField label="Subject">
+              <input value={values.subject} onChange={event => update("subject", event.target.value)} />
+            </FormField>
+            <FormField label="Draft notes">
+              <textarea value={values.body} onChange={event => update("body", event.target.value)} placeholder="Key message points" />
+            </FormField>
+          </>
+        );
+      case "audit":
+        return (
+          <FormField label="Note">
+            <textarea value={values.note} onChange={event => update("note", event.target.value)} />
+          </FormField>
+        );
+      default:
+        return null;
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={event => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <form className="workflow-modal" onSubmit={submit}>
+        <div className="modal-header">
+          <div>
+            <span className="eyebrow">Workflow</span>
+            <h2>{getWorkflowTitle(workflow.type)}</h2>
+          </div>
+          <button className="icon-action" type="button" onClick={onClose} aria-label="Close workflow">x</button>
+        </div>
+
+        {prerequisite ? (
+          <div className="modal-prerequisite">
+            <p>{prerequisite.message}</p>
+            <button className="primary-button" type="button" onClick={() => onSwitchWorkflow(prerequisite.nextType)}>
+              {prerequisite.nextLabel}
+            </button>
+          </div>
+        ) : (
+          <div className="modal-fields">
+            {renderFields()}
+          </div>
+        )}
+
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>
+          <button className="primary-button" type="submit" disabled={Boolean(prerequisite)}>
+            Save
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+export default function App() {
+  const [isDark, setIsDark] = useState(false);
+  const [user, setUser] = useState(null);
+  const [crmData, setCrmData] = useState(() => createInitialCrmData());
+  const [dataUserId, setDataUserId] = useState(null);
+  const [dataOrgId, setDataOrgId] = useState(null);
+  const [crmSyncReady, setCrmSyncReady] = useState(false);
+  const [activeView, setActiveView] = useState("dashboard");
+  const [activeClientId, setActiveClientId] = useState("each-other");
+  const [activeCampaignId, setActiveCampaignId] = useState("priority-targeting");
+  const [selectedAccountId, setSelectedAccountId] = useState("account-01");
+  const [selectedContactId, setSelectedContactId] = useState("contact-01");
+  const [viewHistory, setViewHistory] = useState([]);
+  const [drawerOpen, setDrawerOpen] = useState(() => localStorage.getItem("paceops.drawerOpen") === "true");
+  const [search, setSearch] = useState("");
+  const [workflow, setWorkflow] = useState(null);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const lastSyncedCrmJsonRef = useRef("");
+
+  useEffect(() => {
+    if (!supabase) return undefined;
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user) {
+        handleAuthenticatedUser(data.session.user);
+      }
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        handleAuthenticatedUser(session.user);
+        setLoggingOut(false);
+        return;
+      }
+      lastSyncedCrmJsonRef.current = "";
+      setCrmData(createInitialCrmData());
+      setDataUserId(null);
+      setDataOrgId(null);
+      setCrmSyncReady(false);
+      setUser(null);
+      setLoggingOut(false);
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!crmSyncReady || !dataOrgId || !user?.id || dataUserId !== user.id) return undefined;
+
+    const nextJson = JSON.stringify(serializeCrmData(crmData));
+    if (nextJson === lastSyncedCrmJsonRef.current) return undefined;
+
+    const timer = window.setTimeout(() => {
+      lastSyncedCrmJsonRef.current = nextJson;
+      saveCrmData(user.id, crmData);
+      saveSyncedCrmData(dataOrgId, crmData).catch(error => {
+        lastSyncedCrmJsonRef.current = "";
+        console.error("Could not sync CRM data to Supabase", error);
+      });
+    }, 450);
+
+    return () => window.clearTimeout(timer);
+  }, [crmData, crmSyncReady, dataOrgId, dataUserId, user?.id]);
+
+  useEffect(() => {
+    if (!supabase || !dataOrgId) return undefined;
+
+    const channel = supabase
+      .channel(`crm-data:${dataOrgId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "organizations", filter: `id=eq.${dataOrgId}` },
+        payload => {
+          const syncedData = payload.new?.metadata?.[CRM_DATA_METADATA_KEY];
+          if (!syncedData || typeof syncedData !== "object") return;
+          const nextData = refreshCrmData(normalizeCrmData(syncedData));
+          const nextJson = JSON.stringify(serializeCrmData(nextData));
+          if (nextJson === lastSyncedCrmJsonRef.current) return;
+          lastSyncedCrmJsonRef.current = nextJson;
+          setCrmData(current => ({
+            ...nextData,
+            workspaceUsers: current.workspaceUsers || [],
+          }));
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [dataOrgId]);
+
+  useEffect(() => {
+    if (!user?.id || dataUserId !== user.id) return;
+    saveUiState(user.id, {
+      activeView,
+      activeClientId,
+      activeCampaignId,
+      selectedAccountId,
+      selectedContactId,
+    });
+  }, [activeCampaignId, activeClientId, activeView, dataUserId, selectedAccountId, selectedContactId, user?.id]);
+
+  useEffect(() => {
+    localStorage.setItem("paceops.drawerOpen", drawerOpen ? "true" : "false");
+  }, [drawerOpen]);
+
+  async function handleAuthenticatedUser(nextUser) {
+    setCrmSyncReady(false);
+    try {
+      const organizationId = await ensureWorkspace(nextUser);
+      const [syncedCrmData, workspaceUsers] = await Promise.all([
+        loadSyncedCrmData(nextUser.id, organizationId),
+        loadWorkspaceUsers(organizationId),
+      ]);
+      const nextCrmData = {
+        ...refreshCrmData(syncedCrmData),
+        workspaceUsers,
+      };
+      lastSyncedCrmJsonRef.current = JSON.stringify(serializeCrmData(nextCrmData));
+      setCrmData(nextCrmData);
+      const uiState = loadUiState(nextUser.id);
+      if (uiState.activeView) setActiveView(uiState.activeView);
+      if (uiState.activeClientId) setActiveClientId(uiState.activeClientId);
+      if (uiState.activeCampaignId) setActiveCampaignId(uiState.activeCampaignId);
+      if (uiState.selectedAccountId) setSelectedAccountId(uiState.selectedAccountId);
+      if (uiState.selectedContactId) setSelectedContactId(uiState.selectedContactId);
+      setDataOrgId(organizationId);
+      setDataUserId(nextUser.id);
+      setUser(nextUser);
+      setCrmSyncReady(true);
+    } catch (error) {
+      console.error("Could not load synced CRM data", error);
+      const localData = refreshCrmData(loadCrmData(nextUser.id));
+      lastSyncedCrmJsonRef.current = JSON.stringify(serializeCrmData(localData));
+      setCrmData({ ...localData, workspaceUsers: [] });
+      setDataOrgId(null);
+      setDataUserId(nextUser.id);
+      setUser(nextUser);
+    } finally {
+      setLoggingOut(false);
+    }
+  }
+
+  async function handleUpdateProfile({ firstName, lastName }) {
+    if (!supabase) throw new Error("Authentication is not configured yet.");
+    const fullName = [firstName, lastName].filter(Boolean).join(" ");
+    const { data, error } = await supabase.auth.updateUser({
+      data: {
+        first_name: firstName,
+        last_name: lastName,
+        full_name: fullName,
+      },
+    });
+    if (error) throw error;
+    if (data.user) setUser(data.user);
+  }
+
+  async function handleLogout() {
+    if (!supabase || loggingOut) return;
+    setLoggingOut(true);
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setLoggingOut(false);
+      window.alert(error.message || "Could not log out.");
+    }
+  }
+
+  if (!user) {
+    return (
+      <HomePage
+        isDark={isDark}
+        onThemeToggle={() => setIsDark(value => !value)}
+        onAuthenticate={handleAuthenticatedUser}
+      />
+    );
+  }
+
+  const { clients, campaigns, accounts, contacts, workspaceUsers = [] } = crmData;
+  const activeClient = clients.find(client => client.id === activeClientId) || clients[0] || emptyClient;
+  const activeCampaign = campaigns.find(campaign => campaign.id === activeCampaignId) || campaigns[0] || emptyCampaign;
+  const selectedAccount = accounts.find(account => account.id === selectedAccountId) || accounts[0] || null;
+  const selectedContact = contacts.find(contact => contact.id === selectedContactId) || contacts[0] || null;
+
+  const searchQuery = search.trim().toLowerCase();
+  const searchResults = searchQuery.length < 2 ? [] : [
+    ...accounts.map(account => ({ type: "Account", id: account.id, title: account.name, meta: account.nextAction })),
+    ...contacts.map(contact => ({ type: "Contact", id: contact.id, title: contact.name, meta: `${contact.role}, ${contact.account}` })),
+    ...campaigns.map(campaign => ({ type: "Campaign", id: campaign.id, title: campaign.name, meta: campaign.nextAction })),
+    ...workspaceUsers.map(workspaceUser => ({ type: "User", id: workspaceUser.id, title: workspaceUser.name, meta: workspaceUser.email })),
+  ].filter(result => `${result.title} ${result.meta}`.toLowerCase().includes(searchQuery)).slice(0, 7);
+
+  function currentNavigationState() {
+    return {
+      activeView,
+      activeClientId,
+      activeCampaignId,
+      selectedAccountId,
+      selectedContactId,
+    };
+  }
+
+  function navigateTo(view, updates = {}, options = {}) {
+    if (options.pushHistory !== false) {
+      setViewHistory(current => [...current.slice(-9), currentNavigationState()]);
+    }
+    if (updates.activeClientId) setActiveClientId(updates.activeClientId);
+    if (updates.activeCampaignId) setActiveCampaignId(updates.activeCampaignId);
+    if (updates.selectedAccountId) setSelectedAccountId(updates.selectedAccountId);
+    if (updates.selectedContactId) setSelectedContactId(updates.selectedContactId);
+    setActiveView(view);
+  }
+
+  function navigatePrimary(view) {
+    setViewHistory([]);
+    setActiveView(view);
+  }
+
+  function goBack() {
+    setViewHistory(current => {
+      const previous = current[current.length - 1];
+      if (!previous) return current;
+      setActiveClientId(previous.activeClientId);
+      setActiveCampaignId(previous.activeCampaignId);
+      setSelectedAccountId(previous.selectedAccountId);
+      setSelectedContactId(previous.selectedContactId);
+      setActiveView(previous.activeView);
+      return current.slice(0, -1);
+    });
+  }
+
+  function openAccount(id) {
+    navigateTo("account-detail", { selectedAccountId: id });
+  }
+
+  function openContact(id) {
+    navigateTo("contact-detail", { selectedContactId: id });
+  }
+
+  function openClient(id) {
+    navigateTo("client-detail", { activeClientId: id });
+  }
+
+  function openCampaign(id) {
+    navigateTo("campaign-detail", { activeCampaignId: id });
+  }
+
+  function openWorkflow(type, context = {}) {
+    setWorkflow({
+      type,
+      context: {
+        clientId: activeClient.id !== "none" ? activeClient.id : clients[0]?.id,
+        accountId: selectedAccount?.id,
+        contactId: selectedContact?.id,
+        ...context,
+      },
+    });
+  }
+
+  function editClient(client) {
+    openWorkflow("edit-client", { record: client });
+  }
+
+  function editCampaign(campaign) {
+    openWorkflow("edit-campaign", { record: campaign });
+  }
+
+  function editAccount(account) {
+    openWorkflow("edit-account", { record: account });
+  }
+
+  function editContact(contact) {
+    openWorkflow("edit-contact", { record: contact });
+  }
+
+  function closeWorkflow() {
+    setWorkflow(null);
+  }
+
+  function updateData(updater) {
+    setCrmData(refreshCrmData(updater(crmData)));
+  }
+
+  function handleLogCall({ contactId, outcome, notes }) {
+    if (!contactId) return;
+    updateData(current => {
+      const contact = current.contacts.find(item => item.id === contactId);
+      if (!contact) return current;
+      const activity = makeActivity("Call", `${outcome} logged for ${contact.name}`, contact.account, "Workspace user", {
+        contactId,
+        outcome,
+        notes,
+      });
+      const nextContacts = current.contacts.map(item => item.id === contactId
+        ? { ...item, status: outcome, lastTouch: `${outcome} just now` }
+        : item);
+      const nextCampaigns = outcome === "Meeting booked"
+        ? current.campaigns.map(campaign => campaign.id === activeCampaignId
+          ? { ...campaign, meetings: Number(campaign.meetings || 0) + 1 }
+          : campaign)
+        : current.campaigns;
+      return {
+        ...current,
+        contacts: nextContacts,
+        campaigns: nextCampaigns,
+        activities: [activity, ...current.activities],
+      };
+    });
+    setSelectedContactId(contactId);
+  }
+
+  function handleMoveDeal(dealId, stage) {
+    updateData(current => {
+      const deal = current.deals.find(item => item.id === dealId);
+      if (!deal || deal.stage === stage) return current;
+      const column = (current.pipelineStages || pipelineColumns).find(item => item.id === stage);
+      return {
+        ...current,
+        deals: current.deals.map(item => item.id === dealId ? { ...item, stage } : item),
+        activities: [makeActivity("Pipeline", `${deal.account} moved to ${column?.name || stage}`, deal.account), ...current.activities],
+      };
+    });
+  }
+
+  function handleUpdatePipelineStages(stages) {
+    updateData(current => ({
+      ...current,
+      pipelineStages: stages,
+      activities: [makeActivity("Pipeline", "Pipeline stages renamed", "Workspace"), ...current.activities],
+    }));
+  }
+
+  function handleWorkflowSubmit(type, values, context = {}) {
+    if (type === "call") {
+      handleLogCall(values);
+      closeWorkflow();
+      return;
+    }
+
+    updateData(current => {
+      if (type === "edit-client") {
+        return {
+          ...current,
+          clients: current.clients.map(client => client.id === values.id
+            ? {
+              ...client,
+              name: values.name.trim() || client.name,
+              workspace: values.workspace || client.workspace,
+              owner: values.owner || client.owner,
+              industry: values.industry,
+              website: values.website,
+            }
+            : client),
+          activities: [makeActivity("Client", `Client updated: ${values.name || "Untitled client"}`), ...current.activities],
+        };
+      }
+
+      if (type === "edit-campaign") {
+        return {
+          ...current,
+          campaigns: current.campaigns.map(campaign => campaign.id === values.id
+            ? {
+              ...campaign,
+              clientId: values.clientId || campaign.clientId,
+              name: values.name.trim() || campaign.name,
+              channel: values.channel || campaign.channel,
+              status: values.status || campaign.status,
+              nextAction: values.nextAction || campaign.nextAction,
+              memberIds: Array.isArray(values.memberIds) ? values.memberIds : [],
+            }
+            : campaign),
+          activities: [makeActivity("Campaign", `Campaign updated: ${values.name || "Untitled campaign"}`), ...current.activities],
+        };
+      }
+
+      if (type === "edit-account") {
+        const previous = current.accounts.find(account => account.id === values.id);
+        const accountName = values.name.trim() || previous?.name || "Untitled account";
+        return {
+          ...current,
+          accounts: current.accounts.map(account => account.id === values.id
+            ? {
+              ...account,
+              clientId: values.clientId || account.clientId,
+              name: accountName,
+              domain: values.domain || "No domain",
+              stage: values.stage || account.stage,
+              status: values.status || account.status,
+              industry: values.industry || "Unspecified",
+              location: values.location || "Unspecified",
+              employees: values.employees || "Unknown",
+              value: Number(values.value) || 0,
+              nextAction: values.nextAction || "Map buying committee",
+              insight: values.insight || "Research signal will be added by the team.",
+              scripts: values.scripts || account.scripts || null,
+              lastActivity: "Updated just now",
+            }
+            : account),
+          contacts: current.contacts.map(contact => contact.accountId === values.id ? { ...contact, account: accountName, clientId: values.clientId || contact.clientId } : contact),
+          deals: current.deals.map(deal => previous && deal.account === previous.name ? { ...deal, account: accountName } : deal),
+          activities: [makeActivity("Account", `Account updated: ${accountName}`, accountName), ...current.activities],
+        };
+      }
+
+      if (type === "edit-contact") {
+        const account = current.accounts.find(item => item.id === values.accountId);
+        return {
+          ...current,
+          contacts: current.contacts.map(contact => contact.id === values.id
+            ? {
+              ...contact,
+              clientId: account?.clientId || contact.clientId,
+              accountId: values.accountId || contact.accountId,
+              account: account?.name || contact.account,
+              name: values.name.trim() || contact.name,
+              role: values.role || "Stakeholder",
+              persona: values.persona || "Stakeholder",
+              email: values.email,
+              phone: values.phone || values.mobile,
+              mobile: values.mobile || values.phone,
+              status: values.status || contact.status,
+              lastTouch: "Updated just now",
+            }
+            : contact),
+          activities: [makeActivity("Contact", `Contact updated: ${values.name || "Untitled contact"}`, account?.name || "Workspace"), ...current.activities],
+        };
+      }
+
+      switch (type) {
+        case "client": {
+          const client = {
+            id: makeId("client"),
+            name: values.name.trim() || "Untitled client",
+            workspace: values.workspace.trim() || "Prospecting workspace",
+            status: "Active",
+            owner: "Workspace user",
+            accounts: 0,
+            contacts: 0,
+            health: "Needs setup",
+            industry: values.industry,
+            website: values.website,
+          };
+          setActiveClientId(client.id);
+          setActiveView("client-detail");
+          return {
+            ...current,
+            clients: [client, ...current.clients],
+            activities: [makeActivity("Client", `Client created: ${client.name}`), ...current.activities],
+          };
+        }
+        case "campaign": {
+          const clientId = values.clientId || current.clients[0]?.id;
+          const campaign = {
+            id: makeId("campaign"),
+            clientId,
+            name: values.name.trim() || "Untitled campaign",
+            status: titleCase(values.status || "draft"),
+            owner: "Workspace user",
+            channel: values.channel || "Research-led outbound",
+            accounts: current.accounts.filter(account => account.clientId === clientId).length,
+            contacts: current.contacts.filter(contact => contact.clientId === clientId).length,
+            meetings: 0,
+            nextAction: values.nextAction || "Define account focus and next action",
+            memberIds: Array.isArray(values.memberIds) ? values.memberIds : [],
+          };
+          setActiveClientId(clientId);
+          setActiveCampaignId(campaign.id);
+          setActiveView("campaign-detail");
+          return {
+            ...current,
+            campaigns: [campaign, ...current.campaigns],
+            activities: [makeActivity("Campaign", `Campaign created: ${campaign.name}`), ...current.activities],
+          };
+        }
+        case "account": {
+          const clientId = values.clientId || current.clients[0]?.id;
+          const account = {
+            id: makeId("account"),
+            clientId,
+            name: values.name.trim() || "Untitled account",
+            domain: values.domain || "No domain",
+            owner: "Workspace user",
+            stage: values.stage || "Lead In",
+            status: values.status || "New",
+            industry: values.industry || "Unspecified",
+            location: values.location || "Unspecified",
+            employees: values.employees || "Unknown",
+            value: Number(values.value) || 0,
+            lastActivity: "Created just now",
+            nextAction: values.nextAction || "Map buying committee",
+            insight: values.insight || "Research signal will be added by the team.",
+            scripts: values.scripts || null,
+          };
+          setActiveClientId(clientId);
+          setSelectedAccountId(account.id);
+          setActiveView("account-detail");
+          return {
+            ...current,
+            accounts: [account, ...current.accounts],
+            activities: [makeActivity("Account", `Account added: ${account.name}`, account.name), ...current.activities],
+          };
+        }
+        case "contact": {
+          const account = current.accounts.find(item => item.id === values.accountId);
+          if (!account) return current;
+          const contact = {
+            id: makeId("contact"),
+            clientId: account.clientId,
+            accountId: account.id,
+            account: account.name,
+            name: values.name.trim() || "Untitled contact",
+            role: values.role || "Stakeholder",
+            persona: values.persona || "Stakeholder",
+            email: values.email,
+            phone: values.phone || values.mobile,
+            mobile: values.mobile || values.phone,
+            owner: "Workspace user",
+            status: values.status || "New",
+            lastTouch: "Created just now",
+          };
+          setSelectedAccountId(account.id);
+          setSelectedContactId(contact.id);
+          setActiveView("contact-detail");
+          return {
+            ...current,
+            contacts: [contact, ...current.contacts],
+            activities: [makeActivity("Contact", `Contact added: ${contact.name}`, account.name), ...current.activities],
+          };
+        }
+        case "deal": {
+          const account = current.accounts.find(item => item.id === values.accountId);
+          if (!account) return current;
+          const contact = current.contacts.find(item => item.id === values.contactId);
+          const deal = {
+            id: makeId("deal"),
+            accountId: account.id,
+            contactId: contact?.id,
+            account: account.name,
+            contact: contact?.name || "No primary contact",
+            stage: values.stage || "lead",
+            value: Number(values.value) || 0,
+            owner: values.owner || "Workspace user",
+            due: values.due || "Today",
+          };
+          setSelectedAccountId(account.id);
+          setActiveView("pipeline");
+          return {
+            ...current,
+            deals: [deal, ...current.deals],
+            activities: [makeActivity("Deal", `Deal created for ${account.name}`, account.name), ...current.activities],
+          };
+        }
+        case "research": {
+          const account = current.accounts.find(item => item.id === values.accountId);
+          if (!account) return current;
+          const researchItem = {
+            id: makeId("research"),
+            accountId: account.id,
+            account: account.name,
+            title: values.title || "Account research brief",
+            summary: values.summary,
+            dataGap: values.dataGap,
+            status: "Queued",
+            createdAt: "Just now",
+          };
+          setSelectedAccountId(account.id);
+          setActiveView("research");
+          return {
+            ...current,
+            researchItems: [researchItem, ...current.researchItems],
+            accounts: current.accounts.map(item => item.id === account.id
+              ? {
+                ...item,
+                insight: values.summary || item.insight,
+                lastActivity: "Research queued just now",
+                nextAction: values.dataGap || item.nextAction,
+              }
+              : item),
+            activities: [makeActivity("Research", `${researchItem.title} queued`, account.name), ...current.activities],
+          };
+        }
+        case "file": {
+          const file = {
+            id: makeId("file"),
+            name: values.name.trim() || "source-file.csv",
+            source: values.source || "CSV import",
+            objectType: values.objectType || "accounts",
+            rows: Number(values.rows) || 0,
+            status: "Ready to review",
+            createdAt: "Just now",
+          };
+          setActiveView(context.returnTo || activeView);
+          return {
+            ...current,
+            files: [file, ...current.files],
+            activities: [makeActivity("Import", `${file.source} added: ${file.name}`), ...current.activities],
+          };
+        }
+        case "team": {
+          const member = {
+            name: values.name.trim() || "Team member",
+            role: values.role || "Team member",
+            initials: accountInitial(values.name || "Team member"),
+            status: values.status || "Invited",
+          };
+          setActiveView("settings");
+          return {
+            ...current,
+            teamMembers: [member, ...current.teamMembers],
+            activities: [makeActivity("Team", `${member.name} invited`), ...current.activities],
+          };
+        }
+        case "email": {
+          const contact = current.contacts.find(item => item.id === values.contactId);
+          if (!contact) return current;
+          return {
+            ...current,
+            activities: [makeActivity("Email", `Email draft created for ${contact.name}`, contact.account, "Workspace user", {
+              subject: values.subject,
+              body: values.body,
+            }), ...current.activities],
+          };
+        }
+        case "audit":
+          return {
+            ...current,
+            activities: [makeActivity("Audit", "Integration audit model reviewed", "Workspace", "Workspace user", { note: values.note }), ...current.activities],
+          };
+        default:
+          return current;
+      }
+    });
+    closeWorkflow();
+  }
+
+  function handleSearchSelect(result) {
+    setSearch("");
+    if (result.type === "Account") openAccount(result.id);
+    if (result.type === "Contact") openContact(result.id);
+    if (result.type === "Campaign") openCampaign(result.id);
+    if (result.type === "User") openView("settings");
+  }
+
+  function openView(view) {
+    navigateTo(view);
+  }
+
+  function renderPage() {
+    switch (activeView) {
+      case "clients":
+        return <ClientsPage onOpenClient={openClient} onEditClient={editClient} onNewClient={() => openWorkflow("client")} />;
+      case "client-detail":
+        return (
+          <ClientDetailPage
+            client={activeClient}
+            onOpenCampaign={openCampaign}
+            onEditClient={editClient}
+            onNewCampaign={() => openWorkflow("campaign", { clientId: activeClient.id })}
+            onNewAccount={() => openWorkflow("account", { clientId: activeClient.id })}
+          />
+        );
+      case "campaigns":
+        return <CampaignsPage onOpenCampaign={openCampaign} onEditCampaign={editCampaign} onNewCampaign={() => openWorkflow("campaign")} onImport={() => openWorkflow("file", { returnTo: "campaigns" })} />;
+      case "campaign-detail":
+        return <CampaignDetailPage campaign={activeCampaign} onNavigate={openView} onOpenAccount={openAccount} onEditCampaign={editCampaign} />;
+      case "accounts":
+        return <AccountsPage onOpenAccount={openAccount} onEditAccount={editAccount} onNewAccount={() => openWorkflow("account")} onImport={() => openWorkflow("file", { returnTo: "accounts" })} />;
+      case "account-detail":
+        return selectedAccount
+          ? <AccountDetailPage account={selectedAccount} onOpenContact={openContact} onEditAccount={editAccount} onQueueResearch={(accountId) => openWorkflow("research", { accountId })} onNewContact={(accountId) => openWorkflow("contact", { accountId })} onNewDeal={(accountId) => openWorkflow("deal", { accountId })} />
+          : <AccountsPage onOpenAccount={openAccount} onEditAccount={editAccount} onNewAccount={() => openWorkflow("account")} onImport={() => openWorkflow("file", { returnTo: "accounts" })} />;
+      case "contacts":
+        return <ContactsPage onOpenContact={openContact} onEditContact={editContact} onNewContact={(accountId) => openWorkflow("contact", accountId ? { accountId } : {})} onImport={() => openWorkflow("file", { returnTo: "contacts" })} />;
+      case "contact-detail":
+        return selectedContact
+          ? <ContactDetailPage contact={selectedContact} onEditContact={editContact} onLogCall={handleLogCall} onDraftEmail={(contactId) => openWorkflow("email", { contactId })} />
+          : <ContactsPage onOpenContact={openContact} onEditContact={editContact} onNewContact={() => openWorkflow("contact")} onImport={() => openWorkflow("file", { returnTo: "contacts" })} />;
+      case "cognism":
+        return <CognismContactFinder />;
+      case "pipeline":
+        return <PipelinePage onOpenAccount={openAccount} onMoveDeal={handleMoveDeal} onNewDeal={(accountId) => openWorkflow("deal", accountId ? { accountId } : {})} onUpdateStages={handleUpdatePipelineStages} />;
+      case "calls":
+        return <CallsPage onOpenContact={openContact} onLogCall={handleLogCall} onStartCallBlock={() => openWorkflow("call")} />;
+      case "research":
+        return <ResearchPage onOpenAccount={openAccount} onAddSource={() => openWorkflow("file", { returnTo: "research" })} onQueueResearch={(accountId) => openWorkflow("research", accountId ? { accountId } : {})} />;
+      case "files":
+        return <FilesPage onUploadFile={() => openWorkflow("file", { returnTo: "files" })} />;
+      case "integrations":
+        return <IntegrationsPage onNavigate={openView} onOpenWorkflow={(type) => openWorkflow(type)} />;
+      case "settings":
+        return <SettingsPage isDark={isDark} onThemeToggle={() => setIsDark(value => !value)} onInviteTeamMember={() => openWorkflow("team")} user={user} onUpdateProfile={handleUpdateProfile} />;
+      default:
+        return (
+          <DashboardPage
+            activeClient={activeClient}
+            activeCampaign={activeCampaign}
+            onNavigate={openView}
+            onOpenAccount={openAccount}
+          />
+        );
+    }
+  }
+
+  return (
+    <CrmDataContext.Provider value={crmData}>
+      <div className={`crm-app ${isDark ? "dark" : "light"}`}>
+        <Sidebar activeView={activeView} onNavigate={navigatePrimary} />
+        <div className="workspace">
+          <TopBar
+            canGoBack={viewHistory.length > 0}
+            onBack={goBack}
+            activeClient={activeClient}
+            activeCampaign={activeCampaign}
+            onClientChange={setActiveClientId}
+            onCampaignChange={setActiveCampaignId}
+            isDark={isDark}
+            onThemeToggle={() => setIsDark(value => !value)}
+            drawerOpen={drawerOpen}
+            onDrawerToggle={() => setDrawerOpen(value => !value)}
+            search={search}
+            onSearchChange={setSearch}
+            searchResults={searchResults}
+            onSearchSelect={handleSearchSelect}
+            onLogout={handleLogout}
+            loggingOut={loggingOut}
+          />
+          <div className={`workspace-body ${drawerOpen ? "with-drawer" : ""}`}>
+            <main className="main-content">
+              {renderPage()}
+            </main>
+            <RightDrawer
+              open={drawerOpen}
+              activeView={activeView}
+              selectedAccount={selectedAccount}
+              activeCampaign={activeCampaign}
+            />
+          </div>
+        </div>
+        {workflow && (
+          <WorkflowModal
+            key={`${workflow.type}-${workflow.context?.record?.id || workflow.context?.accountId || workflow.context?.contactId || ""}`}
+            workflow={workflow}
+            activeClientId={activeClientId}
+            selectedAccountId={selectedAccountId}
+            selectedContactId={selectedContactId}
+            onClose={closeWorkflow}
+            onSubmit={handleWorkflowSubmit}
+            onSwitchWorkflow={(type) => openWorkflow(type)}
+          />
+        )}
+      </div>
+    </CrmDataContext.Provider>
   );
 }

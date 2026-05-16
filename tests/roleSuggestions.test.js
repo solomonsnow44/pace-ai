@@ -7,6 +7,7 @@ test("role suggestions use fallback when OPENAI_API_KEY is not configured", asyn
 
   assert.equal(payload.mode, "fallback");
   assert.ok(payload.roles.includes("Head of UX"));
+  assert.ok(payload.roles.includes("Head of Product Support"));
 });
 
 test("role suggestions parse OpenAI structured output", async () => {
@@ -44,4 +45,3 @@ test("role suggestions parse OpenAI structured output", async () => {
   assert.equal(payload.mode, "openai");
   assert.deepEqual(payload.roles, ["Chief Information Security Officer", "Head of Cyber Security"]);
 });
-

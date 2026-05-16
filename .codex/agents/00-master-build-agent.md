@@ -13,7 +13,7 @@ Core principles:
 5. Never expose API keys to frontend code.
 6. External integrations must run server-side only.
 7. All imports, enrichments, AI actions, exports, and syncs must create audit logs.
-8. Use a premium PaceOps visual style: dark, clean, professional, purple accent.
+8. Use a premium PaceOps visual style: dark, clean, professional, blue accent.
 9. Build flexible HubSpot-style associations between records.
 10. Build field mappings for HubSpot and CSV instead of hardcoding one format.
 11. AI tools must be auditable and must store inputs, outputs, status, confidence, and errors.

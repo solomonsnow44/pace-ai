@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import { createClient } from '@supabase/supabase-js'
 import { dialAircall } from './src/server/aircallDial.js'
 import { createCognismPreview } from './src/server/cognismPreview.js'
+import { exportContactsToHubSpot } from './src/server/hubspotContacts.js'
 import { getRedeemedContactById } from './src/server/redeemedContactStore.js'
 import { suggestTargetRoles } from './src/server/roleSuggestions.js'
 import { suggestAccountFieldsFromWeb, suggestClientFieldsFromWeb } from './src/server/clientSuggestions.js'
@@ -51,7 +52,7 @@ function cognismPreviewApiPlugin() {
   }
 
   return {
-    name: 'paceops-cognism-preview-api',
+    name: 'paceops-lead-finder-preview-api',
     configureServer(server) {
       server.middlewares.use('/api/cognism/roles', async (req, res) => {
         res.setHeader('Content-Type', 'application/json');
@@ -141,11 +142,11 @@ function cognismPreviewApiPlugin() {
         try {
           const body = await readJsonBody(req);
           const payload = await createCognismPreview(body);
-          console.info('Cognism preview estimated credits used:', payload.estimatedCreditsUsed);
+          console.info('Lead Finder preview estimated credits used:', payload.estimatedCreditsUsed);
           res.end(JSON.stringify(payload));
         } catch (error) {
           res.statusCode = error.statusCode || 500;
-          res.end(JSON.stringify({ error: error.message || 'Cognism preview failed' }));
+          res.end(JSON.stringify({ error: error.message || 'Lead Finder preview failed' }));
         }
       });
 
@@ -165,11 +166,32 @@ function cognismPreviewApiPlugin() {
             userId: user.id,
             aircallUserId: user.aircallUserId,
             getContactById: getRedeemedContactById,
+            allowSavedLeadNumbers: true,
           });
           res.end(JSON.stringify(payload));
         } catch (error) {
           res.statusCode = error.statusCode || 500;
           res.end(JSON.stringify({ error: error.message || 'Aircall dial failed' }));
+        }
+      });
+
+      server.middlewares.use('/api/hubspot/contacts/export', async (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+
+        if (req.method !== 'POST') {
+          res.statusCode = 405;
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        try {
+          await getAuthenticatedCrmUser(req);
+          const body = await readJsonBody(req);
+          const payload = await exportContactsToHubSpot(body);
+          res.end(JSON.stringify(payload));
+        } catch (error) {
+          res.statusCode = error.statusCode || 500;
+          res.end(JSON.stringify({ error: error.message || 'HubSpot export failed' }));
         }
       });
     },

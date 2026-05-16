@@ -5,9 +5,7 @@ Build the first professional CRM frontend for PaceOps.
 This is a multi-client account management CRM for PaceOps and later licensed customers.
 
 The first user story:
-Solomon and Amer are working on the Each&Other client account.
-Last week they ran a survey outreach campaign.
-This week they are targeting accounts like Stripe and Santander.
+The PaceOps delivery team signs in, creates a client workspace, and builds a fresh target account list.
 They need to switch between clients, campaigns, accounts, contacts, and call workflows quickly.
 
 The UX should support:
@@ -20,9 +18,9 @@ The UX should support:
 - research panel
 - AI helper drawer
 - CSV import entry point
-- integration placeholders
+- integration configuration entry points
 
-Build with mock data first.
+Build with empty authenticated workspaces first. Do not show CRM records before sign-in.
 
 Pages to create:
 1. Dashboard
@@ -53,4 +51,4 @@ Important:
 Aircall MVP:
 - Phone numbers should render as clickable call buttons.
 - Use tel: links initially.
-- Create placeholder UI for future Aircall connection.
+- Create a clear entry point for a future Aircall connection.

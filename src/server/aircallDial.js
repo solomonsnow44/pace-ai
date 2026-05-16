@@ -35,6 +35,7 @@ function getContactPhoneNumbers(contact = {}) {
 export async function dialAircall(input = {}, options = {}) {
   const phoneNumber = normalizePhone(input.phoneNumber);
   const contactId = String(input.contactId || "").trim();
+  const source = String(input.source || "").trim();
   const userId = options.userId || input.userId;
   const aircallUserId = options.aircallUserId || input.aircallUserId || process.env.AIRCALL_USER_ID;
   const apiId = options.apiId ?? process.env.AIRCALL_API_ID;
@@ -64,10 +65,11 @@ export async function dialAircall(input = {}, options = {}) {
     if (!aircallUserId) throw createDialError("Aircall user id is not mapped for this CRM user", 400, "configuration_error");
 
     const contact = await getContactById(contactId);
-    if (!contact?.redeemed) throw createDialError("Preview-only contacts cannot be dialed", 403, "blocked_preview_contact");
+    const allowSavedLeadNumber = options.allowSavedLeadNumbers === true && source === "lead_database";
+    if (!contact?.redeemed && !allowSavedLeadNumber) throw createDialError("Preview-only contacts cannot be dialed", 403, "blocked_preview_contact");
 
     const redeemedPhoneNumbers = getContactPhoneNumbers(contact);
-    if (!redeemedPhoneNumbers.includes(phoneNumber)) {
+    if (!allowSavedLeadNumber && !redeemedPhoneNumbers.includes(phoneNumber)) {
       throw createDialError("Phone number does not match the redeemed contact", 403, "blocked_phone_mismatch");
     }
 
@@ -101,4 +103,3 @@ export async function dialAircall(input = {}, options = {}) {
     throw error;
   }
 }
-

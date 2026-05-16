@@ -11,6 +11,14 @@ const fallbackRoleSets = {
     "Director of User Experience",
     "Head of Product Design",
     "Director of Product Design",
+    "Head of Product Support",
+    "Director of Product Support",
+    "VP Product Support",
+    "Head of Product Operations",
+    "Director of Product Operations",
+    "Head of Customer Experience",
+    "Director of Customer Experience",
+    "Head of Customer Support",
     "UX Research Director",
     "Head of UX Research",
   ],
@@ -155,4 +163,3 @@ export async function suggestTargetRoles(input = {}, options = {}) {
     return { mode: "fallback", query, roles: fallbackSuggestions(query) };
   }
 }
-

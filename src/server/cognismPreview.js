@@ -1,6 +1,7 @@
 export const COGNISM_PREVIEW_MODE = "preview_only";
 export const FORBIDDEN_COGNISM_URL_PARTS = ["redeem", "reveal", "export", "enrich"];
-export const COGNISM_CONTACT_SEARCH_URL = "https://app.cognism.com/api/search/contact/search?lastReturnedKey=&indexSize=20";
+export const COGNISM_CONTACT_SEARCH_URL = "https://app.cognism.com/api/search/contact/search?lastReturnedKey=&indexSize=100";
+export const DEFAULT_MAX_CONTACTS_PER_COMPANY = 10;
 
 export const DEFAULT_TARGET_TITLES = [
   "Chief Product Officer",
@@ -52,16 +53,108 @@ function uniqueValues(values) {
   return [...new Set(values.map(compactString).filter(Boolean))];
 }
 
+function normalizeCountry(value) {
+  const country = compactString(value);
+  if (!country) return "";
+  const aliases = {
+    uk: "United Kingdom",
+    "u.k.": "United Kingdom",
+    britain: "United Kingdom",
+    england: "United Kingdom",
+    usa: "United States",
+    us: "United States",
+    "u.s.": "United States",
+    "united states of america": "United States",
+  };
+  return aliases[country.toLowerCase()] || country;
+}
+
+export function expandTargetTitles(targetTitles) {
+  const titles = uniqueValues(targetTitles);
+  const titleText = titles.join(" ").toLowerCase();
+  const shouldAddProductExperienceTitles = /\b(ux|user experience|experience|product design|product)\b/i.test(titleText);
+
+  if (!shouldAddProductExperienceTitles) return titles;
+
+  return uniqueValues([
+    ...titles,
+    "Chief Product Officer",
+    "VP Product",
+    "VP Product Management",
+    "Head of Product",
+    "Product Director",
+    "Director of Product Management",
+    "Head of Product Support",
+    "Director of Product Support",
+    "VP Product Support",
+    "Product Support Director",
+    "Product Support Lead",
+    "Head of Product Operations",
+    "Director of Product Operations",
+    "Product Operations Director",
+    "Head of Customer Experience",
+    "Director of Customer Experience",
+    "Head of Customer Support",
+    "Director of Customer Support",
+    "Head of Customer Operations",
+  ]);
+}
+
 function isDomain(value) {
   return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(value) && !/\s/.test(value);
+}
+
+function normalizeCompanyMatchValue(value) {
+  return compactString(value).replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizeDomainMatchValue(value) {
+  return compactString(value)
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split("/")[0];
+}
+
+function accountMatchesCompany(company, account = {}) {
+  if (isDomain(company)) {
+    const requestedDomain = normalizeDomainMatchValue(company);
+    const candidateDomains = [
+      account.domain,
+      account.website,
+      account.url,
+      ...(Array.isArray(account.domains) ? account.domains : []),
+    ].map(normalizeDomainMatchValue).filter(Boolean);
+
+    return candidateDomains.includes(requestedDomain);
+  }
+
+  return normalizeCompanyMatchValue(account.name) === normalizeCompanyMatchValue(company);
 }
 
 export function assertSafeCognismPreviewUrl(url) {
   const lowerUrl = String(url || "").toLowerCase();
   const blockedPart = FORBIDDEN_COGNISM_URL_PARTS.find(part => lowerUrl.includes(part));
   if (blockedPart) {
-    throw new Error(`Blocked unsafe Cognism preview URL containing "${blockedPart}"`);
+    throw new Error(`Blocked unsafe lead preview URL containing "${blockedPart}"`);
   }
+}
+
+function buildSearchPageUrl(searchUrl, lastReturnedKey = "") {
+  const url = new URL(searchUrl);
+  url.searchParams.set("lastReturnedKey", lastReturnedKey);
+  return url.toString();
+}
+
+function extractLastReturnedKey(data = {}) {
+  return compactString(
+    data.lastReturnedKey
+    || data.nextLastReturnedKey
+    || data.pagination?.lastReturnedKey
+    || data.pagination?.nextLastReturnedKey
+    || data.page?.lastReturnedKey
+    || data.page?.nextLastReturnedKey
+  );
 }
 
 export function normalizePreviewInput(input = {}) {
@@ -70,26 +163,36 @@ export function normalizePreviewInput(input = {}) {
   const requestedMax = Number.parseInt(input.maxPerCompany, 10);
   const requireEmail = Boolean(input.requireEmail);
   const requireMobile = Boolean(input.requireMobile);
-  const requireEmailOrMobile = Boolean(input.requireEmailOrMobile);
+  const requireMobileAvailable = Boolean(input.requireMobileAvailable ?? input.requireEmailOrMobile);
+  const countries = uniqueValues(Array.isArray(input.countries) ? input.countries.map(normalizeCountry) : []);
 
   return {
     companies,
     targetTitles,
-    maxPerCompany: Number.isFinite(requestedMax) ? Math.max(requestedMax, 1) : 1,
+    maxPerCompany: Number.isFinite(requestedMax) ? Math.max(requestedMax, 1) : DEFAULT_MAX_CONTACTS_PER_COMPANY,
     requireEmail,
     requireMobile,
-    requireEmailOrMobile,
+    requireMobileAvailable,
+    countries,
   };
 }
 
-export function buildCognismSearchBody(company, targetTitles) {
+export function buildCognismSearchBody(company, targetTitles, countries = []) {
   const account = isDomain(company) ? { domains: [company] } : { names: [company] };
+  const selectedCountries = uniqueValues(countries.map(normalizeCountry));
 
-  return {
-    jobTitles: targetTitles,
+  const body = {
+    jobTitles: expandTargetTitles(targetTitles),
     excludeJobTitles: DEFAULT_EXCLUDED_TITLES,
     account,
   };
+
+  if (selectedCountries.length) {
+    body.countries = selectedCountries;
+    body.locations = selectedCountries;
+  }
+
+  return body;
 }
 
 function textIncludesAny(value, needles) {
@@ -125,16 +228,19 @@ export function mapCognismPreviewContact(company, contact, targetTitles) {
     department: compactString(contact.department || contact.jobFunction) || (contact.hasJobFunction ? "Available" : "Not available"),
     location: location || (contact.hasCity || contact.hasState || contact.hasCountry ? "Available" : "Not available"),
     linkedinAvailable: Boolean(contact.hasLinkedinUrl || contact.hasLinkedInUrl),
+    linkedinProfileUrl: compactString(contact.linkedinUrl || contact.linkedInUrl || contact.linkedinProfileUrl),
     emailAvailable: Boolean(contact.hasEmail),
     mobileAvailable: Boolean(contact.hasMobilePhoneNumbers),
     directDialAvailable: Boolean(contact.hasDirectPhoneNumbers),
     matchScore: scoreContact(contact, targetTitles),
     cognismContactId: compactString(contact.id || contact.contactId || contact.redeemId),
+    dataSource: "cognism_preview",
   };
 }
 
 export async function createCognismPreview(input, options = {}) {
-  const { companies, targetTitles, maxPerCompany, requireEmail, requireMobile, requireEmailOrMobile } = normalizePreviewInput(input);
+  const { companies, targetTitles, maxPerCompany, requireEmail, requireMobile, requireMobileAvailable, countries } = normalizePreviewInput(input);
+  const expandedTargetTitles = expandTargetTitles(targetTitles);
   const apiKey = options.apiKey ?? process.env.COGNISM_API_KEY;
   const fetcher = options.fetcher ?? fetch;
   const searchUrl = options.searchUrl ?? COGNISM_CONTACT_SEARCH_URL;
@@ -148,7 +254,7 @@ export async function createCognismPreview(input, options = {}) {
   }
 
   if (!targetTitles.length) {
-    const error = new Error("At least one target title is required for Cognism preview");
+    const error = new Error("At least one target title is required for lead preview");
     error.statusCode = 400;
     throw error;
   }
@@ -156,28 +262,47 @@ export async function createCognismPreview(input, options = {}) {
   const results = [];
 
   for (const company of companies) {
-    const response = await fetcher(searchUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(buildCognismSearchBody(company, targetTitles)),
-    });
+    const contacts = [];
+    const seenPageKeys = new Set();
+    let lastReturnedKey = "";
 
-    if (!response.ok) {
-      const error = new Error(`Cognism preview search failed for ${company}`);
-      error.statusCode = response.status;
-      throw error;
+    while (true) {
+      const pageUrl = buildSearchPageUrl(searchUrl, lastReturnedKey);
+      assertSafeCognismPreviewUrl(pageUrl);
+
+      const response = await fetcher(pageUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(buildCognismSearchBody(company, expandedTargetTitles, countries)),
+      });
+
+      if (!response.ok) {
+        const error = new Error(`Lead preview search failed for ${company}`);
+        error.statusCode = response.status;
+        throw error;
+      }
+
+      const data = await response.json();
+      const pageContacts = Array.isArray(data.results) ? data.results : [];
+      contacts.push(...pageContacts);
+
+      const nextLastReturnedKey = extractLastReturnedKey(data);
+      if (!nextLastReturnedKey || seenPageKeys.has(nextLastReturnedKey) || !pageContacts.length) break;
+
+      seenPageKeys.add(nextLastReturnedKey);
+      lastReturnedKey = nextLastReturnedKey;
     }
 
-    const data = await response.json();
-    const contacts = Array.isArray(data.results) ? data.results : [];
     const bestContacts = contacts
-      .map(contact => mapCognismPreviewContact(company, contact, targetTitles))
-      .filter(contact => !requireEmailOrMobile || contact.emailAvailable || contact.mobileAvailable)
+      .filter(contact => accountMatchesCompany(company, contact.account || {}))
+      .map(contact => mapCognismPreviewContact(company, contact, expandedTargetTitles))
+      .filter(contact => !requireMobileAvailable || contact.mobileAvailable)
       .filter(contact => !requireEmail || contact.emailAvailable)
       .filter(contact => !requireMobile || contact.mobileAvailable)
+      .filter(contact => !countries.length || countries.some(country => contact.location.toLowerCase().includes(country.toLowerCase())))
       .sort((left, right) => right.matchScore - left.matchScore)
       .slice(0, maxPerCompany);
 
@@ -190,7 +315,8 @@ export async function createCognismPreview(input, options = {}) {
     maxPerCompany,
     requireEmail,
     requireMobile,
-    requireEmailOrMobile,
+    requireMobileAvailable,
+    countries,
     results,
   };
 }

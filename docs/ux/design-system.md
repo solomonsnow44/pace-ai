@@ -74,13 +74,13 @@ Primary navigation:
 The system is designed around client work.
 
 Example:
-PaceOps user: Solomon
-Client: Each&Other
-Colleague: Amer
+PaceOps user: Account owner
+Client: User-created client workspace
+Colleague: Campaign Manager
 Campaigns:
 - Survey outreach campaign
-- Stripe targeting campaign
-- Santander targeting campaign
+- Priority account targeting campaign
+- Discovery call sprint campaign
 - UX research recruitment campaign
 
 Users must be able to switch quickly between:
@@ -120,23 +120,23 @@ Text: #111827
 Muted text: #6B7280
 Border: #E5E7EB
 Sidebar: #2E2E2E
-Accent: #7C3AED
-Accent hover: #6D28D9
+Accent: #0C69C8
+Accent hover: #0A58A8
 Success: #16A34A
 Warning: #F59E0B
 Danger: #DC2626
 
 ### Dark mode
 
-Background: #0F1115
-Surface: #171A21
-Card: #1E222B
+Background: #0B1220
+Surface: #101827
+Card: #162033
 Text: #F9FAFB
-Muted text: #9CA3AF
-Border: #2D3340
-Sidebar: #111827
-Accent: #8B5CF6
-Accent hover: #7C3AED
+Muted text: #9CB3CC
+Border: #26364A
+Sidebar: #08111F
+Accent: #3B82F6
+Accent hover: #60A5FA
 Success: #22C55E
 Warning: #FBBF24
 Danger: #EF4444
@@ -261,7 +261,7 @@ Create drag-and-drop boards.
 
 Default campaign pipeline:
 - Researching
-- Target Account
+- Account selected
 - Contacts Found
 - Enriched
 - Ready to Call

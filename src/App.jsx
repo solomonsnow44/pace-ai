@@ -29,6 +29,7 @@ import {
   Megaphone,
   Moon,
   PanelRight,
+  Pencil,
   Phone,
   Plug,
   Plus,
@@ -38,9 +39,11 @@ import {
   Sparkles,
   Sun,
   Target,
+  Trash2,
   Upload,
   UserRound,
   Users,
+  X,
 } from "lucide-react";
 import logoUrl from "../images/paceops-logo.jpeg";
 
@@ -302,8 +305,8 @@ const initialWeeklyReports = [];
 
 const emptyClient = {
   id: "none",
-  name: "No client selected",
-  workspace: "Create a client workspace",
+  name: "No client account selected",
+  workspace: "Create a client account",
   status: "Empty",
   owner: "Unassigned",
   accounts: 0,
@@ -375,9 +378,9 @@ const countrySuggestions = [
 
 const baseIntegrations = [
   { name: "Lead Finder", icon: Target, status: "Available", note: "Search preview lead records and export results.", action: "Open Lead Finder", view: "cognism" },
-  { name: "Cognism", icon: Target, status: "Connected", note: "Lead Finder uses Cognism preview search for target contacts without redeeming credits.", action: "Open Lead Finder", view: "cognism", redeemEnabled: false },
-  // Calls workspace disabled: { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with redeemed phone numbers.", action: "Open Calls", view: "calls" },
-  { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with redeemed phone numbers.", action: "Open Contacts", view: "contacts" },
+  { name: "Cognism", icon: Target, status: "Connected", note: "Lead Finder searches preview contact data and saves selected rows.", action: "Open Lead Finder", view: "cognism", redeemEnabled: false },
+  // Calls workspace disabled: { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with saved phone numbers.", action: "Open Calls", view: "calls" },
+  { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with saved phone numbers.", action: "Open Contacts", view: "contacts" },
   { name: "OpenAI", icon: Bot, status: "Available", note: "Used in account intelligence and script generation when an API key is configured.", action: "", workflow: "" },
   { name: "HubSpot", icon: Database, status: "Connected", note: "Lead Finder contacts can be exported to HubSpot contacts. Company association depends on HubSpot app scopes.", action: "Open Lead Finder", view: "cognism" },
 ];
@@ -386,9 +389,8 @@ const SHOW_INTEGRATION_KEY_CONTROLS = false;
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "clients", label: "Clients", icon: Building2 },
+  { id: "clients", label: "Client Accounts", icon: Building2 },
   { id: "campaigns", label: "Campaigns", icon: Megaphone },
-  { id: "accounts", label: "Accounts", icon: BriefcaseBusiness },
   { id: "contacts", label: "Contacts", icon: Contact, highlight: true },
   { id: "cognism", label: "Lead Finder", icon: Target, highlight: true },
   { id: "lead-lists", label: "Lead Lists", icon: ListFilter, highlight: true },
@@ -400,11 +402,51 @@ const navItems = [
   { id: "settings", label: "Settings", icon: Settings, highlight: true },
 ];
 
-const currency = new Intl.NumberFormat("en-GB", {
-  style: "currency",
-  currency: "GBP",
-  maximumFractionDigits: 0,
-});
+const workspaceViewIds = new Set(navItems.map(item => item.id).concat([
+  "client-detail",
+  "campaign-detail",
+  "account-detail",
+  "contact-detail",
+]));
+
+function readWorkspaceViewFromUrl() {
+  if (typeof window === "undefined") return "";
+  const view = new URL(window.location.href).searchParams.get("view") || "";
+  return workspaceViewIds.has(view) ? view : "";
+}
+
+function writeWorkspaceHistory(state, mode = "push") {
+  if (typeof window === "undefined" || !state?.activeView) return;
+  const url = new URL(window.location.href);
+  if (state.activeView === "dashboard") {
+    url.searchParams.delete("view");
+  } else {
+    url.searchParams.set("view", state.activeView);
+  }
+  window.history[mode === "replace" ? "replaceState" : "pushState"]({ workspaceNavigation: state }, "", url);
+}
+
+const CURRENCY_STORAGE_KEY = "paceops.currencyCode";
+const currencyOptions = [
+  { code: "EUR", label: "Euro", locale: "en-IE" },
+  { code: "GBP", label: "Pounds", locale: "en-GB" },
+  { code: "USD", label: "USD", locale: "en-US" },
+];
+
+function normalizeCurrencyCode(code) {
+  const value = String(code || "").toUpperCase();
+  return currencyOptions.some(option => option.code === value) ? value : "GBP";
+}
+
+function createCurrencyFormatter(code) {
+  const currencyCode = normalizeCurrencyCode(code);
+  const option = currencyOptions.find(item => item.code === currencyCode) || currencyOptions[1];
+  return new Intl.NumberFormat(option.locale, {
+    style: "currency",
+    currency: option.code,
+    maximumFractionDigits: 0,
+  });
+}
 
 function cloneRecords(records) {
   return records.map(record => ({ ...record }));
@@ -649,6 +691,18 @@ async function loadLeadLists(organizationId) {
 
   if (error) throw error;
   return (data || []).map(mapLeadListRecord);
+}
+
+async function loadPrivateContactNotes(organizationId, userId) {
+  if (!supabase || !organizationId || !userId) return {};
+  const { data, error } = await supabase
+    .from("contact_private_notes")
+    .select("crm_contact_id,body")
+    .eq("organization_id", organizationId)
+    .eq("created_by", userId);
+
+  if (error) throw error;
+  return Object.fromEntries((data || []).map(note => [note.crm_contact_id, note.body || ""]));
 }
 
 function normalizeLookupValue(value) {
@@ -962,37 +1016,6 @@ function titleCase(value) {
     .join(" ");
 }
 
-function buildCallInsight({ contact, account, outcome, notes = "", transcript = "", preset = "General analysis" }) {
-  const text = `${notes} ${transcript}`.toLowerCase();
-  const riskTerms = ["not interested", "expensive", "busy", "no budget", "already", "send info", "not now"];
-  const positiveTerms = ["meeting", "interested", "send", "yes", "useful", "call back", "book"];
-  const risks = riskTerms.filter(term => text.includes(term));
-  const positives = positiveTerms.filter(term => text.includes(term));
-  const sentimentScore = Math.max(1, Math.min(10, 5 + positives.length - risks.length));
-  const possibleObjections = risks.length ? risks.map(term => titleCase(term)) : ["Timing", "Budget", "Current supplier"];
-  const suggestedMove = outcome === "Meeting booked"
-    ? "Confirm agenda, attendees, and business impact before the meeting."
-    : risks.length
-      ? "Acknowledge the objection, ask one diagnostic question, then agree a small next step."
-      : "Use the strongest account signal and ask for the right owner or next conversation.";
-
-  return {
-    id: makeId("call-insight"),
-    contactId: contact?.id || "",
-    contactName: contact?.name || "Unknown contact",
-    accountId: account?.id || "",
-    account: account?.name || contact?.account || "Workspace",
-    outcome,
-    preset,
-    sentimentScore,
-    possibleObjections,
-    suggestedMove,
-    notes,
-    transcript,
-    createdAt: new Date().toISOString(),
-  };
-}
-
 function buildWeeklyReport({ calls = [], insights = [], client, campaign, timeframe = "This week" }) {
   const meetingCount = calls.filter(call => call.outcome === "Meeting booked").length;
   const connectedCount = calls.filter(call => call.outcome === "Connected").length;
@@ -1045,9 +1068,18 @@ function refreshCrmData(data) {
 }
 
 const CrmDataContext = createContext(createInitialCrmData());
+const CurrencyContext = createContext({
+  currencyCode: "GBP",
+  currencyOptions,
+  formatCurrency: value => createCurrencyFormatter("GBP").format(Number(value) || 0),
+});
 
 function useCrmData() {
   return useContext(CrmDataContext);
+}
+
+function useCurrency() {
+  return useContext(CurrencyContext);
 }
 
 function accountInitial(name) {
@@ -1078,6 +1110,10 @@ function getRedeemedPhoneNumber(contact) {
   return contact?.redeemed === true && contact?.phoneNumber ? String(contact.phoneNumber) : "";
 }
 
+function getContactPhoneNumber(contact) {
+  return getRedeemedPhoneNumber(contact) || contact?.phoneNumber || contact?.mobile || contact?.phone || "";
+}
+
 async function buildApiHeaders() {
   const headers = { "Content-Type": "application/json" };
   if (!supabase) return headers;
@@ -1086,13 +1122,25 @@ async function buildApiHeaders() {
   return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
 }
 
+async function readJsonResponse(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    const error = new Error(`Server returned ${response.status || "an"} invalid response`);
+    error.statusCode = response.status;
+    throw error;
+  }
+}
+
 function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", source = "crm_contact", label = "Call", compact = false }) {
-  const phoneNumber = phoneNumberOverride || getRedeemedPhoneNumber(contact);
+  const phoneNumber = phoneNumberOverride || getContactPhoneNumber(contact);
   const dialPhoneNumber = normalizePhone(phoneNumber);
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("");
   const canDial = Boolean(dialPhoneNumber && contact?.id);
-  const buttonTitle = message || (phoneNumber ? `Call ${phoneNumber}` : "Contact required");
+  const buttonTitle = message || (phoneNumber ? `Call ${phoneNumber}` : "Phone number needed");
 
   async function dialContact() {
     setStatus("loading");
@@ -1123,7 +1171,7 @@ function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", sou
 
   return (
     <div className={`aircall-dial ${compact ? "compact" : ""}`}>
-      {!compact ? <span>{phoneNumber || "Contact required"}</span> : null}
+      {!compact ? <span>{phoneNumber || "Phone number needed"}</span> : null}
       <button className={`secondary-button ${status === "error" ? "dial-button-error" : ""}`} type="button" disabled={!canDial || status === "loading"} onClick={dialContact} title={buttonTitle} aria-label={buttonTitle}>
         <Phone size={16} />
         {!compact ? (status === "loading" ? "Dialing" : label) : null}
@@ -1181,18 +1229,20 @@ function TopBar({
   activeCampaign,
   onClientChange,
   onCampaignChange,
-  isDark,
-  onThemeToggle,
   drawerOpen,
   onDrawerToggle,
   search,
   onSearchChange,
   searchResults,
   onSearchSelect,
-  onLogout,
-  loggingOut,
 }) {
   const { clients, campaigns } = useCrmData();
+  const activeClientCampaigns = activeClient?.id && activeClient.id !== "none"
+    ? campaigns.filter(campaign => campaign.clientId === activeClient.id)
+    : campaigns;
+  const campaignSelectValue = activeClientCampaigns.some(campaign => campaign.id === activeCampaign.id)
+    ? activeCampaign.id
+    : activeClientCampaigns[0]?.id || "none";
 
   return (
     <header className="topbar">
@@ -1204,19 +1254,19 @@ function TopBar({
         )}
         <div className="switchers">
           <label>
-            <span>Client</span>
+            <span>Client account</span>
             <select value={activeClient.id} onChange={event => onClientChange(event.target.value)}>
               {clients.length
                 ? clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)
-                : <option value="none">No clients yet</option>}
+                : <option value="none">No client accounts yet</option>}
             </select>
             <ChevronDown size={14} />
           </label>
           <label>
             <span>Campaign</span>
-            <select value={activeCampaign.id} onChange={event => onCampaignChange(event.target.value)}>
-              {campaigns.length
-                ? campaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)
+            <select value={campaignSelectValue} onChange={event => onCampaignChange(event.target.value)}>
+              {activeClientCampaigns.length
+                ? activeClientCampaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)
                 : <option value="none">No campaigns yet</option>}
             </select>
             <ChevronDown size={14} />
@@ -1229,7 +1279,7 @@ function TopBar({
         <input
           value={search}
           onChange={event => onSearchChange(event.target.value)}
-          placeholder="Search accounts, contacts, campaigns, users"
+          placeholder="Search client accounts, contacts, campaigns, users"
           aria-label="Global search"
         />
         {search.length > 1 && (
@@ -1248,14 +1298,7 @@ function TopBar({
       <div className="topbar-actions">
         <button className="icon-action" type="button" onClick={onDrawerToggle} aria-label="Toggle assistant drawer">
           <PanelRight size={18} />
-          <span>{drawerOpen ? "Hide" : "AI"}</span>
-        </button>
-        <button className="icon-action" type="button" onClick={onThemeToggle} aria-label="Toggle theme">
-          {isDark ? <Sun size={18} /> : <Moon size={18} />}
-        </button>
-        <button className="icon-action logout-action" type="button" onClick={onLogout} disabled={loggingOut}>
-          <LogOut size={18} />
-          <span>{loggingOut ? "Signing out" : "Log out"}</span>
+          <span>{drawerOpen ? "Hide" : "Menu"}</span>
         </button>
       </div>
     </header>
@@ -1275,41 +1318,26 @@ function MetricCard({ label, value, detail, icon }) {
   );
 }
 
-function FilterBar({ label = "Current view" }) {
-  const [activeFilter, setActiveFilter] = useState("Priority");
-  const filters = ["Priority", "Owner", "Last activity"];
-
-  return (
-    <div className="filter-bar">
-      <div>
-        <ListFilter size={16} />
-        <span>{label}</span>
-      </div>
-      {filters.map(filter => (
-        <button
-          key={filter}
-          className={`secondary-button ${activeFilter === filter ? "selected-filter" : ""}`}
-          type="button"
-          onClick={() => setActiveFilter(filter)}
-        >
-          {filter}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount }) {
   const { deals, campaigns, accounts, teamMembers } = useCrmData();
-  const pipelineValue = deals.reduce((total, deal) => total + deal.value, 0);
-  const bookedMeetings = campaigns.reduce((total, campaign) => total + campaign.meetings, 0);
+  const { formatCurrency } = useCurrency();
+  const scopedAccounts = activeClient?.id && activeClient.id !== "none"
+    ? accounts.filter(account => account.clientId === activeClient.id)
+    : accounts;
+  const scopedAccountNames = new Set(scopedAccounts.map(account => account.name));
+  const scopedCampaigns = activeClient?.id && activeClient.id !== "none"
+    ? campaigns.filter(campaign => campaign.clientId === activeClient.id)
+    : campaigns;
+  const scopedDeals = deals.filter(deal => scopedAccountNames.has(deal.account));
+  const pipelineValue = scopedDeals.reduce((total, deal) => total + deal.value, 0);
+  const bookedMeetings = scopedCampaigns.reduce((total, campaign) => total + campaign.meetings, 0);
 
   return (
     <>
       <PageHeader
-        eyebrow={`${activeClient.name} workspace`}
+        eyebrow={`${activeClient.name} client account`}
         title="Sales workspace"
-        description="A focused view of campaigns, accounts, calls, and research activity for the current client."
+        description="A focused view of campaigns, pipeline, contacts, and research activity for the current client account."
       >
         <button className="secondary-button" type="button" onClick={() => onNavigate("research")}>
           <FileText size={16} />
@@ -1325,9 +1353,9 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount
       </PageHeader>
 
       <div className="metrics-grid">
-        <MetricCard label="Active campaign" value={campaigns.length ? activeCampaign.name : "No campaign yet"} detail={activeCampaign.nextAction} icon={Megaphone} />
-        <MetricCard label="Priority accounts" value={accounts.length} detail={accounts.length ? "Ready for review" : "Add accounts to build pipeline"} icon={BriefcaseBusiness} />
-        <MetricCard label="Open pipeline" value={currency.format(pipelineValue)} detail="Across current client workspace" icon={KanbanSquare} />
+        <MetricCard label="Active campaign" value={scopedCampaigns.length ? activeCampaign.name : "No campaign yet"} detail={activeCampaign.nextAction} icon={Megaphone} />
+        <MetricCard label="Target accounts" value={scopedAccounts.length} detail={scopedAccounts.length ? "Ready for review" : "Add targets inside a client account"} icon={BriefcaseBusiness} />
+        <MetricCard label="Open pipeline" value={formatCurrency(pipelineValue)} detail="Across the active client account" icon={KanbanSquare} />
         <MetricCard label="Meetings booked" value={bookedMeetings} detail={bookedMeetings ? "From active campaigns" : "No meetings logged yet"} icon={CalendarDays} />
       </div>
 
@@ -1354,7 +1382,7 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount
               ))}
             </div>
           ) : (
-            <EmptyState icon={Target} title="No accounts yet" text="Create or import accounts, then add contacts and deals to start building pipeline." />
+            <EmptyState icon={Target} title="No target accounts yet" text="Create or import target accounts, then add contacts and deals to start building pipeline." />
           )}
         </section>
       </div>
@@ -1398,24 +1426,25 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount
   );
 }
 
-function ClientsPage({ onOpenClient, onNewClient, onEditClient }) {
+function ClientsPage({ onOpenClient, onNewClient, onEditClient, onRemoveClient }) {
   const { clients } = useCrmData();
+  const [pendingRemoval, setPendingRemoval] = useState(null);
 
   return (
     <>
       <PageHeader
-        eyebrow="Clients"
-        title="Client workspaces"
-        description="Manage the client layer before moving into campaigns, accounts, contacts, and delivery workflows."
+        eyebrow="Client accounts"
+        title="Client accounts"
+        description="Manage each client account before moving into its campaigns, target accounts, contacts, pipeline, and research."
       >
         <button className="primary-button" type="button" onClick={onNewClient}>
           <Plus size={16} />
-          New client
+          New client account
         </button>
       </PageHeader>
       <section className="panel">
         {clients.length ? <DataTable
-          columns={["Client", "Workspace", "Owner", "Accounts", "Contacts", "Health", ""]}
+          columns={["Client account", "Workspace", "Owner", "Target accounts", "Contacts", "Health", ""]}
           rows={clients.map(client => [
             <RecordName key="client" name={client.name} meta={client.status} />,
             client.workspace,
@@ -1424,25 +1453,74 @@ function ClientsPage({ onOpenClient, onNewClient, onEditClient }) {
             client.contacts,
             <StatusBadge key="health" tone="success">{client.health}</StatusBadge>,
             <div key="actions" className="row-actions">
-              <button className="text-button" type="button" onClick={event => {
+              <button className="icon-action" type="button" onClick={event => {
                 event.stopPropagation();
                 onEditClient(client);
-              }}>Edit</button>
-              <button className="text-button" type="button" onClick={event => {
+              }} title={`Edit ${client.name}`} aria-label={`Edit ${client.name}`}>
+                <Pencil size={16} />
+              </button>
+              <button className="icon-action" type="button" onClick={event => {
                 event.stopPropagation();
                 onOpenClient(client.id);
-              }}>Open</button>
+              }} title={`Open ${client.name}`} aria-label={`Open ${client.name}`}>
+                <Eye size={16} />
+              </button>
+              <button className="icon-action danger-button" type="button" onClick={event => {
+                event.stopPropagation();
+                setPendingRemoval(client);
+              }} title={`Remove ${client.name}`} aria-label={`Remove ${client.name}`}>
+                <Trash2 size={16} />
+              </button>
             </div>,
           ])}
           rowActions={clients.map(client => () => onOpenClient(client.id))}
-        /> : <EmptyState icon={Building2} title="No clients yet" text="Create your first client to start managing campaigns, accounts, contacts, and pipeline." />}
+        /> : <EmptyState icon={Building2} title="No client accounts yet" text="Create your first client account to manage campaigns, target accounts, contacts, research, and pipeline." />}
       </section>
+      {pendingRemoval ? (
+        <ClientRemovalDialog
+          client={pendingRemoval}
+          onCancel={() => setPendingRemoval(null)}
+          onConfirm={() => {
+            onRemoveClient?.(pendingRemoval);
+            setPendingRemoval(null);
+          }}
+        />
+      ) : null}
     </>
   );
 }
 
-function ClientDetailPage({ client, onOpenCampaign, onEditClient, onNewCampaign, onNewAccount }) {
+function ClientRemovalDialog({ client, onCancel, onConfirm }) {
+  return (
+    <section className="modal-backdrop" role="presentation" onMouseDown={event => {
+      if (event.target === event.currentTarget) onCancel();
+    }}>
+      <div className="workflow-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="remove-client-title">
+        <div className="modal-header">
+          <div>
+            <span className="eyebrow">Remove client account</span>
+            <h2 id="remove-client-title">{client.name}</h2>
+          </div>
+          <button className="icon-action" type="button" onClick={onCancel} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <p className="modal-helper-text">This removes the client account and its campaigns, target accounts, contacts, deals, research, scripts, and reports from the CRM.</p>
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button>
+          <button className="secondary-button danger-button" type="button" onClick={onConfirm}>
+            <Trash2 size={16} />
+            Remove client account
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ClientDetailPage({ client, onOpenCampaign, onOpenAccount, onEditClient, onEditAccount, onRemoveClient, onNewCampaign, onNewAccount }) {
   const { campaigns, accounts, contacts, activities } = useCrmData();
+  const [pendingRemoval, setPendingRemoval] = useState(null);
   const clientCampaigns = campaigns.filter(campaign => campaign.clientId === client.id);
   const clientAccounts = accounts.filter(account => account.clientId === client.id);
   const clientContacts = contacts.filter(contact => contact.clientId === client.id);
@@ -1451,24 +1529,28 @@ function ClientDetailPage({ client, onOpenCampaign, onEditClient, onNewCampaign,
   return (
     <>
       <PageHeader
-        eyebrow="Client detail"
+        eyebrow="Client account"
         title={client.name}
-        description="A client-level view for campaign coverage, workspace health, account progress, and team ownership."
+        description="The parent record for this client account, its campaigns, target accounts, contacts, pipeline, and research."
       >
-        <button className="secondary-button" type="button" onClick={() => onEditClient(client)}>Edit client</button>
+        <button className="secondary-button" type="button" onClick={() => onEditClient(client)}>Edit client account</button>
+        <button className="secondary-button danger-button" type="button" onClick={() => setPendingRemoval(client)}>
+          <Trash2 size={16} />
+          Remove client account
+        </button>
         <button className="secondary-button" type="button" onClick={onNewCampaign}>New campaign</button>
-        <button className="primary-button" type="button" onClick={onNewAccount}>Add account</button>
+        <button className="primary-button" type="button" onClick={onNewAccount}>Add target account</button>
       </PageHeader>
       <div className="metrics-grid">
-        <MetricCard label="Campaigns" value={clientCampaigns.length} detail={clientCampaigns.length ? "Campaigns in this client" : "Create the first campaign"} icon={Megaphone} />
-        <MetricCard label="Accounts" value={clientAccounts.length} detail={clientAccounts.length ? "Accounts assigned" : "Add target accounts"} icon={BriefcaseBusiness} />
-        <MetricCard label="Contacts" value={clientContacts.length} detail={clientContacts.length ? "Contacts mapped" : "Add contacts after accounts"} icon={Users} />
+        <MetricCard label="Campaigns" value={clientCampaigns.length} detail={clientCampaigns.length ? "Campaigns in this client account" : "Create the first campaign"} icon={Megaphone} />
+        <MetricCard label="Target accounts" value={clientAccounts.length} detail={clientAccounts.length ? "Target accounts assigned" : "Add target accounts"} icon={BriefcaseBusiness} />
+        <MetricCard label="Contacts" value={clientContacts.length} detail={clientContacts.length ? "Contacts mapped" : "Add contacts after target accounts"} icon={Users} />
         <MetricCard label="Calls logged" value={clientCalls.length} detail={clientCalls.length ? "Recent call activity" : "No calls logged yet"} icon={Phone} />
       </div>
       <div className="content-grid two">
         <section className="panel">
-          <div className="panel-header"><h2>Client campaigns</h2></div>
-          <CampaignList compact onOpenCampaign={onOpenCampaign} />
+          <div className="panel-header"><h2>Campaigns</h2></div>
+          <CampaignList campaigns={clientCampaigns} compact onOpenCampaign={onOpenCampaign} />
         </section>
         <section className="panel">
           <div className="panel-header"><h2>Workspace notes</h2></div>
@@ -1478,18 +1560,42 @@ function ClientDetailPage({ client, onOpenCampaign, onEditClient, onNewCampaign,
             <div><span>Next review</span><strong>{activities[0]?.title || "Add activity to build the workspace timeline"}</strong></div>
           </div>
         </section>
+        <section className="panel">
+          <div className="panel-header">
+            <h2>Target accounts</h2>
+            <button className="text-button" type="button" onClick={onNewAccount}>Add target account</button>
+          </div>
+          {clientAccounts.length
+            ? <AccountTable accounts={clientAccounts} onOpenAccount={onOpenAccount} onEditAccount={onEditAccount} />
+            : <EmptyState icon={BriefcaseBusiness} title="No target accounts yet" text="Add target accounts inside this client account before building contacts, research, and pipeline." />}
+        </section>
       </div>
+      {pendingRemoval ? (
+        <ClientRemovalDialog
+          client={pendingRemoval}
+          onCancel={() => setPendingRemoval(null)}
+          onConfirm={() => {
+            onRemoveClient?.(pendingRemoval);
+            setPendingRemoval(null);
+          }}
+        />
+      ) : null}
     </>
   );
 }
 
-function CampaignsPage({ onOpenCampaign, onEditCampaign, onNewCampaign, onImport }) {
+function CampaignsPage({ activeClient, onOpenCampaign, onEditCampaign, onNewCampaign, onImport }) {
+  const { campaigns } = useCrmData();
+  const scopedCampaigns = activeClient?.id && activeClient.id !== "none"
+    ? campaigns.filter(campaign => campaign.clientId === activeClient.id)
+    : campaigns;
+
   return (
     <>
       <PageHeader
         eyebrow="Campaigns"
-        title="Campaign command"
-        description="Switch between survey follow-up and current account targeting without losing client context."
+        title="Campaigns"
+        description={`Campaigns inside ${activeClient?.name || "the active client account"}.`}
       >
         <button className="secondary-button" type="button" onClick={onImport}>
           <Upload size={16} />
@@ -1500,14 +1606,14 @@ function CampaignsPage({ onOpenCampaign, onEditCampaign, onNewCampaign, onImport
           New campaign
         </button>
       </PageHeader>
-      <FilterBar label="Campaign filters" />
-      <CampaignList onOpenCampaign={onOpenCampaign} onEditCampaign={onEditCampaign} />
+      <CampaignList campaigns={scopedCampaigns} onOpenCampaign={onOpenCampaign} onEditCampaign={onEditCampaign} />
     </>
   );
 }
 
-function CampaignList({ onOpenCampaign, onEditCampaign, compact = false }) {
-  const { campaigns } = useCrmData();
+function CampaignList({ campaigns: providedCampaigns, onOpenCampaign, onEditCampaign, compact = false }) {
+  const { campaigns: allCampaigns } = useCrmData();
+  const campaigns = providedCampaigns || allCampaigns;
 
   return (
     <section className={compact ? "" : "panel"}>
@@ -1545,13 +1651,14 @@ function CampaignList({ onOpenCampaign, onEditCampaign, compact = false }) {
             )}
           </article>
         ))}
-      </div> : <EmptyState icon={Megaphone} title="No campaigns yet" text="Create a campaign when you are ready to run outreach, call blocks, or research workflows." />}
+      </div> : <EmptyState icon={Megaphone} title="No campaigns yet" text="Create a campaign inside the client account when you are ready to run outreach, call blocks, or research workflows." />}
     </section>
   );
 }
 
 function CampaignDetailPage({ campaign, onNavigate, onOpenAccount, onEditCampaign }) {
   const { accounts, workspaceUsers } = useCrmData();
+  const campaignAccounts = accounts.filter(account => account.clientId === campaign.clientId);
   const assignedUserIds = Array.isArray(campaign.memberIds) ? campaign.memberIds : [];
   const assignedUsers = (workspaceUsers || []).filter(workspaceUser => assignedUserIds.includes(workspaceUser.id));
 
@@ -1567,14 +1674,14 @@ function CampaignDetailPage({ campaign, onNavigate, onOpenAccount, onEditCampaig
         {/* Calls workspace disabled: <button className="primary-button" type="button" onClick={() => onNavigate("calls")}>Call queue</button> */}
       </PageHeader>
       <div className="metrics-grid">
-        <MetricCard label="Accounts" value={campaign.accounts} detail="In campaign scope" icon={BriefcaseBusiness} />
+        <MetricCard label="Target accounts" value={campaign.accounts} detail="In campaign scope" icon={BriefcaseBusiness} />
         <MetricCard label="Contacts" value={campaign.contacts} detail="Mapped to personas" icon={Users} />
         <MetricCard label="Meetings" value={campaign.meetings} detail="Booked so far" icon={CalendarDays} />
         <MetricCard label="Owner" value={campaign.owner} detail={campaign.channel} icon={UserRound} />
       </div>
       <section className="panel">
-        <div className="panel-header"><h2>Campaign account focus</h2></div>
-        {accounts.length ? <AccountTable onOpenAccount={onOpenAccount} /> : <EmptyState icon={BriefcaseBusiness} title="No campaign accounts yet" text="Add accounts to this client to create campaign focus." />}
+        <div className="panel-header"><h2>Campaign target account focus</h2></div>
+        {campaignAccounts.length ? <AccountTable accounts={campaignAccounts} onOpenAccount={onOpenAccount} /> : <EmptyState icon={BriefcaseBusiness} title="No target accounts yet" text="Add target accounts to this client account to create campaign focus." />}
       </section>
       <section className="panel">
         <div className="panel-header">
@@ -1603,49 +1710,28 @@ function CampaignDetailPage({ campaign, onNavigate, onOpenAccount, onEditCampaig
   );
 }
 
-function AccountsPage({ onOpenAccount, onEditAccount, onNewAccount, onImport }) {
-  const { accounts } = useCrmData();
-
-  return (
-    <>
-      <PageHeader
-        eyebrow="Accounts"
-        title="Target accounts"
-        description="Account-based prospecting workspace for a fresh target account list."
-      >
-        <button className="secondary-button" type="button" onClick={onImport}>
-          <Upload size={16} />
-          Import list
-        </button>
-        <button className="primary-button" type="button" onClick={onNewAccount}>
-          <Plus size={16} />
-          Add account
-        </button>
-      </PageHeader>
-      <FilterBar label="Account filters" />
-      <section className="panel">
-        {accounts.length ? <AccountTable onOpenAccount={onOpenAccount} onEditAccount={onEditAccount} /> : <EmptyState icon={BriefcaseBusiness} title="No accounts yet" text="Add accounts manually or import a CSV to start building your target list." />}
-      </section>
-    </>
-  );
-}
-
-function AccountTable({ onOpenAccount, onEditAccount }) {
-  const { accounts } = useCrmData();
+function AccountTable({ accounts: providedAccounts, onOpenAccount, onEditAccount }) {
+  const { accounts: allAccounts } = useCrmData();
+  const accounts = providedAccounts || allAccounts;
+  const { formatCurrency } = useCurrency();
 
   return (
     <DataTable
-      columns={["Account", "Owner", "Stage", "Value", "Last activity", "Next action", ""]}
+      columns={["Target account", "Owner", "Stage", "Value", "Last activity", "Next action", ""]}
       rows={accounts.map(account => [
         <RecordName key="account" name={account.name} meta={`${account.industry} - ${account.domain}`} />,
         account.owner,
         <StatusBadge key="stage" tone={account.status === "Priority" ? "accent" : "neutral"}>{account.stage}</StatusBadge>,
-        currency.format(account.value),
+        formatCurrency(account.value),
         account.lastActivity,
         account.nextAction,
         <div key="actions" className="row-actions">
-          <button className="text-button" type="button" onClick={() => onEditAccount?.(account)}>Edit</button>
-          <button className="text-button" type="button" onClick={() => onOpenAccount(account.id)}>Open</button>
+          <button className="icon-action" type="button" onClick={() => onEditAccount?.(account)} title={`Edit ${account.name}`} aria-label={`Edit ${account.name}`}>
+            <Pencil size={16} />
+          </button>
+          <button className="icon-action" type="button" onClick={() => onOpenAccount(account.id)} title={`Open ${account.name}`} aria-label={`Open ${account.name}`}>
+            <Eye size={16} />
+          </button>
         </div>,
       ])}
     />
@@ -1654,17 +1740,18 @@ function AccountTable({ onOpenAccount, onEditAccount }) {
 
 function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResearch, onNewContact, onNewDeal }) {
   const { contacts, deals } = useCrmData();
+  const { formatCurrency } = useCurrency();
   const accountContacts = contacts.filter(contact => contact.accountId === account.id);
   const accountDeals = deals.filter(deal => deal.account === account.name);
 
   return (
     <>
       <PageHeader
-        eyebrow="Account detail"
+        eyebrow="Target account"
         title={account.name}
         description={account.insight}
       >
-        <button className="secondary-button" type="button" onClick={() => onEditAccount(account)}>Edit account</button>
+        <button className="secondary-button" type="button" onClick={() => onEditAccount(account)}>Edit target account</button>
         <button className="secondary-button" type="button">
           <ExternalLink size={16} />
           {account.domain}
@@ -1696,7 +1783,7 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
                   <strong>{contact.name}</strong>
                   <small>{contact.role}</small>
                 </span>
-                <span className="muted-inline">{getRedeemedPhoneNumber(contact) || "Redeem required"}</span>
+                <span className="muted-inline">{getContactPhoneNumber(contact) || "Phone number needed"}</span>
               </button>
             ))}
           </div> : <EmptyState icon={Contact} title="No contacts on this account" text="Add contacts to map stakeholders and build the call queue." />}
@@ -1710,7 +1797,7 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
             {accountDeals.map(deal => (
               <div key={deal.id}>
                 <span>{deal.stage}</span>
-                <strong>{currency.format(deal.value)} with {deal.contact}</strong>
+                <strong>{formatCurrency(deal.value)} with {deal.contact}</strong>
               </div>
             ))}
           </div> : <EmptyState icon={KanbanSquare} title="No deals for this account" text="Create a deal when there is a qualified opportunity to track." />}
@@ -1720,7 +1807,7 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
         <section className="panel">
           <div className="panel-header">
             <div>
-              <span className="eyebrow">Account intelligence</span>
+              <span className="eyebrow">Target account intelligence</span>
               <h2>Outreach scripts</h2>
             </div>
           </div>
@@ -1757,116 +1844,289 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
   );
 }
 
-function ContactsPage({ onOpenContact, onEditContact, onNewContact, onImport }) {
+function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveContact }) {
   const { contacts } = useCrmData();
+  const importInputRef = useRef(null);
+  const [importStatus, setImportStatus] = useState("idle");
+  const [importMessage, setImportMessage] = useState("");
+  const [query, setQuery] = useState("");
+  const searchTerms = normalizeLookupValue(query).toLowerCase().split(/\s+/).filter(Boolean);
+  const filteredContacts = searchTerms.length
+    ? contacts.filter(contact => {
+      const searchableText = [
+        contact.name,
+        contact.email,
+        getContactPhoneNumber(contact),
+        contact.role,
+        contact.account,
+      ].map(value => normalizeLookupValue(value).toLowerCase()).join(" ");
+      return searchTerms.every(term => searchableText.includes(term));
+    })
+    : contacts;
+
+  async function importContacts(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!files.length) return;
+
+    setImportStatus("loading");
+    setImportMessage("");
+    try {
+      const importedRows = (await Promise.all(files.map(parseContactImportFile))).flat();
+      if (!importedRows.length) throw new Error("No contact rows found. Include contact name and company/account columns.");
+      const result = onImportContacts?.(importedRows, files);
+      setImportStatus("done");
+      setImportMessage(`${result?.addedCount || importedRows.length} contacts imported from ${files.length} file${files.length === 1 ? "" : "s"}.`);
+    } catch (error) {
+      setImportStatus("error");
+      setImportMessage(error.message || "Could not import contacts.");
+    }
+  }
 
   return (
     <>
       <PageHeader
         eyebrow="Contacts"
         title="Contacts and personas"
-        description="UX, product, design, and research stakeholders linked to the active account list."
+        description="UX, product, design, and research stakeholders linked to the active target account list."
       >
-        <button className="secondary-button" type="button" onClick={onImport}>
+        <input ref={importInputRef} className="visually-hidden" type="file" accept=".csv,.xlsx" multiple onChange={importContacts} />
+        <button className="secondary-button" type="button" onClick={() => importInputRef.current?.click()} disabled={importStatus === "loading"}>
           <Upload size={16} />
-          Import contacts
+          {importStatus === "loading" ? "Importing" : "Import contacts"}
         </button>
         <button className="primary-button" type="button" onClick={() => onNewContact()}>
           <Plus size={16} />
           Add contact
         </button>
       </PageHeader>
-      <FilterBar label="Contact filters" />
+      <div className="contact-search-bar">
+        <Search size={16} />
+        <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search contacts by name, email, phone, role, or account" />
+        <span>{filteredContacts.length} of {contacts.length}</span>
+      </div>
+      {importMessage ? <div className={importStatus === "error" ? "form-error" : "form-success"}>{importMessage}</div> : null}
       <section className="panel">
-        {contacts.length ? <ContactTable onOpenContact={onOpenContact} onEditContact={onEditContact} /> : <EmptyState icon={Contact} title="No contacts yet" text="Add contacts after creating accounts, or import a contact list when CSV import is connected." />}
+        {contacts.length ? (
+          filteredContacts.length
+            ? <ContactTable contacts={filteredContacts} onOpenContact={onOpenContact} onRemoveContact={onRemoveContact} />
+            : <EmptyState icon={Search} title="No matching contacts" text="Try a different name, email, phone number, role, or account." />
+        ) : <EmptyState icon={Contact} title="No contacts yet" text="Add contacts after creating accounts, or import a contact list." />}
       </section>
     </>
   );
 }
 
-function ContactTable({ onOpenContact, onEditContact }) {
-  const { contacts } = useCrmData();
+function ContactTable({ contacts, onOpenContact, onRemoveContact }) {
+  const [pendingRemoval, setPendingRemoval] = useState(null);
 
   return (
-    <DataTable
-      columns={["Contact", "Account", "Persona", "Owner", "Status", "Revealed phone", ""]}
-      rows={contacts.map(contact => [
-        <RecordName key="contact" name={contact.name} meta={contact.role} />,
-        contact.account,
-        contact.persona,
-        contact.owner,
-        <StatusBadge key="status" tone={contact.status === "Meeting booked" ? "success" : "neutral"}>{contact.status}</StatusBadge>,
-        <AircallDialButton key="aircall" contact={contact} />,
-        <div key="actions" className="row-actions">
-          <button className="text-button" type="button" onClick={() => onEditContact?.(contact)}>Edit</button>
-          <button className="text-button" type="button" onClick={() => onOpenContact(contact.id)}>Open</button>
-        </div>,
-      ])}
-    />
+    <>
+      <div className="contact-list-table">
+        {contacts.map(contact => {
+          const phoneNumber = getContactPhoneNumber(contact);
+          return (
+            <article
+              key={contact.id}
+              className="contact-list-row"
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpenContact(contact.id)}
+              onKeyDown={event => {
+                if (!["Enter", " "].includes(event.key)) return;
+                event.preventDefault();
+                onOpenContact(contact.id);
+              }}
+            >
+              <div className="contact-list-person">
+                <span className="record-avatar">{accountInitial(contact.name)}</span>
+                <div>
+                  <strong>{contact.name}</strong>
+                  <span>{contact.role || "Role needed"}</span>
+                  <small>{contact.account}</small>
+                </div>
+              </div>
+              <div className="contact-list-phone">
+                <span>Phone</span>
+                <strong>{phoneNumber || "Missing"}</strong>
+              </div>
+              <div className="contact-list-actions">
+                <button className="icon-action" type="button" onClick={event => {
+                  event.stopPropagation();
+                  onOpenContact(contact.id);
+                }} title={`Open ${contact.name}`} aria-label={`Open ${contact.name}`}>
+                  <Eye size={16} />
+                </button>
+                {phoneNumber ? (
+                  <div onClick={event => event.stopPropagation()} title={`Call ${phoneNumber}`} aria-label={`Call ${phoneNumber}`}>
+                    <AircallDialButton contact={contact} compact />
+                  </div>
+                ) : null}
+                <button className="icon-action danger-button" type="button" onClick={event => {
+                  event.stopPropagation();
+                  setPendingRemoval(contact);
+                }} title={`Remove ${contact.name}`} aria-label={`Remove ${contact.name}`}>
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      {pendingRemoval ? (
+        <section className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) setPendingRemoval(null);
+        }}>
+          <div className="workflow-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="remove-contact-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Remove contact</span>
+                <h2 id="remove-contact-title">{pendingRemoval.name}</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setPendingRemoval(null)} aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <p className="modal-helper-text">This removes the contact from the CRM contact list. It does not delete saved Lead Finder records.</p>
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setPendingRemoval(null)}>Cancel</button>
+              <button className="secondary-button danger-button" type="button" onClick={() => {
+                onRemoveContact?.(pendingRemoval);
+                setPendingRemoval(null);
+              }}>
+                <Trash2 size={16} />
+                Remove contact
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+    </>
   );
 }
 
-function ContactDetailPage({ contact, onEditContact, onLogCall, onDraftEmail }) {
+function ContactDetailPage({ contact, privateNote = "", onUpdateContact, onSavePrivateNote, onLogCall }) {
   const { accounts } = useCrmData();
   const [outcome, setOutcome] = useState("Connected");
-  const [notes, setNotes] = useState("");
-  const account = accounts.find(item => item.id === contact.accountId);
+  const [noteDraft, setNoteDraft] = useState(privateNote);
+  const [noteStatus, setNoteStatus] = useState("idle");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(() => ({
+    accountId: contact.accountId,
+    name: contact.name || "",
+    role: contact.role || "",
+    email: contact.email || "",
+    phone: getContactPhoneNumber(contact),
+  }));
+  const phoneNumber = getContactPhoneNumber(contact);
+
+  function updateDraft(field, value) {
+    setDraft(current => ({ ...current, [field]: value }));
+  }
+
+  function saveContactChanges() {
+    onUpdateContact?.({ id: contact.id, ...draft });
+    setEditing(false);
+  }
 
   return (
     <>
       <PageHeader
         eyebrow="Contact detail"
         title={contact.name}
-        description={`${contact.role} at ${contact.account}. ${contact.lastTouch}.`}
+        description={`${contact.role} at ${contact.account}.`}
       >
-        <button className="secondary-button" type="button" onClick={() => onEditContact(contact)}>Edit contact</button>
-        <AircallDialButton contact={contact} />
-        <button className="primary-button" type="button" onClick={() => onDraftEmail(contact.id)}>
-          <Mail size={16} />
-          Draft email
-        </button>
+        {phoneNumber ? <AircallDialButton contact={contact} /> : null}
       </PageHeader>
       <div className="record-hero">
         <span className="record-avatar large">{accountInitial(contact.name)}</span>
         <div className="detail-list inline">
           <div><span>Account</span><strong>{contact.account}</strong></div>
-          <div><span>Persona</span><strong>{contact.persona}</strong></div>
-          <div><span>Owner</span><strong>{contact.owner}</strong></div>
-          <div><span>Status</span><strong>{contact.status}</strong></div>
+          <div><span>Role</span><strong>{contact.role || "Role needed"}</strong></div>
         </div>
       </div>
       <div className="content-grid two">
         <section className="panel">
-          <div className="panel-header"><h2>Contact details</h2></div>
-          <div className="detail-list">
-            <div><span>Email</span><strong>{contact.email}</strong></div>
-            <div><span>Revealed phone</span><strong>{getRedeemedPhoneNumber(contact) || "Redeem required"}</strong></div>
-            <div><span>Lead Finder status</span><strong>{contact.redeemed ? "Redeemed" : "Preview-only or not redeemed"}</strong></div>
-            <div><span>Account signal</span><strong>{account?.insight}</strong></div>
+          <div className="panel-header">
+            <h2>Contact details</h2>
+            {editing ? (
+              <div className="row-actions">
+                <button className="text-button" type="button" onClick={() => setEditing(false)}>Cancel</button>
+                <button className="secondary-button" type="button" onClick={saveContactChanges}>Save</button>
+              </div>
+            ) : (
+              <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>
+            )}
           </div>
+          {editing ? (
+            <div className="detail-edit-grid">
+              <FormField label="Account">
+                <select value={draft.accountId} onChange={event => updateDraft("accountId", event.target.value)}>
+                  {accounts.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </FormField>
+              <FormField label="Name">
+                <input value={draft.name} onChange={event => updateDraft("name", event.target.value)} />
+              </FormField>
+              <FormField label="Role">
+                <input value={draft.role} onChange={event => updateDraft("role", event.target.value)} />
+              </FormField>
+              <FormField label="Email">
+                <input type="email" value={draft.email} onChange={event => updateDraft("email", event.target.value)} />
+              </FormField>
+              <FormField label="Phone number">
+                <input value={draft.phone} onChange={event => updateDraft("phone", event.target.value)} />
+              </FormField>
+            </div>
+          ) : (
+            <div className="detail-list">
+              <div><span>Email</span><strong>{contact.email || "Email needed"}</strong></div>
+              <div><span>Phone</span><strong>{phoneNumber || "Phone number needed"}</strong></div>
+            </div>
+          )}
         </section>
         <section className="panel">
           <div className="panel-header">
             <div>
-              <span className="eyebrow">Aircall MVP</span>
-              <h2>Log call outcome</h2>
+              <span className="eyebrow">Calls</span>
+              <h2>Call outcome</h2>
             </div>
           </div>
           <div className="call-logger">
-            <div className="call-actions">
-              <AircallDialButton contact={contact} />
-            </div>
             <label>
               Outcome
               <select value={outcome} onChange={event => setOutcome(event.target.value)}>
                 {callOutcomes.map(item => <option key={item}>{item}</option>)}
               </select>
             </label>
-            <textarea value={notes} placeholder="Notes, objections, next step" onChange={event => setNotes(event.target.value)} />
             <button className="primary-button" type="button" onClick={() => {
-              onLogCall({ contactId: contact.id, outcome, notes });
-              setNotes("");
+              onLogCall({ contactId: contact.id, outcome });
             }}>Save outcome</button>
+          </div>
+        </section>
+        <section className="panel private-note-panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Private</span>
+              <h2>My notes</h2>
+            </div>
+          </div>
+          <textarea value={noteDraft} placeholder="Only you can see notes saved here." onChange={event => {
+            setNoteDraft(event.target.value);
+            setNoteStatus("idle");
+          }} />
+          <div className="modal-actions">
+            {noteStatus === "saved" ? <span className="muted-inline">Saved</span> : null}
+            {noteStatus === "error" ? <span className="form-error">Could not save note.</span> : null}
+            <button className="primary-button" type="button" disabled={noteStatus === "saving"} onClick={async () => {
+              setNoteStatus("saving");
+              try {
+                await onSavePrivateNote?.(contact.id, noteDraft);
+                setNoteStatus("saved");
+              } catch {
+                setNoteStatus("error");
+              }
+            }}>{noteStatus === "saving" ? "Saving" : "Save note"}</button>
           </div>
         </section>
       </div>
@@ -1874,12 +2134,21 @@ function ContactDetailPage({ contact, onEditContact, onLogCall, onDraftEmail }) 
   );
 }
 
-function PipelinePage({ onOpenAccount, onMoveDeal, onNewDeal, onUpdateStages }) {
+function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onMoveDeal, onNewDeal, onUpdateStages }) {
   const { deals, accounts, pipelineStages } = useCrmData();
+  const { formatCurrency } = useCurrency();
   const [draggedDealId, setDraggedDealId] = useState("");
   const [dropStage, setDropStage] = useState("");
   const [editingStages, setEditingStages] = useState(false);
   const [draftStages, setDraftStages] = useState(() => cloneRecords(pipelineStages || pipelineColumns));
+  const scopedAccounts = activeClient?.id && activeClient.id !== "none"
+    ? accounts.filter(account => account.clientId === activeClient.id)
+    : accounts;
+  const scopedAccountNames = new Set(scopedAccounts.map(account => account.name));
+  const scopedDeals = deals.filter(deal => (
+    scopedAccountNames.has(deal.account)
+    && (!activeCampaign?.id || activeCampaign.id === "none" || !deal.campaignId || deal.campaignId === activeCampaign.id)
+  ));
 
   function saveStages() {
     const nextStages = draftStages.map((stage, index) => ({
@@ -1895,7 +2164,7 @@ function PipelinePage({ onOpenAccount, onMoveDeal, onNewDeal, onUpdateStages }) 
       <PageHeader
         eyebrow="Pipeline"
         title="Opportunity board"
-        description="Drag deals between stages to keep account movement current."
+        description={`${activeClient?.name || "Client account"} pipeline${activeCampaign?.name && activeCampaign.id !== "none" ? ` for ${activeCampaign.name}` : ""}.`}
       >
         <button className="secondary-button" type="button" onClick={() => {
           if (!editingStages) setDraftStages(cloneRecords(pipelineStages || pipelineColumns));
@@ -1938,7 +2207,7 @@ function PipelinePage({ onOpenAccount, onMoveDeal, onNewDeal, onUpdateStages }) 
       )}
       <div className="pipeline-board">
         {(pipelineStages || pipelineColumns).map(column => {
-          const columnDeals = deals.filter(deal => deal.stage === column.id);
+          const columnDeals = scopedDeals.filter(deal => deal.stage === column.id);
           return (
             <section
               key={column.id}
@@ -1990,7 +2259,7 @@ function PipelinePage({ onOpenAccount, onMoveDeal, onNewDeal, onUpdateStages }) 
                     <span>{deal.contact}</span>
                     <div>
                       <small>{deal.owner}</small>
-                      <small>{currency.format(deal.value)}</small>
+                      <small>{formatCurrency(deal.value)}</small>
                     </div>
                     <StatusBadge>{deal.due}</StatusBadge>
                   </article>
@@ -2000,9 +2269,9 @@ function PipelinePage({ onOpenAccount, onMoveDeal, onNewDeal, onUpdateStages }) 
           );
         })}
       </div>
-      {!deals.length && (
+      {!scopedDeals.length && (
         <section className="panel empty-board-panel">
-          <EmptyState icon={KanbanSquare} title="No deals in the pipeline yet" text="Create accounts and contacts first, then add deals to start tracking pipeline." />
+          <EmptyState icon={KanbanSquare} title="No deals in this pipeline yet" text="Create target accounts and contacts inside the client account, then add deals to track pipeline." />
         </section>
       )}
     </>
@@ -2015,16 +2284,13 @@ function CallsPage({ onOpenContact, onLogCall, onStartCallBlock }) {
   const { contacts, callInsights } = useCrmData();
   const [outcome, setOutcome] = useState("Connected");
   const [contactId, setContactId] = useState("");
-  const [notes, setNotes] = useState("");
-  const [transcript, setTranscript] = useState("");
-  const [analysisPreset, setAnalysisPreset] = useState("Possible objections");
 
   return (
     <>
       <PageHeader
         eyebrow="Calls"
         title="Call workspace"
-        description="Aircall dialing is enabled only for contacts with redeemed phone numbers. Outcome logging writes to the CRM activity timeline."
+        description="Call contacts with saved phone numbers and log outcomes to the CRM timeline."
       >
         <button className="secondary-button" type="button">
           <Phone size={16} />
@@ -2039,14 +2305,15 @@ function CallsPage({ onOpenContact, onLogCall, onStartCallBlock }) {
         <section className="panel">
           <div className="panel-header"><h2>Today call queue</h2></div>
           {contacts.length ? <DataTable
-            columns={["Contact", "Account", "Status", "Revealed phone", ""]}
+            columns={["Contact", "Account", "Phone"]}
             rows={contacts.slice(0, 5).map(contact => [
               <RecordName key="contact" name={contact.name} meta={contact.role} />,
               contact.account,
-              contact.status,
-              <AircallDialButton key="aircall" contact={contact} />,
-              <button key="open" className="text-button" type="button" onClick={() => onOpenContact(contact.id)}>Log</button>,
+              <div key="aircall" onClick={event => event.stopPropagation()}>
+                <AircallDialButton contact={contact} />
+              </div>,
             ])}
+            rowActions={contacts.slice(0, 5).map(contact => () => onOpenContact(contact.id))}
           /> : <EmptyState icon={Phone} title="No calls queued" text="Add contacts with phone numbers to create your first call block." />}
         </section>
         <section className="panel call-sidebar">
@@ -2071,22 +2338,8 @@ function CallsPage({ onOpenContact, onLogCall, onStartCallBlock }) {
                 {callOutcomes.map(item => <option key={item}>{item}</option>)}
               </select>
             </label>
-            <textarea value={notes} placeholder="Notes, objections, next step" onChange={event => setNotes(event.target.value)} />
-            <label>
-              Analysis preset
-              <select value={analysisPreset} onChange={event => setAnalysisPreset(event.target.value)}>
-                <option>Possible objections</option>
-                <option>Sentiment score</option>
-                <option>Next best action</option>
-                <option>Discovery gaps</option>
-                <option>Custom review</option>
-              </select>
-            </label>
-            <textarea value={transcript} placeholder="Paste call transcript for AI-style analysis and weekly reporting" onChange={event => setTranscript(event.target.value)} />
             <button className="primary-button" type="button" disabled={!contacts.length} onClick={() => {
-              onLogCall({ contactId: contactId || contacts[0]?.id, outcome, notes, transcript, analysisPreset });
-              setNotes("");
-              setTranscript("");
+              onLogCall({ contactId: contactId || contacts[0]?.id, outcome });
             }}>Save outcome</button>
           </div>
         </section>
@@ -2131,8 +2384,8 @@ function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource
     <>
       <PageHeader
         eyebrow="Research"
-        title="Account intelligence"
-        description={`${activeClient?.name || "Workspace"} research and scripts${activeCampaign?.name && activeCampaign.id !== "none" ? ` for ${activeCampaign.name}` : ""}.`}
+        title="Target account intelligence"
+        description={`${activeClient?.name || "Client account"} research and scripts${activeCampaign?.name && activeCampaign.id !== "none" ? ` for ${activeCampaign.name}` : ""}.`}
       >
         <button className="secondary-button" type="button" onClick={onAddSource}>
           <Upload size={16} />
@@ -2149,7 +2402,7 @@ function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource
       </PageHeader>
       <section className="panel research-scope-panel">
         <div className="results-summary">
-          <div><span>Client</span><strong>{activeClient?.name || "No client"}</strong></div>
+          <div><span>Client account</span><strong>{activeClient?.name || "No client account"}</strong></div>
           <div><span>Campaign</span><strong>{activeCampaign?.name || "No campaign"}</strong></div>
           <div><span>Call insights</span><strong>{callInsights.length}</strong></div>
           <div><span>Reports</span><strong>{weeklyReports.length}</strong></div>
@@ -2183,7 +2436,7 @@ function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource
               <div><span>Suggested angle</span><strong>{account.nextAction}</strong></div>
             </div>
             <button className="text-button" type="button" onClick={() => onOpenAccount(account.id)}>
-              Open account <ArrowRight size={14} />
+              Open target account <ArrowRight size={14} />
             </button>
           </article>
         )) : <section className="panel"><EmptyState icon={FileText} title="No research records yet" text="Research summaries will appear after accounts are added and research jobs are created." /></section>}
@@ -2270,12 +2523,24 @@ const companyImportColumnNames = new Set([
   "organization",
 ]);
 
+const contactImportColumnMap = {
+  name: ["contact", "contact name", "name", "full name", "person", "lead", "lead name"],
+  account: ["account", "account name", "company", "company name", "organisation", "organization"],
+  role: ["role", "title", "job title", "position"],
+  email: ["email", "email address", "work email"],
+  phone: ["phone", "phone number", "mobile", "mobile phone", "telephone", "number"],
+};
+
 function normalizeImportHeader(value) {
   return String(value || "")
     .trim()
     .toLowerCase()
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ");
+}
+
+function findImportColumnIndex(headerRow, aliases) {
+  return headerRow.findIndex(cell => aliases.includes(normalizeImportHeader(cell)));
 }
 
 function dedupeCompanyImportRows(rows) {
@@ -2328,6 +2593,76 @@ async function parseCompanyImportFile(file) {
   });
 
   return dedupeCompanyImportRows(importedRows);
+}
+
+function dedupeContactImportRows(rows) {
+  const seenContacts = new Set();
+  const uniqueRows = [];
+
+  for (const row of rows) {
+    const contactName = String(row.name || "").trim();
+    const accountName = String(row.account || "").trim();
+    if (!contactName || !accountName) continue;
+    const key = [
+      contactName.toLowerCase(),
+      accountName.toLowerCase(),
+      normalizeEmail(row.email),
+      normalizePhone(row.phone),
+    ].join("|");
+    if (seenContacts.has(key)) continue;
+    seenContacts.add(key);
+    uniqueRows.push({ ...row, name: contactName, account: accountName });
+  }
+
+  return uniqueRows;
+}
+
+function extractContactImportRowsFromSheet(rows, sourceFile, sourceSheet = "") {
+  const headerRowIndex = rows.findIndex(row => (
+    findImportColumnIndex(row, contactImportColumnMap.name) !== -1
+    && findImportColumnIndex(row, contactImportColumnMap.account) !== -1
+  ));
+  if (headerRowIndex === -1) return [];
+
+  const headerRow = rows[headerRowIndex];
+  const nameColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.name);
+  const accountColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.account);
+  const roleColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.role);
+  const emailColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.email);
+  const phoneColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.phone);
+
+  return rows
+    .slice(headerRowIndex + 1)
+    .map(row => ({
+      name: String(row[nameColumnIndex] || "").trim(),
+      account: String(row[accountColumnIndex] || "").trim(),
+      role: roleColumnIndex === -1 ? "" : String(row[roleColumnIndex] || "").trim(),
+      email: emailColumnIndex === -1 ? "" : normalizeEmail(row[emailColumnIndex]),
+      phone: phoneColumnIndex === -1 ? "" : String(row[phoneColumnIndex] || "").trim(),
+      sourceFile,
+      sourceSheet,
+    }))
+    .filter(row => row.name && row.account);
+}
+
+async function parseContactImportFile(file) {
+  const filename = file?.name || "";
+  const extension = filename.split(".").pop()?.toLowerCase();
+  if (!["csv", "xlsx"].includes(extension)) {
+    throw new Error("Upload a .xlsx or .csv file.");
+  }
+
+  const workbook = extension === "csv"
+    ? XLSX.read(await file.text(), { type: "string" })
+    : XLSX.read(await file.arrayBuffer(), { type: "array" });
+
+  const importedRows = workbook.SheetNames.flatMap(sheetName => {
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "", blankrows: false });
+    return extractContactImportRowsFromSheet(rows, filename, extension === "csv" ? "" : sheetName);
+  });
+
+  return dedupeContactImportRows(importedRows);
 }
 
 const cognismExportColumns = [
@@ -4162,7 +4497,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       >
         <button className="secondary-button" type="button" disabled>
           <LockKeyhole size={16} />
-          Redeem disabled in test mode
+          Full data disabled in test mode
         </button>
       </PageHeader>
 
@@ -4171,7 +4506,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           <div className="panel-header">
             <div>
             <span className="eyebrow">Search inputs</span>
-            <h2>Any client or account list</h2>
+            <h2>Any client account or target account list</h2>
           </div>
           <StatusBadge tone="accent">Configurable max</StatusBadge>
         </div>
@@ -4728,7 +5063,7 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
 
   function enableCognismRedeem() {
     if (cognismRedeemCode.trim() !== COGNISM_REDEEM_CONFIRMATION) {
-      setCognismRedeemError(`Type ${COGNISM_REDEEM_CONFIRMATION} to enable redeem mode.`);
+      setCognismRedeemError(`Type ${COGNISM_REDEEM_CONFIRMATION} to enable full data mode.`);
       return;
     }
     setCognismRedeemError("");
@@ -4767,11 +5102,11 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
               {integration.name === "Cognism" ? (
                 <div className="integration-setting">
                   <div>
-                    <span>Redeem mode</span>
-                    <StatusBadge tone={integration.redeemEnabled ? "warning" : "success"}>{integration.redeemEnabled ? "Redeem on" : "Preview only"}</StatusBadge>
+                    <span>Full data mode</span>
+                    <StatusBadge tone={integration.redeemEnabled ? "warning" : "success"}>{integration.redeemEnabled ? "Full data on" : "Preview data"}</StatusBadge>
                   </div>
                   <button className="secondary-button" type="button" onClick={() => integration.redeemEnabled ? onUpdateIntegration(integration.name, { redeemEnabled: false }) : setCognismRedeemModalOpen(true)}>
-                    {integration.redeemEnabled ? "Set preview only" : "Enable redeem"}
+                    {integration.redeemEnabled ? "Use preview data" : "Enable full data"}
                   </button>
                 </div>
               ) : null}
@@ -4808,11 +5143,11 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
             <div className="modal-header">
               <div>
                 <span className="eyebrow">Cognism</span>
-                <h2>Enable redeem mode</h2>
+                <h2>Enable full data mode</h2>
               </div>
               <button className="secondary-button" type="button" onClick={closeCognismRedeemModal}>Close</button>
             </div>
-            <p className="modal-helper-text">Redeem mode can consume Cognism credits. Type {COGNISM_REDEEM_CONFIRMATION} to turn it on.</p>
+            <p className="modal-helper-text">Full data mode can consume Cognism credits. Enter access code to turn it on.</p>
             <label className="form-field">
               <span>Confirmation</span>
               <input
@@ -4822,7 +5157,7 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
                   setCognismRedeemCode(event.target.value);
                   setCognismRedeemError("");
                 }}
-                placeholder={COGNISM_REDEEM_CONFIRMATION}
+                placeholder=""
                 autoComplete="off"
               />
             </label>
@@ -4830,7 +5165,7 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
             <div className="modal-actions">
               <button className="secondary-button" type="button" onClick={closeCognismRedeemModal}>Cancel</button>
               <button className="primary-button" type="button" onClick={enableCognismRedeem} disabled={!cognismIntegration}>
-                Enable redeem
+                Enable full data
               </button>
             </div>
           </section>
@@ -4926,8 +5261,9 @@ const integrationCredentialForms = [
   },
 ];
 
-function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdateProfile }) {
-  const { teamMembers, clients, workspaceUsers } = useCrmData();
+function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdateProfile, currencyCode, onCurrencyChange }) {
+  const { teamMembers, workspaceUsers } = useCrmData();
+  const { currencyOptions: availableCurrencies } = useCurrency();
   const visibleTeamMembers = workspaceUsers?.length ? workspaceUsers : teamMembers;
   const metadata = user?.user_metadata || {};
   const nameParts = String(metadata.full_name || "").trim().split(" ").filter(Boolean);
@@ -4959,7 +5295,7 @@ function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdat
       <PageHeader
         eyebrow="Settings"
         title="Workspace settings"
-        description="Tenant, team, preference, and security settings for the CRM workspace."
+        description="Tenant, team, and preference settings for the CRM workspace."
       >
         <button className="primary-button" type="button" onClick={onInviteTeamMember}>
           <Plus size={16} />
@@ -5026,12 +5362,12 @@ function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdat
               </button>
             </div>
             <div>
-              <span>Default client</span>
-              <strong>{clients[0]?.name || "Create a client first"}</strong>
-            </div>
-            <div>
-              <span>Security posture</span>
-              <strong>RLS-ready schema, no frontend API keys</strong>
+              <span>Currency</span>
+              <select value={currencyCode} onChange={event => onCurrencyChange(event.target.value)}>
+                {availableCurrencies.map(option => (
+                  <option key={option.code} value={option.code}>{option.label} ({option.code})</option>
+                ))}
+              </select>
             </div>
           </div>
         </section>
@@ -5068,7 +5404,7 @@ function FilesPage({ onUploadFile }) {
         /> : <EmptyState
           icon={FileText}
           title="No files added yet"
-          text="CSV import and file summariser workflows will attach source files to clients, accounts, and campaigns."
+          text="CSV import and file summariser workflows will attach source files to client accounts, target accounts, and campaigns."
         />}
       </section>
     </>
@@ -5200,7 +5536,6 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
         setError("Check your email to confirm your account, then sign in.");
         return;
       }
-      await ensureWorkspace(user);
       onAuthenticate(user);
     } catch (authError) {
       const message = String(authError?.message || "").toLowerCase();
@@ -5226,7 +5561,7 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
           <div className="auth-copy">
             <span className="eyebrow">Workspace access</span>
             <h1>{mode === "signin" ? "Open your workspace" : "Create a workspace"}</h1>
-            <p>Manage clients, campaigns, accounts, contacts, calls, and research from one PaceOps operating system.</p>
+            <p>Manage client accounts, campaigns, target accounts, contacts, calls, and research from one PaceOps operating system.</p>
           </div>
 
           <form className="auth-form" onSubmit={submit}>
@@ -5281,7 +5616,7 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
   );
 }
 
-function HomePage({ isDark, onThemeToggle, onAuthenticate }) {
+function HomePage({ isDark, onThemeToggle, onAuthenticate, user, onBackToWorkspace }) {
   const [authMode, setAuthMode] = useState("signin");
 
   return (
@@ -5291,16 +5626,15 @@ function HomePage({ isDark, onThemeToggle, onAuthenticate }) {
           <img src={logoUrl} alt="PaceOps" />
           <span>PaceOps/CRM</span>
         </a>
-        <nav>
-          <a href="#about">About</a>
-          <a href="#contact">Contact</a>
-        </nav>
         <div>
-          <a className="phone-pill" href="tel:+448438092108">+44 (0) 8438092108</a>
           <button className="secondary-button" type="button" onClick={onThemeToggle}>
             {isDark ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          <a className="primary-button" href="#auth" onClick={() => setAuthMode("signin")}>Sign in</a>
+          {user ? (
+            <button className="primary-button" type="button" onClick={onBackToWorkspace}>Back to workspace</button>
+          ) : (
+            <a className="primary-button" href="#auth" onClick={() => setAuthMode("signin")}>Sign in</a>
+          )}
         </div>
       </header>
 
@@ -5310,26 +5644,63 @@ function HomePage({ isDark, onThemeToggle, onAuthenticate }) {
             <span className="eyebrow">PaceOps/CRM</span>
             <h1>Client account management for PaceOps teams.</h1>
             <p>PaceOps is a professional services prospecting hub focused on human-personalised outreach, data-driven insight, and sales development operations.</p>
-            <p>PaceOps/CRM is the internal workspace for managing clients, campaigns, accounts, contacts, calls, research, and pipeline activity.</p>
+            <p>PaceOps/CRM is the internal workspace for managing client accounts, campaigns, target accounts, contacts, calls, research, and pipeline activity.</p>
 
             <div id="contact" className="contact-card">
               <h2>Contact</h2>
-              <div className="contact-list">
-                <a href="tel:+448438092108">+44 (0) 8438092108</a>
-                <a href="tel:+3530216017406">+353 (0) 21 601 7406</a>
-                <a href="tel:+12159953839">+1 215 995 3839</a>
-                <a href="mailto:enquiries@paceops.com">enquiries@paceops.com</a>
+              <div className="regional-contact-list">
+                <article>
+                  <span className="flag-mark" aria-hidden="true">🇬🇧</span>
+                  <div>
+                    <strong>United Kingdom</strong>
+                    <a href="tel:+448438092108">+44 (0) 843 809 2108</a>
+                    <p>The Bradfield Centre, Cambridge Science Park, Cambridge, CB4 0GA</p>
+                  </div>
+                </article>
+                <article>
+                  <span className="flag-mark" aria-hidden="true">🇮🇪</span>
+                  <div>
+                    <strong>Ireland</strong>
+                    <a href="tel:+3530216017406">+353 (0) 21 601 7406</a>
+                    <p>The Guinness Enterprise Centre, Taylor's Lane, Dublin, D08 ET2R</p>
+                  </div>
+                </article>
+                <article>
+                  <span className="flag-mark" aria-hidden="true">🇺🇸</span>
+                  <div>
+                    <strong>United States</strong>
+                    <a href="tel:+12159953839">+1 215 995 3839</a>
+                    <p>1442 Pottstown Pike, Unit 3242, West Chester, PA 19380</p>
+                  </div>
+                </article>
               </div>
-              <div className="address-list">
-                <p><strong>UK</strong> The Bradfield Centre, Cambridge Science Park, Cambridge, CB4 0GA</p>
-                <p><strong>Ireland</strong> The Guinness Enterprise Centre, Taylor's Lane, Dublin, D08 ET2R</p>
-                <p><strong>US</strong> 1442 Pottstown Pike, Unit 3242, West Chester, PA 19380</p>
+              <div className="contact-email-row">
+                <Mail size={16} />
+                <a href="mailto:enquiries@paceops.com">enquiries@paceops.com</a>
               </div>
             </div>
           </div>
 
           <div id="auth" className="home-auth">
-            <AuthPanel key={authMode} initialMode={authMode} onAuthenticate={onAuthenticate} />
+            {user ? (
+              <section className="auth-panel auth-card home-return-card">
+                <div className="auth-brand">
+                  <img src={logoUrl} alt="PaceOps" />
+                  <div>
+                    <strong>PaceOps/CRM</strong>
+                    <span>{user.email}</span>
+                  </div>
+                </div>
+                <div className="auth-copy">
+                  <span className="eyebrow">Signed in</span>
+                  <h1>Return to your workspace</h1>
+                  <p>Open the CRM dashboard to continue managing client accounts, campaigns, calls, and research.</p>
+                </div>
+                <button className="primary-button" type="button" onClick={onBackToWorkspace}>Open workspace</button>
+              </section>
+            ) : (
+              <AuthPanel key={authMode} initialMode={authMode} onAuthenticate={onAuthenticate} />
+            )}
           </div>
         </section>
       </main>
@@ -5337,7 +5708,7 @@ function HomePage({ isDark, onThemeToggle, onAuthenticate }) {
   );
 }
 
-function RightDrawer({ open, activeView, selectedAccount, activeCampaign }) {
+function RightDrawer({ open, activeView, selectedAccount, activeCampaign, isDark, onThemeToggle, onOpenHome, onLogout, loggingOut }) {
   if (!open) return null;
 
   return (
@@ -5349,6 +5720,23 @@ function RightDrawer({ open, activeView, selectedAccount, activeCampaign }) {
           <small>Workflow guidance</small>
         </div>
       </div>
+      <section>
+        <span className="eyebrow">Workspace menu</span>
+        <div className="drawer-actions">
+          <button className="secondary-button" type="button" onClick={onOpenHome}>
+            <LayoutDashboard size={16} />
+            Home page
+          </button>
+          <button className="secondary-button" type="button" onClick={onThemeToggle}>
+            {isDark ? <Sun size={16} /> : <Moon size={16} />}
+            {isDark ? "Light mode" : "Dark mode"}
+          </button>
+          <button className="secondary-button logout-action" type="button" onClick={onLogout} disabled={loggingOut}>
+            <LogOut size={16} />
+            {loggingOut ? "Signing out" : "Log out"}
+          </button>
+        </div>
+      </section>
       <section>
         <span className="eyebrow">Context</span>
         <h2>{selectedAccount?.name || activeCampaign.name}</h2>
@@ -5391,7 +5779,7 @@ const clientWorkspaceOptions = [
   "Sales workspace",
   "Strategic account workspace",
   "Enterprise account workspace",
-  "Client workspace",
+  "Client account workspace",
   "Professional services workspace",
   "Agency workspace",
   "Account management workspace",
@@ -5427,11 +5815,11 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
     case "client":
       return { name: "", workspace: "Prospecting workspace", owner: "Workspace user", industry: "", website: "" };
     case "campaign":
-      return { clientId, name: "", channel: "Research-led outbound", status: "draft", nextAction: "Define account focus and first call block", memberIds: [] };
+      return { clientId, name: "", channel: "Research-led outbound", status: "draft", nextAction: "Define target account focus and first call block", memberIds: [] };
     case "account":
       return { clientId, name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || "Lead In", status: "New", nextAction: "Map buying committee", insight: "" };
     case "contact":
-      return { accountId, name: "", role: "", persona: "Product leadership", email: "", phone: "", mobile: "", status: "New" };
+      return { accountId, accountName: data.accounts.find(account => account.id === accountId)?.name || "", name: "", role: "", email: "", phone: "", status: "New" };
     case "deal":
       return { accountId, contactId, stage: "lead", value: "0", due: "Today", owner: "Workspace user" };
     case "call":
@@ -5442,8 +5830,6 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
       return { name: "", source: "CSV import", objectType: "accounts", rows: "0" };
     case "team":
       return { name: "", role: "Team member", status: "Invited" };
-    case "email":
-      return { contactId, subject: "Follow-up", body: "" };
     case "audit":
       return { note: "Review who can connect integrations and where activity is logged." };
     default:
@@ -5457,29 +5843,28 @@ function getWorkflowTitle(type) {
   }
 
   return {
-    client: "New client",
+  client: "New client account",
     campaign: "New campaign",
-    account: "Add account",
+  account: "Add target account",
     contact: "Add contact",
     deal: "New deal",
     call: "Log call outcome",
     research: "Queue research",
     file: "Add source file",
     team: "Invite teammate",
-    email: "Draft email",
     audit: "Audit model",
   }[type] || "CRM workflow";
 }
 
 function getWorkflowPrerequisite(type, data) {
   if (["campaign", "account"].includes(type) && !data.clients.length) {
-    return { message: "Create a client first. Campaigns and accounts belong inside a client workspace.", nextType: "client", nextLabel: "Create client" };
+    return { message: "Create a client account first. Campaigns and target accounts belong inside a client account.", nextType: "client", nextLabel: "Create client account" };
   }
   if (["contact", "deal", "research"].includes(type) && !data.accounts.length) {
-    return { message: "Add an account first. Contacts, deals, and research need an account to attach to.", nextType: data.clients.length ? "account" : "client", nextLabel: data.clients.length ? "Add account" : "Create client" };
+    return { message: "Add a target account first. Contacts, deals, and research need a target account to attach to.", nextType: data.clients.length ? "account" : "client", nextLabel: data.clients.length ? "Add target account" : "Create client account" };
   }
-  if (["call", "email"].includes(type) && !data.contacts.length) {
-    return { message: "Add a contact first. Calls and email drafts need a contact record.", nextType: data.accounts.length ? "contact" : data.clients.length ? "account" : "client", nextLabel: data.accounts.length ? "Add contact" : data.clients.length ? "Add account" : "Create client" };
+  if (type === "call" && !data.contacts.length) {
+    return { message: "Add a contact first. Calls need a contact record.", nextType: data.accounts.length ? "contact" : data.clients.length ? "account" : "client", nextLabel: data.accounts.length ? "Add contact" : data.clients.length ? "Add target account" : "Create client account" };
   }
   return null;
 }
@@ -5498,6 +5883,7 @@ function WorkflowModal({
   const [values, setValues] = useState(() => getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, selectedContactId, data));
   const [companyLookupEnabled, setCompanyLookupEnabled] = useState(false);
   const [companyLookupStatus, setCompanyLookupStatus] = useState("idle");
+  const [companyLookupMessage, setCompanyLookupMessage] = useState("");
   const [clientTouchedFields, setClientTouchedFields] = useState({ workspace: false, industry: false, website: false });
   const [accountLookupEnabled, setAccountLookupEnabled] = useState(false);
   const [accountLookupStatus, setAccountLookupStatus] = useState("idle");
@@ -5525,14 +5911,22 @@ function WorkflowModal({
   async function runCompanyLookup() {
     if (!companyLookupEnabled || values.name.trim().length < 2 || companyLookupStatus === "loading") return;
     setCompanyLookupStatus("loading");
+    setCompanyLookupMessage("");
     try {
       const response = await fetch("/api/client-suggestions", {
         method: "POST",
         headers: await buildApiHeaders(),
         body: JSON.stringify({ name: values.name }),
       });
-      const suggestions = await response.json();
+      const suggestions = await readJsonResponse(response);
       if (!response.ok) throw new Error(suggestions.error || "Company lookup failed");
+
+      if (suggestions.source === "not_found") {
+        setCompanyLookupStatus("failed");
+        setCompanyLookupMessage(suggestions.warning || `Could not confidently identify "${values.name}" from web results.`);
+        return;
+      }
+
       setValues(current => ({
         ...current,
         workspace: clientTouchedFields.workspace ? current.workspace : suggestions.workspace || current.workspace,
@@ -5540,8 +5934,10 @@ function WorkflowModal({
         website: clientTouchedFields.website ? current.website : suggestions.website || current.website,
       }));
       setCompanyLookupStatus(suggestions.source === "web_search" ? "found" : "fallback");
-    } catch {
+      setCompanyLookupMessage(suggestions.warning || "");
+    } catch (error) {
       setCompanyLookupStatus("failed");
+      setCompanyLookupMessage(error.message || "Lookup service unavailable.");
     }
   }
 
@@ -5620,7 +6016,7 @@ function WorkflowModal({
             <datalist id="client-industry-options">
               {clientIndustryOptions.map(option => <option key={option} value={option} />)}
             </datalist>
-            <FormField label="Client name">
+            <FormField label="Client account name">
               <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Company name" />
             </FormField>
             <label className="company-lookup-toggle">
@@ -5634,6 +6030,7 @@ function WorkflowModal({
                 onChange={event => {
                   setCompanyLookupEnabled(event.target.checked);
                   setCompanyLookupStatus("idle");
+                  setCompanyLookupMessage("");
                 }}
               />
             </label>
@@ -5646,9 +6043,9 @@ function WorkflowModal({
             {companyLookupEnabled && companyLookupStatus !== "idle" && (
               <div className={`lookup-status ${companyLookupStatus}`}>
                 {companyLookupStatus === "loading" && "Searching web..."}
-                {companyLookupStatus === "found" && "Details found from web search."}
-                {companyLookupStatus === "fallback" && "Used a best-effort suggestion."}
-                {companyLookupStatus === "failed" && "Could not search right now."}
+                {companyLookupStatus === "found" && "Details found from OpenAI web search."}
+                {companyLookupStatus === "fallback" && (companyLookupMessage ? `Used a local fallback suggestion. ${companyLookupMessage}` : "Used a local fallback suggestion.")}
+                {companyLookupStatus === "failed" && (companyLookupMessage || "Could not confidently identify this company from web results.")}
               </div>
             )}
             <FormField label="Workspace">
@@ -5665,7 +6062,7 @@ function WorkflowModal({
       case "campaign":
         return (
           <>
-            <FormField label="Client">
+            <FormField label="Client account">
               <select value={values.clientId} onChange={event => update("clientId", event.target.value)}>
                 {data.clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
               </select>
@@ -5702,7 +6099,7 @@ function WorkflowModal({
       case "account":
         return (
           <>
-            <FormField label="Client">
+            <FormField label="Client account">
               <select value={values.clientId} onChange={event => update("clientId", event.target.value)}>
                 {data.clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
               </select>
@@ -5805,10 +6202,19 @@ function WorkflowModal({
       case "contact":
         return (
           <>
+            <datalist id="contact-account-options">
+              {data.accounts.map(account => <option key={account.id} value={account.name} />)}
+            </datalist>
             <FormField label="Account">
-              <select value={values.accountId} onChange={event => update("accountId", event.target.value)}>
-                {accountOptions()}
-              </select>
+              <input list="contact-account-options" required value={values.accountName} onChange={event => {
+                const accountName = event.target.value;
+                const matchedAccount = data.accounts.find(account => normalizeLookupValue(account.name).toLowerCase() === normalizeLookupValue(accountName).toLowerCase());
+                setValues(current => ({
+                  ...current,
+                  accountName,
+                  accountId: matchedAccount?.id || "",
+                }));
+              }} placeholder="Type or select account" />
             </FormField>
             <FormField label="Contact name">
               <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Contact name" />
@@ -5816,17 +6222,11 @@ function WorkflowModal({
             <FormField label="Role">
               <input value={values.role} onChange={event => update("role", event.target.value)} placeholder="Head of Product" />
             </FormField>
-            <FormField label="Persona">
-              <input value={values.persona} onChange={event => update("persona", event.target.value)} placeholder="Product leadership" />
-            </FormField>
             <FormField label="Email">
               <input type="email" value={values.email} onChange={event => update("email", event.target.value)} placeholder="name@company.com" />
             </FormField>
-            <FormField label="Phone">
+            <FormField label="Phone number">
               <input value={values.phone} onChange={event => update("phone", event.target.value)} placeholder="+44..." />
-            </FormField>
-            <FormField label="Mobile">
-              <input value={values.mobile} onChange={event => update("mobile", event.target.value)} placeholder="+44..." />
             </FormField>
           </>
         );
@@ -5909,7 +6309,7 @@ function WorkflowModal({
             </FormField>
             <FormField label="Record type">
               <select value={values.objectType} onChange={event => update("objectType", event.target.value)}>
-                <option value="accounts">Accounts</option>
+                <option value="accounts">Target accounts</option>
                 <option value="contacts">Contacts</option>
                 <option value="research">Research</option>
               </select>
@@ -5937,22 +6337,6 @@ function WorkflowModal({
             </FormField>
           </>
         );
-      case "email":
-        return (
-          <>
-            <FormField label="Contact">
-              <select value={values.contactId} onChange={event => update("contactId", event.target.value)}>
-                {data.contacts.map(contact => <option key={contact.id} value={contact.id}>{contact.name}</option>)}
-              </select>
-            </FormField>
-            <FormField label="Subject">
-              <input value={values.subject} onChange={event => update("subject", event.target.value)} />
-            </FormField>
-            <FormField label="Draft notes">
-              <textarea value={values.body} onChange={event => update("body", event.target.value)} placeholder="Key message points" />
-            </FormField>
-          </>
-        );
       case "audit":
         return (
           <FormField label="Note">
@@ -5974,7 +6358,9 @@ function WorkflowModal({
             <span className="eyebrow">Workflow</span>
             <h2>{getWorkflowTitle(workflow.type)}</h2>
           </div>
-          <button className="icon-action" type="button" onClick={onClose} aria-label="Close workflow">x</button>
+          <button className="icon-action" type="button" onClick={onClose} aria-label="Close workflow">
+            <X size={16} />
+          </button>
         </div>
 
         {prerequisite ? (
@@ -6012,18 +6398,22 @@ export default function App() {
   const [leadLists, setLeadLists] = useState([]);
   const [leadListsError, setLeadListsError] = useState("");
   const [leadContactDatabase, setLeadContactDatabase] = useState([]);
+  const [privateContactNotes, setPrivateContactNotes] = useState({});
   const [integrationCredentials, setIntegrationCredentials] = useState({ providers: {} });
   const [activeView, setActiveView] = useState("dashboard");
+  const [showHomePage, setShowHomePage] = useState(false);
   const [activeClientId, setActiveClientId] = useState("each-other");
   const [activeCampaignId, setActiveCampaignId] = useState("priority-targeting");
   const [selectedAccountId, setSelectedAccountId] = useState("account-01");
   const [selectedContactId, setSelectedContactId] = useState("contact-01");
+  const [currencyCode, setCurrencyCode] = useState(() => normalizeCurrencyCode(localStorage.getItem(CURRENCY_STORAGE_KEY)));
   const [viewHistory, setViewHistory] = useState([]);
   const [drawerOpen, setDrawerOpen] = useState(() => localStorage.getItem("paceops.drawerOpen") === "true");
   const [search, setSearch] = useState("");
   const [workflow, setWorkflow] = useState(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const lastSyncedCrmJsonRef = useRef("");
+  const authLoadRef = useRef({ userId: "", promise: null });
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -6048,8 +6438,10 @@ export default function App() {
       setLeadLists([]);
       setLeadListsError("");
       setLeadContactDatabase([]);
+      setPrivateContactNotes({});
       setIntegrationCredentials({ providers: {} });
       setUser(null);
+      setShowHomePage(false);
       setAuthReady(true);
       setLoggingOut(false);
     });
@@ -6117,12 +6509,50 @@ export default function App() {
     localStorage.setItem("paceops.drawerOpen", drawerOpen ? "true" : "false");
   }, [drawerOpen]);
 
+  useEffect(() => {
+    if (!user?.id) return undefined;
+
+    const applyBrowserNavigation = event => {
+      const navigation = event.state?.workspaceNavigation;
+      if (navigation?.activeView) {
+        setActiveView(navigation.activeView);
+        if (navigation.activeClientId) setActiveClientId(navigation.activeClientId);
+        if (navigation.activeCampaignId) setActiveCampaignId(navigation.activeCampaignId);
+        if (navigation.selectedAccountId) setSelectedAccountId(navigation.selectedAccountId);
+        if (navigation.selectedContactId) setSelectedContactId(navigation.selectedContactId);
+        return;
+      }
+
+      setActiveView(readWorkspaceViewFromUrl() || "dashboard");
+    };
+
+    window.addEventListener("popstate", applyBrowserNavigation);
+    return () => window.removeEventListener("popstate", applyBrowserNavigation);
+  }, [user?.id]);
+
   async function handleAuthenticatedUser(nextUser) {
+    if (authLoadRef.current.userId === nextUser.id && authLoadRef.current.promise) {
+      await authLoadRef.current.promise;
+      return;
+    }
+
+    const loadPromise = loadAuthenticatedUser(nextUser);
+    authLoadRef.current = { userId: nextUser.id, promise: loadPromise };
+    try {
+      await loadPromise;
+    } finally {
+      if (authLoadRef.current.promise === loadPromise) {
+        authLoadRef.current = { userId: "", promise: null };
+      }
+    }
+  }
+
+  async function loadAuthenticatedUser(nextUser) {
     setCrmSyncReady(false);
     try {
       const organizationId = await ensureWorkspace(nextUser);
       const currentWorkspaceUser = mapAuthUserToWorkspaceUser(nextUser);
-      const [syncedCrmData, workspaceUsers, nextLeadLists, nextLeadContactDatabase] = await Promise.all([
+      const [syncedCrmData, workspaceUsers, nextLeadLists, nextLeadContactDatabase, nextPrivateContactNotes] = await Promise.all([
         loadSyncedCrmData(nextUser.id, organizationId),
         loadWorkspaceUsers(organizationId),
         loadLeadLists(organizationId).catch(error => {
@@ -6135,6 +6565,10 @@ export default function App() {
           setLeadListsError(error.message || "Could not load Lead Finder contact database.");
           return [];
         }),
+        loadPrivateContactNotes(organizationId, nextUser.id).catch(error => {
+          console.error("Could not load private contact notes", error);
+          return {};
+        }),
       ]);
       const nextCrmData = {
         ...refreshCrmData(syncedCrmData),
@@ -6144,17 +6578,19 @@ export default function App() {
       setCrmData(nextCrmData);
       setLeadLists(nextLeadLists);
       setLeadContactDatabase(nextLeadContactDatabase);
+      setPrivateContactNotes(nextPrivateContactNotes);
       loadIntegrationCredentialsStatus().catch(error => {
         console.error("Could not load integration credential status", error);
       });
       const isFirstAuthenticatedLoad = !hasSavedUiState(nextUser.id);
       if (isFirstAuthenticatedLoad) {
-        setActiveView("dashboard");
+        setActiveView(readWorkspaceViewFromUrl() || "dashboard");
         setSelectedAccountId(null);
         setSelectedContactId(null);
       } else {
         const uiState = loadUiState(nextUser.id);
-        if (uiState.activeView) setActiveView(uiState.activeView);
+        const urlView = readWorkspaceViewFromUrl();
+        if (urlView || uiState.activeView) setActiveView(urlView || uiState.activeView);
         if (uiState.activeClientId) setActiveClientId(uiState.activeClientId);
         if (uiState.activeCampaignId) setActiveCampaignId(uiState.activeCampaignId);
         if (uiState.selectedAccountId) setSelectedAccountId(uiState.selectedAccountId);
@@ -6173,6 +6609,7 @@ export default function App() {
       setDataOrgId(null);
       setLeadLists([]);
       setLeadContactDatabase([]);
+      setPrivateContactNotes({});
       setIntegrationCredentials({ providers: {} });
       setDataUserId(nextUser.id);
       setUser(nextUser);
@@ -6458,11 +6895,30 @@ export default function App() {
     );
   }
 
+  if (showHomePage) {
+    return (
+      <HomePage
+        isDark={isDark}
+        onThemeToggle={() => setIsDark(value => !value)}
+        onAuthenticate={handleAuthenticatedUser}
+        user={user}
+        onBackToWorkspace={() => setShowHomePage(false)}
+      />
+    );
+  }
+
   const { clients, campaigns, accounts, contacts, workspaceUsers = [] } = crmData;
   const activeClient = clients.find(client => client.id === activeClientId) || clients[0] || emptyClient;
-  const activeCampaign = campaigns.find(campaign => campaign.id === activeCampaignId) || campaigns[0] || emptyCampaign;
+  const activeClientCampaigns = activeClient.id !== "none" ? campaigns.filter(campaign => campaign.clientId === activeClient.id) : campaigns;
+  const activeCampaign = activeClientCampaigns.find(campaign => campaign.id === activeCampaignId) || activeClientCampaigns[0] || emptyCampaign;
   const selectedAccount = accounts.find(account => account.id === selectedAccountId) || accounts[0] || null;
   const selectedContact = contacts.find(contact => contact.id === selectedContactId) || contacts[0] || null;
+  const currencyFormatter = createCurrencyFormatter(currencyCode);
+  const currencyContextValue = {
+    currencyCode,
+    currencyOptions,
+    formatCurrency: value => currencyFormatter.format(Number(value) || 0),
+  };
 
   const searchQuery = search.trim().toLowerCase();
   const searchResults = searchQuery.length < 2 ? [] : [
@@ -6490,11 +6946,24 @@ export default function App() {
     if (updates.activeCampaignId) setActiveCampaignId(updates.activeCampaignId);
     if (updates.selectedAccountId) setSelectedAccountId(updates.selectedAccountId);
     if (updates.selectedContactId) setSelectedContactId(updates.selectedContactId);
+    if (options.browserHistory !== false) {
+      writeWorkspaceHistory({
+        ...currentNavigationState(),
+        ...updates,
+        activeView: view,
+      });
+    }
     setActiveView(view);
   }
 
   function navigatePrimary(view) {
     setViewHistory([]);
+    writeWorkspaceHistory({
+      ...currentNavigationState(),
+      activeView: view,
+      selectedAccountId,
+      selectedContactId,
+    });
     setActiveView(view);
   }
 
@@ -6502,6 +6971,7 @@ export default function App() {
     setViewHistory(current => {
       const previous = current[current.length - 1];
       if (!previous) return current;
+      writeWorkspaceHistory(previous);
       setActiveClientId(previous.activeClientId);
       setActiveCampaignId(previous.activeCampaignId);
       setSelectedAccountId(previous.selectedAccountId);
@@ -6509,6 +6979,18 @@ export default function App() {
       setActiveView(previous.activeView);
       return current.slice(0, -1);
     });
+  }
+
+  function handleCurrencyChange(nextCurrencyCode) {
+    const normalizedCode = normalizeCurrencyCode(nextCurrencyCode);
+    setCurrencyCode(normalizedCode);
+    localStorage.setItem(CURRENCY_STORAGE_KEY, normalizedCode);
+  }
+
+  function handleActiveClientChange(clientId) {
+    setActiveClientId(clientId);
+    const nextCampaign = campaigns.find(campaign => campaign.clientId === clientId);
+    setActiveCampaignId(nextCampaign?.id || "none");
   }
 
   function openAccount(id) {
@@ -6551,10 +7033,6 @@ export default function App() {
     openWorkflow("edit-account", { record: account });
   }
 
-  function editContact(contact) {
-    openWorkflow("edit-contact", { record: contact });
-  }
-
   function closeWorkflow() {
     setWorkflow(null);
   }
@@ -6572,22 +7050,253 @@ export default function App() {
     }));
   }
 
-  function handleLogCall({ contactId, outcome, notes, transcript = "", analysisPreset = "General analysis" }) {
+  function handleUpdateContact(values) {
+    updateData(current => {
+      const account = current.accounts.find(item => item.id === values.accountId);
+      return {
+        ...current,
+        contacts: current.contacts.map(contact => contact.id === values.id
+          ? {
+            ...contact,
+            clientId: account?.clientId || contact.clientId,
+            accountId: values.accountId || contact.accountId,
+            account: account?.name || contact.account,
+            name: values.name.trim() || contact.name,
+            role: values.role || "Stakeholder",
+            email: values.email,
+            phone: values.phone,
+            mobile: undefined,
+            phoneNumber: undefined,
+            redeemed: undefined,
+            lastTouch: "Updated just now",
+          }
+          : contact),
+        activities: [makeActivity("Contact", `Contact updated: ${values.name || "Untitled contact"}`, account?.name || "Workspace"), ...current.activities],
+      };
+    });
+  }
+
+  async function handleSavePrivateContactNote(contactId, note) {
+    if (!contactId || !user?.id) return;
+    const { currentUser, organizationId } = await getLeadContactSaveContext();
+    const body = normalizeLookupValue(note);
+
+    if (!body) {
+      const { error } = await supabase
+        .from("contact_private_notes")
+        .delete()
+        .eq("organization_id", organizationId)
+        .eq("created_by", currentUser.id)
+        .eq("crm_contact_id", contactId);
+
+      if (error) throw error;
+      setPrivateContactNotes(current => {
+        const next = { ...current };
+        delete next[contactId];
+        return next;
+      });
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("contact_private_notes")
+      .upsert({
+        organization_id: organizationId,
+        crm_contact_id: contactId,
+        body,
+        created_by: currentUser.id,
+      }, { onConflict: "organization_id,crm_contact_id,created_by" })
+      .select("crm_contact_id,body")
+      .single();
+
+    if (error) throw error;
+    setPrivateContactNotes(current => ({
+      ...current,
+      [data.crm_contact_id]: data.body || "",
+    }));
+  }
+
+  function handleRemoveContact(contact) {
+    if (!contact?.id) return;
+
+    updateData(current => ({
+      ...current,
+      contacts: current.contacts.filter(item => item.id !== contact.id),
+      deals: current.deals.map(deal => deal.contactId === contact.id
+        ? { ...deal, contactId: "", contact: "No primary contact" }
+        : deal),
+      activities: [makeActivity("Contact", `Contact removed: ${contact.name || "Untitled contact"}`, contact.account || "Workspace"), ...current.activities],
+    }));
+    setSelectedContactId(current => current === contact.id ? null : current);
+    setActiveView("contacts");
+  }
+
+  function handleRemoveClient(client) {
+    if (!client?.id || client.id === "none") return;
+
+    const removedAccountIds = new Set(crmData.accounts.filter(account => account.clientId === client.id).map(account => account.id));
+    const removedContactIds = new Set(crmData.contacts.filter(contact => contact.clientId === client.id || removedAccountIds.has(contact.accountId)).map(contact => contact.id));
+    const removedCampaignIds = new Set(crmData.campaigns.filter(campaign => campaign.clientId === client.id).map(campaign => campaign.id));
+    const remainingClients = crmData.clients.filter(item => item.id !== client.id);
+    const remainingCampaign = crmData.campaigns.find(campaign => campaign.clientId !== client.id);
+    const remainingAccount = crmData.accounts.find(account => account.clientId !== client.id);
+    const remainingContact = crmData.contacts.find(contact => contact.clientId !== client.id && !removedAccountIds.has(contact.accountId));
+
+    updateData(current => {
+      const accountIds = new Set(current.accounts.filter(account => account.clientId === client.id).map(account => account.id));
+      const accountNames = new Set(current.accounts.filter(account => account.clientId === client.id).map(account => account.name));
+      const contactIds = new Set(current.contacts.filter(contact => contact.clientId === client.id || accountIds.has(contact.accountId)).map(contact => contact.id));
+      const contactNames = new Set(current.contacts.filter(contact => contact.clientId === client.id || accountIds.has(contact.accountId)).map(contact => contact.name));
+      const campaignIds = new Set(current.campaigns.filter(campaign => campaign.clientId === client.id).map(campaign => campaign.id));
+
+      return {
+        ...current,
+        clients: current.clients.filter(item => item.id !== client.id),
+        campaigns: current.campaigns.filter(campaign => campaign.clientId !== client.id),
+        accounts: current.accounts.filter(account => account.clientId !== client.id),
+        contacts: current.contacts.filter(contact => contact.clientId !== client.id && !accountIds.has(contact.accountId)),
+        deals: current.deals.filter(deal => (
+          !accountIds.has(deal.accountId)
+          && !contactIds.has(deal.contactId)
+          && !accountNames.has(deal.account)
+          && !contactNames.has(deal.contact)
+        )),
+        activities: [
+          makeActivity("Client", `Client removed: ${client.name || "Untitled client"}`),
+          ...current.activities.filter(activity => (
+            !accountNames.has(activity.account)
+            && !contactIds.has(activity.contactId)
+            && !campaignIds.has(activity.campaignId)
+          )),
+        ],
+        researchItems: current.researchItems.filter(item => item.clientId !== client.id && !accountIds.has(item.accountId)),
+        scriptItems: (current.scriptItems || []).filter(item => item.clientId !== client.id && !accountIds.has(item.accountId) && !campaignIds.has(item.campaignId)),
+        callInsights: (current.callInsights || []).filter(insight => !contactIds.has(insight.contactId)),
+        weeklyReports: (current.weeklyReports || []).filter(report => report.clientId !== client.id && !campaignIds.has(report.campaignId)),
+      };
+    });
+
+    if (activeClientId === client.id) setActiveClientId(remainingClients[0]?.id || "none");
+    if (removedCampaignIds.has(activeCampaignId)) setActiveCampaignId(remainingCampaign?.id || "none");
+    if (removedAccountIds.has(selectedAccountId)) setSelectedAccountId(remainingAccount?.id || null);
+    if (removedContactIds.has(selectedContactId)) setSelectedContactId(remainingContact?.id || null);
+    if (activeView === "client-detail") setActiveView("clients");
+  }
+
+  function handleImportContacts(rows = [], files = []) {
+    let addedCount = 0;
+    let skippedCount = 0;
+
+    updateData(current => {
+      const clients = current.clients.length ? current.clients : [{
+        id: makeId("client"),
+        name: "Imported contacts",
+        workspace: "Prospecting workspace",
+        status: "Active",
+        owner: "Workspace user",
+        accounts: 0,
+        contacts: 0,
+        health: "Active",
+        industry: "",
+        website: "",
+      }];
+      const defaultClient = clients[0];
+      const accounts = [...current.accounts];
+      const contacts = [...current.contacts];
+
+      for (const row of rows) {
+        const contactName = normalizeLookupValue(row.name);
+        const accountName = normalizeLookupValue(row.account);
+        if (!contactName || !accountName) {
+          skippedCount += 1;
+          continue;
+        }
+
+        const phone = normalizeLookupValue(row.phone);
+        const email = normalizeEmail(row.email);
+        const duplicate = contacts.some(contact => {
+          const sameEmail = email && normalizeEmail(contact.email) === email;
+          const samePhone = phone && normalizePhone(getContactPhoneNumber(contact)) === normalizePhone(phone);
+          const samePersonAtAccount = normalizeLookupValue(contact.name).toLowerCase() === contactName.toLowerCase()
+            && normalizeLookupValue(contact.account).toLowerCase() === accountName.toLowerCase();
+          return sameEmail || samePhone || samePersonAtAccount;
+        });
+
+        if (duplicate) {
+          skippedCount += 1;
+          continue;
+        }
+
+        let account = accounts.find(item => normalizeLookupValue(item.name).toLowerCase() === accountName.toLowerCase());
+        if (!account) {
+          account = {
+            id: makeId("account"),
+            clientId: defaultClient.id,
+            name: accountName,
+            domain: "No domain",
+            owner: "Workspace user",
+            stage: current.pipelineStages?.[0]?.name || "Lead In",
+            status: "New",
+            industry: "Unspecified",
+            location: "Unspecified",
+            employees: "Unknown",
+            value: 0,
+            lastActivity: "Imported with contacts",
+            nextAction: "Review imported contact",
+            insight: "Created from contact import.",
+            scripts: null,
+          };
+          accounts.unshift(account);
+        }
+
+        contacts.unshift({
+          id: makeId("contact"),
+          clientId: account.clientId,
+          accountId: account.id,
+          account: account.name,
+          name: contactName,
+          role: normalizeLookupValue(row.role) || "Stakeholder",
+          email,
+          phone,
+          owner: "Workspace user",
+          status: "New",
+          lastTouch: "Imported",
+        });
+        addedCount += 1;
+      }
+
+      const fileRecords = files.map(file => ({
+        id: makeId("file"),
+        name: file.name || "contacts-import",
+        source: "CSV import",
+        objectType: "contacts",
+        rows: rows.length,
+        status: "Imported",
+        added: "Just now",
+      }));
+
+      return {
+        ...current,
+        clients,
+        accounts,
+        contacts,
+        files: [...fileRecords, ...current.files],
+        activities: [makeActivity("Import", `Imported ${addedCount} contacts${skippedCount ? `, skipped ${skippedCount}` : ""}`, "Workspace"), ...current.activities],
+      };
+    });
+
+    return { addedCount, skippedCount };
+  }
+
+  function handleLogCall({ contactId, outcome }) {
     if (!contactId) return;
     updateData(current => {
       const contact = current.contacts.find(item => item.id === contactId);
       if (!contact) return current;
-      const account = current.accounts.find(item => item.id === contact.accountId);
       const activity = makeActivity("Call", `${outcome} logged for ${contact.name}`, contact.account, "Workspace user", {
         contactId,
         outcome,
-        notes,
-        transcript,
-        analysisPreset,
       });
-      const insight = (notes || transcript)
-        ? buildCallInsight({ contact, account, outcome, notes, transcript, preset: analysisPreset })
-        : null;
       const nextContacts = current.contacts.map(item => item.id === contactId
         ? { ...item, status: outcome, lastTouch: `${outcome} just now` }
         : item);
@@ -6600,7 +7309,6 @@ export default function App() {
         ...current,
         contacts: nextContacts,
         campaigns: nextCampaigns,
-        callInsights: insight ? [insight, ...(current.callInsights || [])] : current.callInsights || [],
         activities: [activity, ...current.activities],
       };
     });
@@ -6726,9 +7434,6 @@ export default function App() {
         persona: "Lead Finder",
         email: leadEmail,
         phone: phoneNumber,
-        mobile: phoneNumber,
-        phoneNumber,
-        redeemed: Boolean(phoneNumber),
         owner: "Workspace user",
         status: "New",
         lastTouch: "Added from Lead Lookup",
@@ -6854,11 +7559,11 @@ export default function App() {
               account: account?.name || contact.account,
               name: values.name.trim() || contact.name,
               role: values.role || "Stakeholder",
-              persona: values.persona || "Stakeholder",
               email: values.email,
-              phone: values.phone || values.mobile,
-              mobile: values.mobile || values.phone,
-              status: values.status || contact.status,
+              phone: values.phone,
+              mobile: undefined,
+              phoneNumber: undefined,
+              redeemed: undefined,
               lastTouch: "Updated just now",
             }
             : contact),
@@ -6900,7 +7605,7 @@ export default function App() {
             accounts: current.accounts.filter(account => account.clientId === clientId).length,
             contacts: current.contacts.filter(contact => contact.clientId === clientId).length,
             meetings: 0,
-            nextAction: values.nextAction || "Define account focus and next action",
+            nextAction: values.nextAction || "Define target account focus and next action",
             memberIds: Array.isArray(values.memberIds) ? values.memberIds : [],
           };
           setActiveClientId(clientId);
@@ -6941,8 +7646,40 @@ export default function App() {
           };
         }
         case "contact": {
-          const account = current.accounts.find(item => item.id === values.accountId);
-          if (!account) return current;
+          const accountName = normalizeLookupValue(values.accountName) || "Untitled account";
+          const fallbackClient = current.clients[0] || {
+            id: makeId("client"),
+            name: "Imported contacts",
+            workspace: "Prospecting workspace",
+            status: "Active",
+            owner: "Workspace user",
+            accounts: 0,
+            contacts: 0,
+            health: "Active",
+            industry: "",
+            website: "",
+          };
+          const existingAccount = current.accounts.find(item => (
+            item.id === values.accountId
+            || normalizeLookupValue(item.name).toLowerCase() === accountName.toLowerCase()
+          ));
+          const account = existingAccount || {
+            id: makeId("account"),
+            clientId: fallbackClient.id,
+            name: accountName,
+            domain: "No domain",
+            owner: "Workspace user",
+            stage: current.pipelineStages?.[0]?.name || "Lead In",
+            status: "New",
+            industry: "Unspecified",
+            location: "Unspecified",
+            employees: "Unknown",
+            value: 0,
+            lastActivity: "Created with contact",
+            nextAction: "Review new contact",
+            insight: "Created from contact form.",
+            scripts: null,
+          };
           const contact = {
             id: makeId("contact"),
             clientId: account.clientId,
@@ -6950,10 +7687,8 @@ export default function App() {
             account: account.name,
             name: values.name.trim() || "Untitled contact",
             role: values.role || "Stakeholder",
-            persona: values.persona || "Stakeholder",
             email: values.email,
-            phone: values.phone || values.mobile,
-            mobile: values.mobile || values.phone,
+            phone: values.phone,
             owner: "Workspace user",
             status: values.status || "New",
             lastTouch: "Created just now",
@@ -6963,6 +7698,8 @@ export default function App() {
           setActiveView("contact-detail");
           return {
             ...current,
+            clients: current.clients.length ? current.clients : [fallbackClient],
+            accounts: existingAccount ? current.accounts : [account, ...current.accounts],
             contacts: [contact, ...current.contacts],
             activities: [makeActivity("Contact", `Contact added: ${contact.name}`, account.name), ...current.activities],
           };
@@ -6973,6 +7710,8 @@ export default function App() {
           const contact = current.contacts.find(item => item.id === values.contactId);
           const deal = {
             id: makeId("deal"),
+            clientId: account.clientId,
+            campaignId: activeCampaignId !== "none" ? activeCampaignId : "",
             accountId: account.id,
             contactId: contact?.id,
             account: account.name,
@@ -7052,17 +7791,6 @@ export default function App() {
             activities: [makeActivity("Team", `${member.name} invited`), ...current.activities],
           };
         }
-        case "email": {
-          const contact = current.contacts.find(item => item.id === values.contactId);
-          if (!contact) return current;
-          return {
-            ...current,
-            activities: [makeActivity("Email", `Email draft created for ${contact.name}`, contact.account, "Workspace user", {
-              subject: values.subject,
-              body: values.body,
-            }), ...current.activities],
-          };
-        }
         case "audit":
           return {
             ...current,
@@ -7090,33 +7818,36 @@ export default function App() {
   function renderPage() {
     switch (activeView) {
       case "clients":
-        return <ClientsPage onOpenClient={openClient} onEditClient={editClient} onNewClient={() => openWorkflow("client")} />;
+        return <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} />;
       case "client-detail":
         return (
           <ClientDetailPage
             client={activeClient}
             onOpenCampaign={openCampaign}
+            onOpenAccount={openAccount}
             onEditClient={editClient}
+            onEditAccount={editAccount}
+            onRemoveClient={handleRemoveClient}
             onNewCampaign={() => openWorkflow("campaign", { clientId: activeClient.id })}
             onNewAccount={() => openWorkflow("account", { clientId: activeClient.id })}
           />
         );
       case "campaigns":
-        return <CampaignsPage onOpenCampaign={openCampaign} onEditCampaign={editCampaign} onNewCampaign={() => openWorkflow("campaign")} onImport={() => openWorkflow("file", { returnTo: "campaigns" })} />;
+        return <CampaignsPage activeClient={activeClient} onOpenCampaign={openCampaign} onEditCampaign={editCampaign} onNewCampaign={() => openWorkflow("campaign", { clientId: activeClient.id })} onImport={() => openWorkflow("file", { returnTo: "campaigns" })} />;
       case "campaign-detail":
         return <CampaignDetailPage campaign={activeCampaign} onNavigate={openView} onOpenAccount={openAccount} onEditCampaign={editCampaign} />;
       case "accounts":
-        return <AccountsPage onOpenAccount={openAccount} onEditAccount={editAccount} onNewAccount={() => openWorkflow("account")} onImport={() => openWorkflow("file", { returnTo: "accounts" })} />;
+        return <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} />;
       case "account-detail":
         return selectedAccount
           ? <AccountDetailPage account={selectedAccount} onOpenContact={openContact} onEditAccount={editAccount} onQueueResearch={(accountId) => openWorkflow("research", { accountId })} onNewContact={(accountId) => openWorkflow("contact", { accountId })} onNewDeal={(accountId) => openWorkflow("deal", { accountId })} />
-          : <AccountsPage onOpenAccount={openAccount} onEditAccount={editAccount} onNewAccount={() => openWorkflow("account")} onImport={() => openWorkflow("file", { returnTo: "accounts" })} />;
+          : <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} />;
       case "contacts":
-        return <ContactsPage onOpenContact={openContact} onEditContact={editContact} onNewContact={(accountId) => openWorkflow("contact", accountId ? { accountId } : {})} onImport={() => openWorkflow("file", { returnTo: "contacts" })} />;
+        return <ContactsPage onOpenContact={openContact} onNewContact={(accountId) => openWorkflow("contact", accountId ? { accountId } : {})} onImportContacts={handleImportContacts} onRemoveContact={handleRemoveContact} />;
       case "contact-detail":
         return selectedContact
-          ? <ContactDetailPage contact={selectedContact} onEditContact={editContact} onLogCall={handleLogCall} onDraftEmail={(contactId) => openWorkflow("email", { contactId })} />
-          : <ContactsPage onOpenContact={openContact} onEditContact={editContact} onNewContact={() => openWorkflow("contact")} onImport={() => openWorkflow("file", { returnTo: "contacts" })} />;
+          ? <ContactDetailPage key={selectedContact.id} contact={selectedContact} privateNote={privateContactNotes[selectedContact.id] || ""} onUpdateContact={handleUpdateContact} onSavePrivateNote={handleSavePrivateContactNote} onLogCall={handleLogCall} />
+          : <ContactsPage onOpenContact={openContact} onNewContact={() => openWorkflow("contact")} onImportContacts={handleImportContacts} onRemoveContact={handleRemoveContact} />;
       case "cognism":
         return <CognismContactFinder contactDatabase={leadContactDatabase} onSaveLeadList={handleSaveLeadList} onSaveLeadContact={handleUpsertLeadContact} onPersistSearchResults={handlePersistSearchResults} />;
       case "lead-lists":
@@ -7124,18 +7855,26 @@ export default function App() {
       case "lead-lookup":
         return <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} />;
       case "pipeline":
-        return <PipelinePage onOpenAccount={openAccount} onMoveDeal={handleMoveDeal} onNewDeal={(accountId) => openWorkflow("deal", accountId ? { accountId } : {})} onUpdateStages={handleUpdatePipelineStages} />;
+        return <PipelinePage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onMoveDeal={handleMoveDeal} onNewDeal={(accountId) => openWorkflow("deal", accountId ? { accountId } : {})} onUpdateStages={handleUpdatePipelineStages} />;
+      case "research":
+        return <ResearchPage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onAddSource={() => openWorkflow("file", { returnTo: "research" })} onQueueResearch={(accountId) => openWorkflow("research", accountId ? { accountId } : {})} onGenerateScripts={handleGenerateResearchScripts} onMoveScript={handleMoveScript} onGenerateReport={handleGenerateReport} />;
       // Calls workspace disabled:
       // case "calls":
       //   return <CallsPage onOpenContact={openContact} onLogCall={handleLogCall} onStartCallBlock={() => openWorkflow("call")} />;
-      case "research":
-        return <ResearchPage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onAddSource={() => openWorkflow("file", { returnTo: "research" })} onQueueResearch={(accountId) => openWorkflow("research", accountId ? { accountId } : {})} onGenerateScripts={handleGenerateResearchScripts} onMoveScript={handleMoveScript} onGenerateReport={handleGenerateReport} />;
       case "files":
         return <FilesPage onUploadFile={() => openWorkflow("file", { returnTo: "files" })} />;
       case "integrations":
         return <IntegrationsPage onNavigate={openView} onOpenWorkflow={(type) => openWorkflow(type)} onUpdateIntegration={updateIntegration} integrationCredentials={integrationCredentials} onSaveIntegrationCredentials={handleSaveIntegrationCredentials} />;
       case "settings":
-        return <SettingsPage isDark={isDark} onThemeToggle={() => setIsDark(value => !value)} onInviteTeamMember={() => openWorkflow("team")} user={user} onUpdateProfile={handleUpdateProfile} />;
+        return <SettingsPage
+          isDark={isDark}
+          onThemeToggle={() => setIsDark(value => !value)}
+          onInviteTeamMember={() => openWorkflow("team")}
+          user={user}
+          onUpdateProfile={handleUpdateProfile}
+          currencyCode={currencyCode}
+          onCurrencyChange={handleCurrencyChange}
+        />;
       default:
         return (
           <DashboardPage
@@ -7150,7 +7889,8 @@ export default function App() {
 
   return (
     <CrmDataContext.Provider value={crmData}>
-      <div className={`crm-app ${isDark ? "dark" : "light"}`}>
+      <CurrencyContext.Provider value={currencyContextValue}>
+        <div className={`crm-app ${isDark ? "dark" : "light"}`}>
         <Sidebar activeView={activeView} onNavigate={navigatePrimary} />
         <div className="workspace">
           <TopBar
@@ -7158,18 +7898,14 @@ export default function App() {
             onBack={goBack}
             activeClient={activeClient}
             activeCampaign={activeCampaign}
-            onClientChange={setActiveClientId}
+            onClientChange={handleActiveClientChange}
             onCampaignChange={setActiveCampaignId}
-            isDark={isDark}
-            onThemeToggle={() => setIsDark(value => !value)}
             drawerOpen={drawerOpen}
             onDrawerToggle={() => setDrawerOpen(value => !value)}
             search={search}
             onSearchChange={setSearch}
             searchResults={searchResults}
             onSearchSelect={handleSearchSelect}
-            onLogout={handleLogout}
-            loggingOut={loggingOut}
           />
           <div className={`workspace-body ${drawerOpen ? "with-drawer" : ""}`}>
             <main className="main-content">
@@ -7180,6 +7916,11 @@ export default function App() {
               activeView={activeView}
               selectedAccount={selectedAccount}
               activeCampaign={activeCampaign}
+              isDark={isDark}
+              onThemeToggle={() => setIsDark(value => !value)}
+              onOpenHome={() => setShowHomePage(true)}
+              onLogout={handleLogout}
+              loggingOut={loggingOut}
             />
           </div>
         </div>
@@ -7195,7 +7936,8 @@ export default function App() {
             onSwitchWorkflow={(type) => openWorkflow(type)}
           />
         )}
-      </div>
+        </div>
+      </CurrencyContext.Provider>
     </CrmDataContext.Provider>
   );
 }

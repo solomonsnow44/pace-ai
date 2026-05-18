@@ -1,6 +1,14 @@
 const SEARCH_URL = "https://html.duckduckgo.com/html/";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const DEFAULT_CLIENT_LOOKUP_MODEL = "gpt-4.1-mini";
 const DEFAULT_ACCOUNT_LOOKUP_MODEL = "gpt-4.1-mini";
+const BLANK_CLIENT_LOOKUP = {
+  workspace: "",
+  industry: "",
+  website: "",
+  source: "not_found",
+  evidence: [],
+};
 
 export const INDUSTRY_RULES = [
   { keywords: ["payment", "payments", "fintech", "banking", "financial technology"], industry: "Financial technology", workspace: "Strategic account workspace" },
@@ -135,6 +143,54 @@ function extractCitations(payload) {
     .slice(0, 3);
 }
 
+function extractSourceUrls(payload) {
+  const citationUrls = extractCitations(payload).map(citation => citation.url);
+  const sourceUrls = (payload.output || [])
+    .flatMap(item => item.sources || [])
+    .map(source => source.url)
+    .filter(Boolean);
+  return [...new Set([...citationUrls, ...sourceUrls])].slice(0, 6);
+}
+
+function logClientLookupFailure(companyName, error, details = {}) {
+  console.error("Client company lookup failed", {
+    companyName,
+    message: error?.message || String(error),
+    statusCode: error?.statusCode,
+    ...details,
+  });
+}
+
+function blankClientLookup(warning) {
+  return {
+    ...BLANK_CLIENT_LOOKUP,
+    warning,
+  };
+}
+
+function hostname(value) {
+  try {
+    return new URL(value).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function isSameHost(left, right) {
+  const leftHost = hostname(left);
+  const rightHost = hostname(right);
+  return Boolean(leftHost && rightHost && (leftHost === rightHost || leftHost.endsWith(`.${rightHost}`) || rightHost.endsWith(`.${leftHost}`)));
+}
+
+function isWeakClientLookup(parsed = {}, website = "", evidence = []) {
+  const industry = String(parsed.industry || "").trim().toLowerCase();
+  const warning = String(parsed.warning || "").trim().toLowerCase();
+  const officialWebsiteCited = evidence.some(url => isSameHost(url, website));
+  return !officialWebsiteCited
+    || ["", "unknown", "n/a", "not available"].includes(industry)
+    || /not (a )?real|placeholder|non-functional|cannot|could not|unable|unclear|not confident/.test(warning);
+}
+
 export async function suggestClientFieldsFromWeb(input = {}, options = {}) {
   const companyName = String(input.name || "").trim();
   if (companyName.length < 2) {
@@ -144,48 +200,115 @@ export async function suggestClientFieldsFromWeb(input = {}, options = {}) {
   }
 
   const fetcher = options.fetcher ?? fetch;
-  const params = new URLSearchParams({ q: `${companyName} company official website industry` });
+  const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
+  const model = options.model ?? process.env.OPENAI_CLIENT_LOOKUP_MODEL ?? DEFAULT_CLIENT_LOOKUP_MODEL;
 
-  try {
-    const response = await fetcher(`${SEARCH_URL}?${params.toString()}`, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 PaceOpsCRM/1.0",
-        Accept: "text/html",
-      },
-    });
+  if (apiKey) {
+    try {
+      const response = await fetcher(OPENAI_RESPONSES_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          tools: [{ type: "web_search" }],
+          tool_choice: "required",
+          input: [
+            {
+              role: "system",
+              content: [
+                "Find current public company information for CRM client setup using web search.",
+                "Return JSON only.",
+                "Do not guess or infer from the company name alone.",
+                "Only fill workspace, industry, and website when web results confidently identify the company.",
+                "Use the official website as website.",
+                "Evidence must include the official website URL or official about/contact page URL.",
+                "Workspace must be a CRM category such as Design consultancy workspace, SaaS workspace, Financial technology workspace, Agency workspace, or Professional services workspace. Do not use the company name as workspace.",
+                "Set source to web_search only when confident.",
+                "If not confident, return blank strings, source not_found, empty evidence, and a useful warning.",
+                "Evidence must be source URLs used, not objects.",
+                "Classify UX, product design, research, design agency, and service design companies as UX consultancy when supported by public evidence.",
+              ].join(" "),
+            },
+            {
+              role: "user",
+              content: `Company name: ${companyName}\nReturn fields: workspace, industry, website, source, evidence, warning.`,
+            },
+          ],
+          text: {
+            format: {
+              type: "json_schema",
+              name: "client_enrichment",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  workspace: { type: "string" },
+                  industry: { type: "string" },
+                  website: { type: "string" },
+                  source: { type: "string", enum: ["web_search", "not_found"] },
+                  evidence: {
+                    type: "array",
+                    items: { type: "string" },
+                  },
+                  warning: { type: "string" },
+                },
+                required: ["workspace", "industry", "website", "source", "evidence", "warning"],
+              },
+            },
+          },
+        }),
+      });
 
-    if (!response.ok) throw new Error(`Search failed with ${response.status}`);
+      if (response.ok) {
+        const payload = await response.json();
+        const parsed = JSON.parse(extractOutputText(payload));
+        const evidence = [...new Set([
+          ...(Array.isArray(parsed.evidence) ? parsed.evidence : []),
+          ...extractSourceUrls(payload),
+        ].map(normalizeUrl).filter(Boolean))];
+        const website = normalizeUrl(parsed.website);
+        const hasConfidentResult = parsed.source === "web_search"
+          && website
+          && String(parsed.industry || "").trim()
+          && evidence.length > 0
+          && !isWeakClientLookup(parsed, website, evidence);
 
-    const html = await response.text();
-    const results = extractSearchResults(html);
-    if (!results.length) {
-      const fallback = fallbackSuggestion(companyName);
-      return {
-        name: companyName,
-        domain: fallback.website.replace(/^https?:\/\//, "").replace(/^www\./, ""),
-        industry: "",
-        location: "",
-        employees: "",
-        nextAction: "Map buying committee",
-        insight: "",
-        source: "local_fallback",
-        evidence: [],
-      };
+        if (!hasConfidentResult) {
+          return blankClientLookup(parsed.warning || `Could not confidently identify "${companyName}" from web results.`);
+        }
+
+        return {
+          workspace: parsed.workspace || "",
+          industry: parsed.industry || "",
+          website,
+          source: "web_search",
+          evidence,
+          warning: parsed.warning || "",
+        };
+      }
+
+      const errorBody = await response.text().catch(() => "");
+      const error = new Error(`OpenAI company lookup failed with ${response.status}`);
+      error.statusCode = response.status >= 500 ? 502 : response.status;
+      logClientLookupFailure(companyName, error, { responseBody: errorBody.slice(0, 500) });
+      throw error;
+    } catch (error) {
+      logClientLookupFailure(companyName, error);
+      if (error.statusCode) throw error;
+      const lookupError = new Error("Company web lookup failed. Check the OpenAI API key and server logs.");
+      lookupError.statusCode = 502;
+      throw lookupError;
     }
-
-    const combinedText = results.map(result => `${result.title} ${result.snippet}`).join(" ");
-    const inferred = inferFromText(companyName, combinedText);
-    const website = results[0]?.url || fallbackSuggestion(companyName).website;
-
-    return {
-      ...inferred,
-      website,
-      source: results.length ? "web_search" : "local_fallback",
-      evidence: results.slice(0, 3),
-    };
-  } catch {
-    return fallbackSuggestion(companyName);
   }
+
+  console.error("Client company lookup skipped OpenAI web search because OPENAI_API_KEY is not configured", { companyName });
+  const missingKeyError = new Error("OpenAI API key is not configured on the server.");
+  missingKeyError.statusCode = 500;
+  throw missingKeyError;
 }
 
 function extractEmployeeRange(text) {

@@ -1,8 +1,26 @@
-import { createReadStream, existsSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { extname, join, normalize, resolve } from 'node:path'
 import { handleApiRequest } from './src/server/apiHandler.js'
+
+function loadEnvFile(path) {
+  if (!existsSync(path)) return;
+  const contents = readFileSync(path, 'utf8');
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const separatorIndex = trimmed.indexOf('=');
+    if (separatorIndex === -1) continue;
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const rawValue = trimmed.slice(separatorIndex + 1).trim();
+    if (!key || process.env[key]) continue;
+    process.env[key] = rawValue.replace(/^['"]|['"]$/g, '');
+  }
+}
+
+loadEnvFile('.env');
+loadEnvFile('.env.local');
 
 const port = Number(process.env.PORT || 3000);
 const distDir = resolve('dist');

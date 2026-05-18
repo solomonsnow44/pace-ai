@@ -1065,6 +1065,23 @@ ALTER TABLE ONLY "public"."companies" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "public"."companies" OWNER TO "postgres";
 
 
+CREATE TABLE IF NOT EXISTS "public"."contact_private_notes" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "crm_contact_id" "text" NOT NULL,
+    "body" "text" DEFAULT ''::"text" NOT NULL,
+    "created_by" "uuid" NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "contact_private_notes_crm_contact_id_check" CHECK (("length"(TRIM(BOTH FROM "crm_contact_id")) > 0))
+);
+
+ALTER TABLE ONLY "public"."contact_private_notes" FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."contact_private_notes" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."contacts" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "organization_id" "uuid" NOT NULL,
@@ -1356,6 +1373,10 @@ CREATE TABLE IF NOT EXISTS "public"."lead_contact_database" (
     "updated_by" "uuid",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "hubspot_contact_id" "text",
+    "hubspot_exported_at" timestamp with time zone,
+    "hubspot_export_status" "text",
+    "hubspot_export_error" "text",
     CONSTRAINT "lead_contact_database_data_source_check" CHECK (("data_source" = ANY (ARRAY['manual'::"text", 'linkedin_manual'::"text", 'paceops_db'::"text", 'imported_csv'::"text", 'cognism_preview'::"text"]))),
     CONSTRAINT "lead_contact_database_normalized_identity_key_check" CHECK (("length"(TRIM(BOTH FROM "normalized_identity_key")) > 0))
 );
@@ -1736,6 +1757,16 @@ ALTER TABLE ONLY "public"."companies"
 
 ALTER TABLE ONLY "public"."companies"
     ADD CONSTRAINT "companies_workspace_id_domain_key" UNIQUE ("workspace_id", "domain");
+
+
+
+ALTER TABLE ONLY "public"."contact_private_notes"
+    ADD CONSTRAINT "contact_private_notes_organization_id_crm_contact_id_create_key" UNIQUE ("organization_id", "crm_contact_id", "created_by");
+
+
+
+ALTER TABLE ONLY "public"."contact_private_notes"
+    ADD CONSTRAINT "contact_private_notes_pkey" PRIMARY KEY ("id");
 
 
 
@@ -2134,6 +2165,10 @@ CREATE INDEX "companies_workspace_id_idx" ON "public"."companies" USING "btree" 
 
 
 
+CREATE INDEX "contact_private_notes_org_user_idx" ON "public"."contact_private_notes" USING "btree" ("organization_id", "created_by");
+
+
+
 CREATE INDEX "contacts_client_id_idx" ON "public"."contacts" USING "btree" ("client_id");
 
 
@@ -2247,6 +2282,10 @@ CREATE INDEX "lead_contact_database_cognism_idx" ON "public"."lead_contact_datab
 
 
 CREATE INDEX "lead_contact_database_email_idx" ON "public"."lead_contact_database" USING "btree" ("organization_id", "lower"("manual_email")) WHERE (("manual_email" IS NOT NULL) AND ("manual_email" <> ''::"text"));
+
+
+
+CREATE INDEX "lead_contact_database_hubspot_contact_idx" ON "public"."lead_contact_database" USING "btree" ("organization_id", "hubspot_contact_id") WHERE (("hubspot_contact_id" IS NOT NULL) AND ("hubspot_contact_id" <> ''::"text"));
 
 
 
@@ -2431,6 +2470,10 @@ CREATE OR REPLACE TRIGGER "set_clients_updated_at" BEFORE UPDATE ON "public"."cl
 
 
 CREATE OR REPLACE TRIGGER "set_companies_updated_at" BEFORE UPDATE ON "public"."companies" FOR EACH ROW EXECUTE FUNCTION "public"."set_updated_at"();
+
+
+
+CREATE OR REPLACE TRIGGER "set_contact_private_notes_updated_at" BEFORE UPDATE ON "public"."contact_private_notes" FOR EACH ROW EXECUTE FUNCTION "public"."set_updated_at"();
 
 
 
@@ -2831,6 +2874,16 @@ ALTER TABLE ONLY "public"."companies"
 
 ALTER TABLE ONLY "public"."companies"
     ADD CONSTRAINT "companies_workspace_scope_fkey" FOREIGN KEY ("workspace_id", "organization_id", "client_id") REFERENCES "public"."workspaces"("id", "organization_id", "client_id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."contact_private_notes"
+    ADD CONSTRAINT "contact_private_notes_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."contact_private_notes"
+    ADD CONSTRAINT "contact_private_notes_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
 
 
 
@@ -3676,6 +3729,25 @@ CREATE POLICY "companies_write" ON "public"."companies" USING ("public"."can_edi
 
 
 
+ALTER TABLE "public"."contact_private_notes" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "contact_private_notes_delete_own" ON "public"."contact_private_notes" FOR DELETE USING (("public"."is_org_member"("organization_id") AND ("created_by" = "auth"."uid"())));
+
+
+
+CREATE POLICY "contact_private_notes_insert_own" ON "public"."contact_private_notes" FOR INSERT WITH CHECK (("public"."is_org_member"("organization_id") AND ("created_by" = "auth"."uid"())));
+
+
+
+CREATE POLICY "contact_private_notes_select_own" ON "public"."contact_private_notes" FOR SELECT USING (("public"."is_org_member"("organization_id") AND ("created_by" = "auth"."uid"())));
+
+
+
+CREATE POLICY "contact_private_notes_update_own" ON "public"."contact_private_notes" FOR UPDATE USING (("public"."is_org_member"("organization_id") AND ("created_by" = "auth"."uid"()))) WITH CHECK (("public"."is_org_member"("organization_id") AND ("created_by" = "auth"."uid"())));
+
+
+
 ALTER TABLE "public"."contacts" ENABLE ROW LEVEL SECURITY;
 
 
@@ -4135,6 +4207,12 @@ GRANT ALL ON TABLE "public"."clients" TO "service_role";
 GRANT ALL ON TABLE "public"."companies" TO "anon";
 GRANT ALL ON TABLE "public"."companies" TO "authenticated";
 GRANT ALL ON TABLE "public"."companies" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."contact_private_notes" TO "anon";
+GRANT ALL ON TABLE "public"."contact_private_notes" TO "authenticated";
+GRANT ALL ON TABLE "public"."contact_private_notes" TO "service_role";
 
 
 

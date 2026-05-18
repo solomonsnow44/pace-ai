@@ -299,6 +299,11 @@ async function handlePostRoute(req, res, handler, fallbackMessage) {
     const payload = await handler(await readJsonBody(req));
     sendJson(res, 200, payload);
   } catch (error) {
+    console.error(fallbackMessage, {
+      message: error?.message || String(error),
+      statusCode: error?.statusCode,
+      path: req.url,
+    });
     sendJson(res, error.statusCode || 500, { error: error.message || fallbackMessage });
   }
 

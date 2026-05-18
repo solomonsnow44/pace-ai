@@ -376,7 +376,8 @@ const countrySuggestions = [
 const baseIntegrations = [
   { name: "Lead Finder", icon: Target, status: "Available", note: "Search preview lead records and export results.", action: "Open Lead Finder", view: "cognism" },
   { name: "Cognism", icon: Target, status: "Connected", note: "Lead Finder uses Cognism preview search for target contacts without redeeming credits.", action: "Open Lead Finder", view: "cognism", redeemEnabled: false },
-  { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with redeemed phone numbers.", action: "Open Calls", view: "calls" },
+  // Calls workspace disabled: { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with redeemed phone numbers.", action: "Open Calls", view: "calls" },
+  { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with redeemed phone numbers.", action: "Open Contacts", view: "contacts" },
   { name: "OpenAI", icon: Bot, status: "Available", note: "Used in account intelligence and script generation when an API key is configured.", action: "", workflow: "" },
   { name: "HubSpot", icon: Database, status: "Connected", note: "Lead Finder contacts can be exported to HubSpot contacts. Company association depends on HubSpot app scopes.", action: "Open Lead Finder", view: "cognism" },
 ];
@@ -388,15 +389,15 @@ const navItems = [
   { id: "clients", label: "Clients", icon: Building2 },
   { id: "campaigns", label: "Campaigns", icon: Megaphone },
   { id: "accounts", label: "Accounts", icon: BriefcaseBusiness },
-  { id: "contacts", label: "Contacts", icon: Contact },
+  { id: "contacts", label: "Contacts", icon: Contact, highlight: true },
   { id: "cognism", label: "Lead Finder", icon: Target, highlight: true },
   { id: "lead-lists", label: "Lead Lists", icon: ListFilter, highlight: true },
   { id: "lead-lookup", label: "Lead Lookup", icon: Search, highlight: true },
   { id: "pipeline", label: "Pipeline", icon: KanbanSquare },
-  { id: "calls", label: "Calls", icon: Phone },
+  // Calls workspace disabled: { id: "calls", label: "Calls", icon: Phone },
   { id: "research", label: "Research", icon: FileText },
-  { id: "integrations", label: "Integrations", icon: Plug },
-  { id: "settings", label: "Settings", icon: Settings },
+  { id: "integrations", label: "Integrations", icon: Plug, highlight: true },
+  { id: "settings", label: "Settings", icon: Settings, highlight: true },
 ];
 
 const currency = new Intl.NumberFormat("en-GB", {
@@ -1314,10 +1315,13 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount
           <FileText size={16} />
           Open research
         </button>
+        {/*
+        Calls workspace disabled.
         <button className="primary-button" type="button" onClick={() => onNavigate("calls")}>
           <Phone size={16} />
           Create call block
         </button>
+        */}
       </PageHeader>
 
       <div className="metrics-grid">
@@ -1560,7 +1564,7 @@ function CampaignDetailPage({ campaign, onNavigate, onOpenAccount, onEditCampaig
       >
         <button className="secondary-button" type="button" onClick={() => onEditCampaign(campaign)}>Edit campaign</button>
         <button className="secondary-button" type="button" onClick={() => onNavigate("contacts")}>Contacts</button>
-        <button className="primary-button" type="button" onClick={() => onNavigate("calls")}>Call queue</button>
+        {/* Calls workspace disabled: <button className="primary-button" type="button" onClick={() => onNavigate("calls")}>Call queue</button> */}
       </PageHeader>
       <div className="metrics-grid">
         <MetricCard label="Accounts" value={campaign.accounts} detail="In campaign scope" icon={BriefcaseBusiness} />
@@ -2005,6 +2009,8 @@ function PipelinePage({ onOpenAccount, onMoveDeal, onNewDeal, onUpdateStages }) 
   );
 }
 
+/*
+Calls workspace disabled.
 function CallsPage({ onOpenContact, onLogCall, onStartCallBlock }) {
   const { contacts, callInsights } = useCrmData();
   const [outcome, setOutcome] = useState("Connected");
@@ -2105,6 +2111,7 @@ function CallsPage({ onOpenContact, onLogCall, onStartCallBlock }) {
     </>
   );
 }
+*/
 
 function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource, onQueueResearch, onGenerateScripts, onMoveScript, onGenerateReport }) {
   const { accounts, researchItems, scriptItems = [], weeklyReports = [], callInsights = [] } = useCrmData();
@@ -7118,8 +7125,9 @@ export default function App() {
         return <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} />;
       case "pipeline":
         return <PipelinePage onOpenAccount={openAccount} onMoveDeal={handleMoveDeal} onNewDeal={(accountId) => openWorkflow("deal", accountId ? { accountId } : {})} onUpdateStages={handleUpdatePipelineStages} />;
-      case "calls":
-        return <CallsPage onOpenContact={openContact} onLogCall={handleLogCall} onStartCallBlock={() => openWorkflow("call")} />;
+      // Calls workspace disabled:
+      // case "calls":
+      //   return <CallsPage onOpenContact={openContact} onLogCall={handleLogCall} onStartCallBlock={() => openWorkflow("call")} />;
       case "research":
         return <ResearchPage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onAddSource={() => openWorkflow("file", { returnTo: "research" })} onQueueResearch={(accountId) => openWorkflow("research", accountId ? { accountId } : {})} onGenerateScripts={handleGenerateResearchScripts} onMoveScript={handleMoveScript} onGenerateReport={handleGenerateReport} />;
       case "files":

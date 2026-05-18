@@ -1702,9 +1702,8 @@ textarea::placeholder {
   gap: 2px;
   align-content: center;
   border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
   border-radius: 8px;
-  background: var(--accent-soft);
+  background: var(--surface);
   padding: 9px 11px;
 }
 

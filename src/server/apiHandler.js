@@ -54,6 +54,10 @@ function sendJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function configuredEnv(keys) {
+  return Object.fromEntries(keys.map(key => [key, Boolean(process.env[key])]));
+}
+
 async function handlePostRoute(req, res, handler, fallbackMessage) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'Method not allowed' });
@@ -72,6 +76,24 @@ async function handlePostRoute(req, res, handler, fallbackMessage) {
 
 export async function handleApiRequest(req, res) {
   const pathname = new URL(req.url, 'http://localhost').pathname;
+
+  if (pathname === '/api/health') {
+    sendJson(res, 200, {
+      ok: true,
+      runtime: 'node',
+      env: configuredEnv([
+        'VITE_SUPABASE_URL',
+        'VITE_SUPABASE_ANON_KEY',
+        'OPENAI_API_KEY',
+        'COGNISM_API_KEY',
+        'HUBSPOT_PRIVATE_APP_TOKEN',
+        'AIRCALL_API_ID',
+        'AIRCALL_API_TOKEN',
+        'AIRCALL_USER_ID',
+      ]),
+    });
+    return true;
+  }
 
   if (pathname === '/api/cognism/roles') {
     return handlePostRoute(req, res, body => suggestTargetRoles(body), 'Role suggestion failed');

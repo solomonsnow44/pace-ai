@@ -961,46 +961,6 @@ textarea::placeholder {
   font-weight: 800;
 }
 
-.integration-credentials-panel {
-  grid-column: 1 / -1;
-}
-
-.integration-credential-list {
-  display: grid;
-  gap: 12px;
-}
-
-.integration-credential-card {
-  display: grid;
-  gap: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  padding: 12px;
-}
-
-.integration-credential-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.integration-credential-head > div {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.integration-credential-head strong {
-  color: var(--text);
-}
-
-.integration-credential-head small {
-  color: var(--muted);
-  font-weight: 700;
-}
-
 .integration-credential-fields {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1038,6 +998,10 @@ textarea::placeholder {
   outline: 0;
   background: transparent;
   color: var(--text);
+}
+
+.integration-key-modal .integration-credential-fields {
+  margin-top: 8px;
 }
 
 .script-board {
@@ -3408,10 +3372,6 @@ textarea::placeholder {
 
   .integration-credential-fields {
     grid-template-columns: 1fr;
-  }
-
-  .integration-credential-head {
-    flex-direction: column;
   }
 
   .marketing-nav {

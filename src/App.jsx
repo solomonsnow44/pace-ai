@@ -4671,13 +4671,52 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   );
 }
 
-function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration }) {
+function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, integrationCredentials, onSaveIntegrationCredentials }) {
   const { integrations } = useCrmData();
   const [cognismRedeemCode, setCognismRedeemCode] = useState("");
   const [cognismRedeemError, setCognismRedeemError] = useState("");
   const [cognismRedeemModalOpen, setCognismRedeemModalOpen] = useState(false);
+  const [credentialProvider, setCredentialProvider] = useState("");
+  const [credentialValues, setCredentialValues] = useState({});
+  const [credentialVisibleFields, setCredentialVisibleFields] = useState({});
+  const [credentialStatus, setCredentialStatus] = useState("idle");
+  const [credentialError, setCredentialError] = useState("");
 
   const cognismIntegration = integrations.find(integration => integration.name === "Cognism");
+  const credentialFormByName = new Map(integrationCredentialForms.map(form => [form.integrationName, form]));
+  const activeCredentialForm = integrationCredentialForms.find(form => form.provider === credentialProvider);
+
+  function openCredentialModal(provider) {
+    setCredentialProvider(provider);
+    setCredentialValues({});
+    setCredentialVisibleFields({});
+    setCredentialStatus("idle");
+    setCredentialError("");
+  }
+
+  function closeCredentialModal() {
+    setCredentialProvider("");
+    setCredentialValues({});
+    setCredentialVisibleFields({});
+    setCredentialStatus("idle");
+    setCredentialError("");
+  }
+
+  async function saveCredentials(event) {
+    event.preventDefault();
+    if (!activeCredentialForm) return;
+    setCredentialStatus("saving");
+    setCredentialError("");
+    try {
+      await onSaveIntegrationCredentials(activeCredentialForm.provider, credentialValues);
+      setCredentialStatus("saved");
+      setCredentialValues({});
+      closeCredentialModal();
+    } catch (error) {
+      setCredentialStatus("idle");
+      setCredentialError(error?.message || "Could not save credentials.");
+    }
+  }
 
   function enableCognismRedeem() {
     if (cognismRedeemCode !== COGNISM_REDEEM_ENABLE_CODE) {
@@ -4707,6 +4746,8 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration }) {
         {integrations.map(integration => {
           const Icon = integration.icon;
           const isAvailable = Boolean(integration.view || integration.workflow);
+          const credentialForm = credentialFormByName.get(integration.name);
+          const credentialState = credentialForm ? integrationCredentials?.providers?.[credentialForm.provider] : null;
           return (
             <article key={integration.name} className="integration-card">
               <div>
@@ -4723,6 +4764,20 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration }) {
                   </div>
                   <button className="secondary-button" type="button" onClick={() => integration.redeemEnabled ? onUpdateIntegration(integration.name, { redeemEnabled: false }) : setCognismRedeemModalOpen(true)}>
                     {integration.redeemEnabled ? "Set preview only" : "Enable redeem"}
+                  </button>
+                </div>
+              ) : null}
+              {credentialForm ? (
+                <div className="integration-setting">
+                  <div>
+                    <span>API key</span>
+                    <StatusBadge tone={credentialState?.configured ? "success" : "neutral"}>
+                      {credentialState?.configured ? `Configured${credentialState.source === "env" ? " via env" : ""}` : "Missing"}
+                    </StatusBadge>
+                  </div>
+                  <button className="secondary-button" type="button" onClick={() => openCredentialModal(credentialForm.provider)}>
+                    <ShieldCheck size={16} />
+                    Manage key
                   </button>
                 </div>
               ) : null}
@@ -4773,6 +4828,57 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration }) {
           </section>
         </div>
       ) : null}
+      {activeCredentialForm ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) closeCredentialModal();
+        }}>
+          <form className="workflow-modal integration-key-modal" onSubmit={saveCredentials}>
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">API access</span>
+                <h2>{activeCredentialForm.title}</h2>
+              </div>
+              <button className="secondary-button" type="button" onClick={closeCredentialModal}>Close</button>
+            </div>
+            <p className="modal-helper-text">{activeCredentialForm.description}</p>
+            <div className="integration-credential-fields">
+              {activeCredentialForm.fields.map(field => {
+                const fieldKey = `${activeCredentialForm.provider}.${field.name}`;
+                const status = integrationCredentials?.providers?.[activeCredentialForm.provider] || {};
+                return (
+                  <label key={field.name} className="api-secret-field">
+                    <span>{field.label}</span>
+                    <div>
+                      <input
+                        type={credentialVisibleFields[fieldKey] ? "text" : "password"}
+                        value={credentialValues[field.name] || ""}
+                        onChange={event => setCredentialValues(current => ({ ...current, [field.name]: event.target.value }))}
+                        placeholder={status.hints?.[field.name] || field.placeholder}
+                        autoComplete="off"
+                      />
+                      <button
+                        className="icon-action"
+                        type="button"
+                        onClick={() => setCredentialVisibleFields(current => ({ ...current, [fieldKey]: !current[fieldKey] }))}
+                        aria-label={credentialVisibleFields[fieldKey] ? "Hide key" : "Show key"}
+                      >
+                        {credentialVisibleFields[fieldKey] ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            {credentialError ? <div className="form-error">{credentialError}</div> : null}
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={closeCredentialModal}>Cancel</button>
+              <button className="primary-button" type="submit" disabled={credentialStatus === "saving"}>
+                {credentialStatus === "saving" ? "Saving" : "Save key"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -4780,18 +4886,21 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration }) {
 const integrationCredentialForms = [
   {
     provider: "openai",
+    integrationName: "OpenAI",
     title: "ChatGPT / OpenAI",
     description: "Used for role suggestions, account lookup, and account intelligence scripts.",
     fields: [{ name: "apiKey", label: "OpenAI API key", placeholder: "sk-..." }],
   },
   {
     provider: "cognism",
+    integrationName: "Cognism",
     title: "Cognism",
     description: "Used by Lead Finder preview search.",
     fields: [{ name: "apiKey", label: "Cognism API key", placeholder: "Bearer token" }],
   },
   {
     provider: "aircall",
+    integrationName: "Aircall",
     title: "Aircall",
     description: "Used for click-to-call from saved leads and CRM contacts.",
     fields: [
@@ -4802,107 +4911,14 @@ const integrationCredentialForms = [
   },
   {
     provider: "hubspot",
+    integrationName: "HubSpot",
     title: "HubSpot",
     description: "Used for exporting Lead Finder contacts to HubSpot.",
     fields: [{ name: "privateAppToken", label: "Private app token", placeholder: "pat-..." }],
   },
 ];
 
-function IntegrationCredentialsPanel({ integrationCredentials, onSaveIntegrationCredentials }) {
-  const [valuesByProvider, setValuesByProvider] = useState({});
-  const [visibleFields, setVisibleFields] = useState({});
-  const [saveState, setSaveState] = useState({});
-
-  function updateValue(provider, field, value) {
-    setSaveState(current => ({ ...current, [provider]: "idle" }));
-    setValuesByProvider(current => ({
-      ...current,
-      [provider]: {
-        ...(current[provider] || {}),
-        [field]: value,
-      },
-    }));
-  }
-
-  async function submitProvider(event, provider) {
-    event.preventDefault();
-    setSaveState(current => ({ ...current, [provider]: "saving" }));
-    try {
-      await onSaveIntegrationCredentials(provider, valuesByProvider[provider] || {});
-      setValuesByProvider(current => ({ ...current, [provider]: {} }));
-      setSaveState(current => ({ ...current, [provider]: "saved" }));
-    } catch (error) {
-      setSaveState(current => ({ ...current, [provider]: error?.message || "Could not save credentials." }));
-    }
-  }
-
-  return (
-    <section className="panel integration-credentials-panel">
-      <div className="panel-header">
-        <div>
-          <span className="eyebrow">API access</span>
-          <h2>Integration keys</h2>
-        </div>
-        <StatusBadge>{integrationCredentials?.providers ? "Synced" : "Not checked"}</StatusBadge>
-      </div>
-      <div className="integration-credential-list">
-        {integrationCredentialForms.map(form => {
-          const status = integrationCredentials?.providers?.[form.provider] || {};
-          const providerValues = valuesByProvider[form.provider] || {};
-          const providerSaveState = saveState[form.provider] || "idle";
-          const isSaving = providerSaveState === "saving";
-          return (
-            <form key={form.provider} className="integration-credential-card" onSubmit={event => submitProvider(event, form.provider)}>
-              <div className="integration-credential-head">
-                <div>
-                  <strong>{form.title}</strong>
-                  <small>{form.description}</small>
-                </div>
-                <StatusBadge tone={status.configured ? "success" : "neutral"}>
-                  {status.configured ? `Configured${status.source === "supabase" ? "" : " via env"}` : "Missing"}
-                </StatusBadge>
-              </div>
-              <div className="integration-credential-fields">
-                {form.fields.map(field => {
-                  const fieldKey = `${form.provider}.${field.name}`;
-                  return (
-                    <label key={field.name} className="api-secret-field">
-                      <span>{field.label}</span>
-                      <div>
-                        <input
-                          type={visibleFields[fieldKey] ? "text" : "password"}
-                          value={providerValues[field.name] || ""}
-                          onChange={event => updateValue(form.provider, field.name, event.target.value)}
-                          placeholder={status.hints?.[field.name] || field.placeholder}
-                          autoComplete="off"
-                        />
-                        <button
-                          className="icon-action"
-                          type="button"
-                          onClick={() => setVisibleFields(current => ({ ...current, [fieldKey]: !current[fieldKey] }))}
-                          aria-label={visibleFields[fieldKey] ? "Hide key" : "Show key"}
-                        >
-                          {visibleFields[fieldKey] ? <EyeOff size={15} /> : <Eye size={15} />}
-                        </button>
-                      </div>
-                    </label>
-                  );
-                })}
-              </div>
-              {typeof providerSaveState === "string" && !["idle", "saving", "saved"].includes(providerSaveState) ? <div className="form-error">{providerSaveState}</div> : null}
-              <button className="secondary-button" type="submit" disabled={isSaving}>
-                <ShieldCheck size={16} />
-                {isSaving ? "Saving" : providerSaveState === "saved" ? "Saved" : "Save keys"}
-              </button>
-            </form>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdateProfile, integrationCredentials, onSaveIntegrationCredentials }) {
+function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdateProfile }) {
   const { teamMembers, clients, workspaceUsers } = useCrmData();
   const visibleTeamMembers = workspaceUsers?.length ? workspaceUsers : teamMembers;
   const metadata = user?.user_metadata || {};
@@ -5011,7 +5027,6 @@ function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdat
             </div>
           </div>
         </section>
-        <IntegrationCredentialsPanel integrationCredentials={integrationCredentials} onSaveIntegrationCredentials={onSaveIntegrationCredentials} />
       </div>
     </>
   );
@@ -7109,9 +7124,9 @@ export default function App() {
       case "files":
         return <FilesPage onUploadFile={() => openWorkflow("file", { returnTo: "files" })} />;
       case "integrations":
-        return <IntegrationsPage onNavigate={openView} onOpenWorkflow={(type) => openWorkflow(type)} onUpdateIntegration={updateIntegration} />;
+        return <IntegrationsPage onNavigate={openView} onOpenWorkflow={(type) => openWorkflow(type)} onUpdateIntegration={updateIntegration} integrationCredentials={integrationCredentials} onSaveIntegrationCredentials={handleSaveIntegrationCredentials} />;
       case "settings":
-        return <SettingsPage isDark={isDark} onThemeToggle={() => setIsDark(value => !value)} onInviteTeamMember={() => openWorkflow("team")} user={user} onUpdateProfile={handleUpdateProfile} integrationCredentials={integrationCredentials} onSaveIntegrationCredentials={handleSaveIntegrationCredentials} />;
+        return <SettingsPage isDark={isDark} onThemeToggle={() => setIsDark(value => !value)} onInviteTeamMember={() => openWorkflow("team")} user={user} onUpdateProfile={handleUpdateProfile} />;
       default:
         return (
           <DashboardPage

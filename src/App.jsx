@@ -2949,6 +2949,13 @@ const cognismExportColumns = [
   ["dbContactId", "PaceOps DB contact ID"],
   ["assignedUsers", "Assigned users"],
 ];
+const cognismCsvExcludedColumns = new Set(["dataSource", "sourceNote", "dbContactId", "assignedUsers"]);
+
+function cognismExportColumnsForFormat(format) {
+  return format === "csv"
+    ? cognismExportColumns.filter(([key]) => !cognismCsvExcludedColumns.has(key))
+    : cognismExportColumns;
+}
 
 function exportCellValue(value) {
   if (typeof value === "boolean") return value ? "Available" : "Not available";
@@ -2974,6 +2981,7 @@ function downloadTextFile(filename, mimeType, contents) {
 
 function exportCognismResults(results, format, assignedUsers = []) {
   const timestamp = new Date().toISOString().slice(0, 10);
+  const exportColumns = cognismExportColumnsForFormat(format);
   const assignedUserText = assignedUsers.map(user => `${user.name} <${user.email}>`).join("; ");
   const exportResults = results.map(result => ({
     ...result,
@@ -2990,9 +2998,9 @@ function exportCognismResults(results, format, assignedUsers = []) {
   }
 
   if (format === "xls") {
-    const headerCells = cognismExportColumns.map(([, label]) => `<th>${label}</th>`).join("");
+    const headerCells = exportColumns.map(([, label]) => `<th>${label}</th>`).join("");
     const rows = exportResults.map(result => (
-      `<tr>${cognismExportColumns.map(([key]) => `<td>${String(exportCellValue(result[key])).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</td>`).join("")}</tr>`
+      `<tr>${exportColumns.map(([key]) => `<td>${String(exportCellValue(result[key])).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</td>`).join("")}</tr>`
     )).join("");
 
     downloadTextFile(
@@ -3003,8 +3011,8 @@ function exportCognismResults(results, format, assignedUsers = []) {
     return;
   }
 
-  const header = cognismExportColumns.map(([, label]) => csvEscape(label)).join(",");
-  const rows = exportResults.map(result => cognismExportColumns.map(([key]) => csvEscape(result[key])).join(","));
+  const header = exportColumns.map(([, label]) => csvEscape(label)).join(",");
+  const rows = exportResults.map(result => exportColumns.map(([key]) => csvEscape(result[key])).join(","));
   downloadTextFile(
     `lead-finder-preview-${timestamp}.csv`,
     "text/csv;charset=utf-8",

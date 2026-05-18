@@ -4667,7 +4667,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
                 ))}
               </div>
             ) : (
-              <EmptyState icon={Users} title="No users found" text="PaceOps users will appear here after they sign in to the CRM." />
+              <EmptyState icon={Users} title="No users found" text="PaceOps users will appear here after they sign in to the analytics workspace." />
             )}
           </div>
         </section>
@@ -5295,7 +5295,7 @@ function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdat
       <PageHeader
         eyebrow="Settings"
         title="Workspace settings"
-        description="Tenant, team, and preference settings for the CRM workspace."
+        description="Tenant, team, and preference settings for the analytics workspace."
       >
         <button className="primary-button" type="button" onClick={onInviteTeamMember}>
           <Plus size={16} />
@@ -5490,7 +5490,7 @@ function EmptyState({ icon, title, text }) {
 async function ensureWorkspace(user) {
   if (!supabase || !user) return;
   if (!isAllowedEmail(user.email)) {
-    throw new Error(`Only @${ALLOWED_EMAIL_DOMAIN} email addresses can access this CRM.`);
+    throw new Error(`Only @${ALLOWED_EMAIL_DOMAIN} email addresses can access this analytics workspace.`);
   }
   const { data, error } = await supabase.rpc("bootstrap_current_user", {
     user_email: user.email,
@@ -5515,7 +5515,7 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
     if (!canSubmit) return;
     const normalizedEmail = email.trim().toLowerCase();
     if (!isAllowedEmail(normalizedEmail)) {
-      setError(`Use your @${ALLOWED_EMAIL_DOMAIN} email address to access PaceOps/CRM.`);
+      setError(`Use your @${ALLOWED_EMAIL_DOMAIN} email address to access PaceOps Data Analytics.`);
       return;
     }
     setLoading(true);
@@ -5553,8 +5553,8 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
           <div className="auth-brand">
             <img src={logoUrl} alt="PaceOps" />
             <div>
-              <strong>PaceOps/CRM</strong>
-              <span>Prospecting workspace</span>
+              <strong>PaceOps Data Analytics</strong>
+              <span>Analytics workspace</span>
             </div>
           </div>
 
@@ -5624,7 +5624,7 @@ function HomePage({ isDark, onThemeToggle, onAuthenticate, user, onBackToWorkspa
       <header className="marketing-nav">
         <a className="marketing-brand" href="#top">
           <img src={logoUrl} alt="PaceOps" />
-          <span>PaceOps/CRM</span>
+          <span>PaceOps Data Analytics</span>
         </a>
         <div>
           <button className="secondary-button" type="button" onClick={onThemeToggle}>
@@ -5641,10 +5641,10 @@ function HomePage({ isDark, onThemeToggle, onAuthenticate, user, onBackToWorkspa
       <main id="top" className="marketing-shell">
         <section className="home-single-page">
           <div id="about" className="company-summary">
-            <span className="eyebrow">PaceOps/CRM</span>
-            <h1>Client account management for PaceOps teams.</h1>
+            <span className="eyebrow">PaceOps Data Analytics</span>
+            <h1>Client data analytics for PaceOps teams.</h1>
             <p>PaceOps is a professional services prospecting hub focused on human-personalised outreach, data-driven insight, and sales development operations.</p>
-            <p>PaceOps/CRM is the internal workspace for managing client accounts, campaigns, target accounts, contacts, calls, research, and pipeline activity.</p>
+            <p>PaceOps Data Analytics is the internal workspace for managing client accounts, campaigns, target accounts, contacts, calls, research, and pipeline activity.</p>
 
             <div id="contact" className="contact-card">
               <h2>Contact</h2>
@@ -5687,14 +5687,14 @@ function HomePage({ isDark, onThemeToggle, onAuthenticate, user, onBackToWorkspa
                 <div className="auth-brand">
                   <img src={logoUrl} alt="PaceOps" />
                   <div>
-                    <strong>PaceOps/CRM</strong>
+                    <strong>PaceOps Data Analytics</strong>
                     <span>{user.email}</span>
                   </div>
                 </div>
                 <div className="auth-copy">
                   <span className="eyebrow">Signed in</span>
                   <h1>Return to your workspace</h1>
-                  <p>Open the CRM dashboard to continue managing client accounts, campaigns, calls, and research.</p>
+                  <p>Open the analytics dashboard to continue managing client accounts, campaigns, calls, and research.</p>
                 </div>
                 <button className="primary-button" type="button" onClick={onBackToWorkspace}>Open workspace</button>
               </section>

@@ -87,5 +87,5 @@ createServer(async (req, res) => {
 
   await sendFile(res, join(distDir, 'index.html'));
 }).listen(port, () => {
-  console.log(`PaceOps CRM server listening on port ${port}`);
+  console.log(`PaceOps Data Analytics server listening on port ${port}`);
 });

@@ -333,7 +333,7 @@ const callOutcomes = [
   "Meeting booked",
   "Wrong number",
 ];
-const COGNISM_REDEEM_ENABLE_CODE = "3678";
+const COGNISM_REDEEM_CONFIRMATION = "ENABLE REDEEM";
 
 const collaborativeActivityTypes = new Set([
   "Call",
@@ -4720,8 +4720,8 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
   }
 
   function enableCognismRedeem() {
-    if (cognismRedeemCode !== COGNISM_REDEEM_ENABLE_CODE) {
-      setCognismRedeemError("Enter the redeem enable code.");
+    if (cognismRedeemCode.trim() !== COGNISM_REDEEM_CONFIRMATION) {
+      setCognismRedeemError(`Type ${COGNISM_REDEEM_CONFIRMATION} to enable redeem mode.`);
       return;
     }
     setCognismRedeemError("");
@@ -4805,17 +4805,17 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
               </div>
               <button className="secondary-button" type="button" onClick={closeCognismRedeemModal}>Close</button>
             </div>
-            <p className="modal-helper-text">Redeem mode can consume Cognism credits. Enter the enable code to turn it on.</p>
+            <p className="modal-helper-text">Redeem mode can consume Cognism credits. Type {COGNISM_REDEEM_CONFIRMATION} to turn it on.</p>
             <label className="form-field">
-              <span>Enable code</span>
+              <span>Confirmation</span>
               <input
-                type="password"
+                type="text"
                 value={cognismRedeemCode}
                 onChange={event => {
                   setCognismRedeemCode(event.target.value);
                   setCognismRedeemError("");
                 }}
-                placeholder="Enter code"
+                placeholder={COGNISM_REDEEM_CONFIRMATION}
                 autoComplete="off"
               />
             </label>

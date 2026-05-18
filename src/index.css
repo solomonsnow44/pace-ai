@@ -1597,8 +1597,9 @@ textarea::placeholder {
 
 .cognism-controls .form-field span,
 .cognism-roles .form-field span {
-  color: var(--text);
+  color: var(--muted);
   font-size: 12px;
+  font-weight: 650;
 }
 
 .cognism-controls .form-field input,
@@ -1876,7 +1877,7 @@ textarea::placeholder {
   color: var(--text);
   padding: 0 9px;
   cursor: pointer;
-  font-weight: 800;
+  font-weight: 650;
 }
 
 .country-suggestion-list button:hover,
@@ -1918,7 +1919,7 @@ textarea::placeholder {
   overflow: hidden;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

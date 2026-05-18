@@ -646,6 +646,7 @@ async function loadWorkspaceUsers(organizationId) {
       email: workspaceUser.email,
       name,
       role: titleCase(workspaceUser.role || "member"),
+      roleKey: workspaceUser.role || "member",
       initials: accountInitial(name),
       status: "Active",
     };
@@ -661,6 +662,7 @@ function mapAuthUserToWorkspaceUser(user) {
     email: user.email,
     name,
     role: "Current user",
+    roleKey: "member",
     initials: accountInitial(name),
     status: "Active",
   };
@@ -5987,6 +5989,7 @@ function SettingsPage({
   onCurrencyChange,
   adminSettingsState,
   onUpdateAdminSettings,
+  onUpdateWorkspaceUserRole,
   cognismRedeemEnabled,
   onUpdateIntegration,
 }) {
@@ -6003,6 +6006,8 @@ function SettingsPage({
   const [profileError, setProfileError] = useState("");
   const [adminSettingsStatus, setAdminSettingsStatus] = useState("idle");
   const [adminSettingsError, setAdminSettingsError] = useState("");
+  const [roleUpdateStatus, setRoleUpdateStatus] = useState({ userId: "", state: "idle" });
+  const [roleUpdateError, setRoleUpdateError] = useState("");
   const [cognismRedeemCode, setCognismRedeemCode] = useState("");
   const [cognismRedeemError, setCognismRedeemError] = useState("");
   const [cognismRedeemModalOpen, setCognismRedeemModalOpen] = useState(false);
@@ -6035,6 +6040,18 @@ function SettingsPage({
     } catch (error) {
       setAdminSettingsStatus("idle");
       setAdminSettingsError(error?.message || "Could not update admin settings.");
+    }
+  }
+
+  async function updateMemberAdminRole(member, role) {
+    setRoleUpdateStatus({ userId: member.id, state: "saving" });
+    setRoleUpdateError("");
+    try {
+      await onUpdateWorkspaceUserRole?.(member.id, role);
+      setRoleUpdateStatus({ userId: member.id, state: "saved" });
+    } catch (error) {
+      setRoleUpdateStatus({ userId: "", state: "idle" });
+      setRoleUpdateError(error?.message || "Could not update member admin access.");
     }
   }
 
@@ -6105,7 +6122,10 @@ function SettingsPage({
                   <strong>{member.name}</strong>
                   <small>{member.email || member.role}</small>
                 </div>
-                <TeamStatusBadge status={member.status} />
+                <div className="team-row-meta">
+                  <StatusBadge>{formatRole(member.roleKey || member.role)}</StatusBadge>
+                  <TeamStatusBadge status={member.status} />
+                </div>
               </div>
             ))}
           </div> : <EmptyState icon={Users} title="No teammates yet" text="Invite a teammate to start assigning accounts, calls, and research." />}
@@ -6163,6 +6183,41 @@ function SettingsPage({
                 <button className="secondary-button" type="button" onClick={() => cognismRedeemEnabled ? onUpdateIntegration?.("Cognism", { redeemEnabled: false }) : setCognismRedeemModalOpen(true)}>
                   {cognismRedeemEnabled ? "Use preview only" : "Enable redeem"}
                 </button>
+              </div>
+              <div className="admin-member-access">
+                <div>
+                  <strong>Member admin access</strong>
+                  <small>Promote PaceOps members to admins or remove admin access. Admins can use redeem mode when enabled and can use enabled admin controls.</small>
+                </div>
+                <div className="admin-member-list">
+                  {visibleTeamMembers.map(member => {
+                    const roleKey = member.roleKey || String(member.role || "member").toLowerCase().replaceAll(" ", "_");
+                    const isProtectedRole = ["platform_admin", "org_owner"].includes(roleKey);
+                    const isSelf = member.id === user?.id;
+                    const isMemberAdmin = roleKey === "org_admin";
+                    const canChangeRole = currentUserIsAdmin && member.id && !isProtectedRole && !isSelf;
+                    const busy = roleUpdateStatus.userId === member.id && roleUpdateStatus.state === "saving";
+                    return (
+                      <div key={member.id || member.email || member.name} className="admin-member-row">
+                        <div>
+                          <strong>{member.name}</strong>
+                          <small>{member.email || "No email"}</small>
+                        </div>
+                        <StatusBadge tone={isMemberAdmin || isProtectedRole ? "warning" : "neutral"}>{formatRole(roleKey)}</StatusBadge>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => updateMemberAdminRole(member, isMemberAdmin ? "member" : "org_admin")}
+                          disabled={!canChangeRole || busy}
+                        >
+                          {busy ? "Saving" : isMemberAdmin ? "Remove admin" : "Make admin"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                {roleUpdateStatus.state === "saved" ? <div className="form-success">Member admin access updated.</div> : null}
+                {roleUpdateError ? <div className="form-error">{roleUpdateError}</div> : null}
               </div>
               <div className="admin-settings-feedback">
                 {adminSettingsStatus === "saved" ? <div className="form-success">Admin controls saved.</div> : null}
@@ -7621,6 +7676,44 @@ export default function App() {
     return payload;
   }
 
+  async function handleUpdateWorkspaceUserRole(userId, role) {
+    const response = await fetch("/api/workspace-users/role", {
+      method: "POST",
+      headers: await buildApiHeaders(),
+      body: JSON.stringify({ userId, role }),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || "Could not update member admin access.");
+
+    const updatedUser = payload.user || {};
+    setCrmData(current => ({
+      ...current,
+      workspaceUsers: (current.workspaceUsers || []).map(workspaceUser => {
+        if (workspaceUser.id !== updatedUser.id) return workspaceUser;
+        const name = updatedUser.displayName || updatedUser.fullName || workspaceUser.name || updatedUser.email?.split("@")[0] || "Workspace user";
+        return {
+          ...workspaceUser,
+          email: updatedUser.email || workspaceUser.email,
+          name,
+          role: formatRole(updatedUser.role),
+          roleKey: updatedUser.role || "member",
+          status: titleCase(updatedUser.status || workspaceUser.status || "active"),
+          initials: accountInitial(name),
+        };
+      }),
+    }));
+
+    if (updatedUser.id === user?.id) {
+      setAdminSettingsState(current => ({
+        ...current,
+        role: updatedUser.role || "member",
+        isAdmin: ADMIN_ROLES.has(updatedUser.role),
+      }));
+    }
+
+    return payload;
+  }
+
   async function handleSaveIntegrationCredentials(provider, values) {
     const response = await fetch("/api/integration-settings", {
       method: "POST",
@@ -8883,6 +8976,7 @@ export default function App() {
           onCurrencyChange={handleCurrencyChange}
           adminSettingsState={adminSettingsState}
           onUpdateAdminSettings={handleUpdateAdminSettings}
+          onUpdateWorkspaceUserRole={handleUpdateWorkspaceUserRole}
           cognismRedeemEnabled={cognismRedeemEnabled}
           onUpdateIntegration={updateIntegration}
         />;

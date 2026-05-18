@@ -118,6 +118,10 @@ function isAdminRole(role) {
   return ['platform_admin', 'org_owner', 'org_admin'].includes(role);
 }
 
+function isProtectedAdminRole(role) {
+  return ['platform_admin', 'org_owner'].includes(role);
+}
+
 function assertOrgAdmin(user) {
   if (isAdminRole(user?.role)) return;
   const error = new Error('Admin controls are available to organization admins only.');
@@ -207,6 +211,83 @@ async function updateAdminSettings(req, input = {}) {
   await writeAuditLog(serviceClient, user, 'admin_settings.updated', 'organization', user.organizationId, beforeSettings, nextSettings);
   return {
     settings: nextSettings,
+    role: user.role,
+    isAdmin: true,
+  };
+}
+
+async function updateWorkspaceUserRole(req, input = {}) {
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  assertOrgAdmin(user);
+
+  const targetUserId = String(input.userId || '').trim();
+  const nextRole = String(input.role || '').trim();
+  if (!UUID_PATTERN.test(targetUserId)) {
+    const error = new Error('Workspace user id is required.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!['member', 'org_admin'].includes(nextRole)) {
+    const error = new Error('Workspace role must be member or org_admin.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (targetUserId === user.id) {
+    const error = new Error('You cannot change your own admin access.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const serviceClient = getServiceClient();
+  const { data: targetUser, error: targetError } = await serviceClient
+    .from('users')
+    .select('id,email,display_name,full_name,role,status,organization_id')
+    .eq('id', targetUserId)
+    .eq('organization_id', user.organizationId)
+    .single();
+
+  if (targetError || !targetUser) {
+    const error = new Error('Workspace user was not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (isProtectedAdminRole(targetUser.role)) {
+    const error = new Error('Workspace owners and platform admins cannot be changed here.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const beforeRole = targetUser.role || 'member';
+  const { data: updatedUser, error: updateError } = await serviceClient
+    .from('users')
+    .update({ role: nextRole })
+    .eq('id', targetUserId)
+    .eq('organization_id', user.organizationId)
+    .select('id,email,display_name,full_name,role,status')
+    .single();
+
+  if (updateError) throw updateError;
+
+  await writeAuditLog(
+    serviceClient,
+    user,
+    'workspace_user.role_updated',
+    'user',
+    targetUserId,
+    { role: beforeRole },
+    { role: updatedUser.role },
+    { target_email: updatedUser.email },
+  );
+
+  return {
+    user: {
+      id: updatedUser.id,
+      email: updatedUser.email,
+      displayName: updatedUser.display_name,
+      fullName: updatedUser.full_name,
+      role: updatedUser.role || 'member',
+      status: updatedUser.status || 'active',
+    },
     role: user.role,
     isAdmin: true,
   };
@@ -596,6 +677,10 @@ export async function handleApiRequest(req, res) {
     return true;
   }
 
+  if (pathname === '/api/workspace-users/role') {
+    return handlePostRoute(req, res, async body => updateWorkspaceUserRole(req, body), 'Workspace user role update failed');
+  }
+
   if (pathname === '/api/contacts/archive') {
     return handlePostRoute(req, res, async body => archiveContact(req, body), 'Contact archive failed');
   }
@@ -634,6 +719,10 @@ export async function handleApiRequest(req, res) {
   if (pathname === '/api/cognism/redeem') {
     return handlePostRoute(req, res, async body => {
       await assertCognismPreviewEnabled(req);
+      if (!(canUseLocalCognismPreviewFallback() && !hasSupabaseServiceCredentials())) {
+        const user = await getAuthenticatedCrmUserWithOrganization(req);
+        assertOrgAdmin(user);
+      }
       const payload = await redeemCognismContacts(body, {
         apiKey: await getCredentialValue(req, 'cognism', 'apiKey', 'COGNISM_API_KEY'),
         allowLocalRedeemWithoutApiKey: canUseLocalCognismPreviewFallback(),

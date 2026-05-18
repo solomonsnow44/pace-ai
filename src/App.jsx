@@ -6184,41 +6184,6 @@ function SettingsPage({
                   {cognismRedeemEnabled ? "Use preview only" : "Enable redeem"}
                 </button>
               </div>
-              <div className="admin-member-access">
-                <div>
-                  <strong>Member admin access</strong>
-                  <small>Promote PaceOps members to admins or remove admin access. Admins can use redeem mode when enabled and can use enabled admin controls.</small>
-                </div>
-                <div className="admin-member-list">
-                  {visibleTeamMembers.map(member => {
-                    const roleKey = member.roleKey || String(member.role || "member").toLowerCase().replaceAll(" ", "_");
-                    const isProtectedRole = ["platform_admin", "org_owner"].includes(roleKey);
-                    const isSelf = member.id === user?.id;
-                    const isMemberAdmin = roleKey === "org_admin";
-                    const canChangeRole = currentUserIsAdmin && member.id && !isProtectedRole && !isSelf;
-                    const busy = roleUpdateStatus.userId === member.id && roleUpdateStatus.state === "saving";
-                    return (
-                      <div key={member.id || member.email || member.name} className="admin-member-row">
-                        <div>
-                          <strong>{member.name}</strong>
-                          <small>{member.email || "No email"}</small>
-                        </div>
-                        <StatusBadge tone={isMemberAdmin || isProtectedRole ? "warning" : "neutral"}>{formatRole(roleKey)}</StatusBadge>
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          onClick={() => updateMemberAdminRole(member, isMemberAdmin ? "member" : "org_admin")}
-                          disabled={!canChangeRole || busy}
-                        >
-                          {busy ? "Saving" : isMemberAdmin ? "Remove admin" : "Make admin"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-                {roleUpdateStatus.state === "saved" ? <div className="form-success">Member admin access updated.</div> : null}
-                {roleUpdateError ? <div className="form-error">{roleUpdateError}</div> : null}
-              </div>
               <div className="admin-settings-feedback">
                 {adminSettingsStatus === "saved" ? <div className="form-success">Admin controls saved.</div> : null}
                 {adminSettingsError ? <div className="form-error">{adminSettingsError}</div> : null}
@@ -6226,6 +6191,59 @@ function SettingsPage({
             </div>
           ) : (
             <p className="modal-helper-text">Admin controls are available to organization admins only.</p>
+          )}
+        </section>
+        <section className="panel admin-members-panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Access Control</span>
+              <h2>Admin access</h2>
+            </div>
+            <StatusBadge>{visibleTeamMembers.length} member{visibleTeamMembers.length === 1 ? "" : "s"}</StatusBadge>
+          </div>
+          <p className="admin-panel-intro">Promote trusted PaceOps members to admins or remove admin access. Admins can use redeem mode when it is enabled and can use enabled admin controls such as contact deletion.</p>
+          {currentUserIsAdmin ? (
+            <>
+              <div className="admin-access-table" role="table" aria-label="Workspace admin access">
+                <div className="admin-access-head" role="row">
+                  <span>Member</span>
+                  <span>Current access</span>
+                  <span>Action</span>
+                </div>
+                {visibleTeamMembers.map(member => {
+                  const roleKey = member.roleKey || String(member.role || "member").toLowerCase().replaceAll(" ", "_");
+                  const isProtectedRole = ["platform_admin", "org_owner"].includes(roleKey);
+                  const isSelf = member.id === user?.id;
+                  const isMemberAdmin = roleKey === "org_admin";
+                  const canChangeRole = currentUserIsAdmin && member.id && !isProtectedRole && !isSelf;
+                  const busy = roleUpdateStatus.userId === member.id && roleUpdateStatus.state === "saving";
+                  const actionLabel = isProtectedRole ? "Protected" : isSelf ? "You" : isMemberAdmin ? "Remove admin" : "Make admin";
+                  return (
+                    <div key={member.id || member.email || member.name} className="admin-access-row" role="row">
+                      <div className="admin-access-person">
+                        <strong>{member.name}</strong>
+                        <small>{member.email || "No email"}</small>
+                      </div>
+                      <StatusBadge tone={isMemberAdmin || isProtectedRole ? "warning" : "neutral"}>{formatRole(roleKey)}</StatusBadge>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => updateMemberAdminRole(member, isMemberAdmin ? "member" : "org_admin")}
+                        disabled={!canChangeRole || busy}
+                      >
+                        {busy ? "Saving" : actionLabel}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="admin-member-feedback">
+                {roleUpdateStatus.state === "saved" ? <div className="form-success">Member admin access updated.</div> : null}
+                {roleUpdateError ? <div className="form-error">{roleUpdateError}</div> : null}
+              </div>
+            </>
+          ) : (
+            <p className="modal-helper-text">Only organization admins can change member admin access.</p>
           )}
         </section>
       </div>

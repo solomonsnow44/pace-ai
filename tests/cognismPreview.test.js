@@ -4,6 +4,7 @@ import {
   assertSafeCognismPreviewUrl,
   COGNISM_CONTACT_SEARCH_URL,
   createCognismPreview,
+  redeemCognismContacts,
 } from "../src/server/cognismPreview.js";
 
 test("preview route helper blocks redeem URLs", () => {
@@ -120,7 +121,169 @@ test("preview route helper defaults to a usable company result count", async () 
     },
   );
 
-  assert.equal(payload.maxPerCompany, 10);
+  assert.equal(payload.maxPerCompany, 1);
+});
+
+test("preview route helper can use local fallback without an API key", async () => {
+  const payload = await createCognismPreview(
+    {
+      companies: ["Microsoft"],
+      targetTitles: ["Head of User Experience"],
+      maxPerCompany: 2,
+      requireMobileAvailable: true,
+    },
+    { allowLocalPreviewWithoutApiKey: true },
+  );
+
+  assert.equal(payload.maxPerCompany, 2);
+  assert.equal(payload.estimatedCreditsUsed, 0);
+  assert.equal(payload.results.length, 2);
+  assert.equal(payload.results.every(result => result.company === "Microsoft"), true);
+  assert.equal(payload.results.every(result => result.mobileAvailable), true);
+  assert.match(payload.warning, /local preview data/);
+});
+
+test("redeem helper posts redeem IDs and maps returned contact data", async () => {
+  let calledUrl = "";
+  let calledBody = null;
+  const payload = await redeemCognismContacts(
+    {
+      leads: [
+        {
+          rowId: "row-1",
+          redeemId: "redeem-1",
+          company: "Stripe",
+          contactName: "Megan Arora",
+        },
+      ],
+    },
+    {
+      apiKey: "test-key",
+      fetcher: async (url, options) => {
+        calledUrl = url;
+        calledBody = JSON.parse(options.body);
+        assert.equal(options.method, "POST");
+        assert.equal(options.headers.Authorization, "Bearer test-key");
+
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              results: [
+                {
+                  redeemId: "redeem-1",
+                  id: "contact-1",
+                  fullName: "Megan Arora",
+                  jobTitle: "Head Of Procurement",
+                  email: { address: "megan@example.com" },
+                  mobilePhoneNumbers: [
+                    { number: "+1 508-434-4950", label: "DIRECT_DIAL" },
+                    { number: "+1 630-542-1120", label: "MOBILE" },
+                  ],
+                  account: { name: "Stripe" },
+                },
+              ],
+            };
+          },
+        };
+      },
+    },
+  );
+
+  assert.match(calledUrl, /\/api\/search\/contact\/redeem$/);
+  assert.deepEqual(calledBody, { redeemIds: ["redeem-1"] });
+  assert.equal(payload.mode, "redeem");
+  assert.equal(payload.estimatedCreditsUsed, 1);
+  assert.equal(payload.redeemed[0].rowId, "row-1");
+  assert.equal(payload.redeemed[0].manualEmail, "megan@example.com");
+  assert.equal(payload.redeemed[0].manualMobile, "+1 630-542-1120");
+  assert.equal(payload.redeemed[0].manualDirectDial, "+1 508-434-4950");
+});
+
+test("redeem helper reads Cognism result arrays and surfaces response errors", async () => {
+  const payload = await redeemCognismContacts(
+    { redeemIds: ["redeem-1"] },
+    {
+      apiKey: "test-key",
+      fetcher: async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            result: [
+              {
+                redeemId: "redeem-1",
+                email: { address: "result@example.com" },
+                mobilePhoneNumbers: [{ number: "+1 508-434-4950", label: "DIRECT_DIAL" }],
+              },
+            ],
+          };
+        },
+      }),
+    },
+  );
+
+  assert.equal(payload.redeemed.length, 1);
+  assert.equal(payload.redeemed[0].manualEmail, "result@example.com");
+  assert.equal(payload.redeemed[0].manualMobile, "");
+  assert.equal(payload.redeemed[0].manualDirectDial, "+1 508-434-4950");
+
+  await assert.rejects(
+    () => redeemCognismContacts(
+      { redeemIds: ["bad-redeem-id"] },
+      {
+        apiKey: "test-key",
+        fetcher: async () => ({
+          ok: false,
+          status: 400,
+          clone() {
+            return this;
+          },
+          async json() {
+            return { message: "Invalid redeemId" };
+          },
+          async text() {
+            return "";
+          },
+        }),
+      },
+    ),
+    /Invalid redeemId/,
+  );
+});
+
+test("redeem helper limits each request to twenty contacts", async () => {
+  await assert.rejects(
+    () => redeemCognismContacts(
+      { redeemIds: Array.from({ length: 21 }, (_, index) => `redeem-${index}`) },
+      { apiKey: "test-key", fetcher: async () => ({ ok: true, json: async () => ({ results: [] }) }) },
+    ),
+    /Redeem up to 20 contacts at a time/,
+  );
+});
+
+test("redeem helper can use local fallback without an API key", async () => {
+  const payload = await redeemCognismContacts(
+    {
+      leads: [
+        {
+          rowId: "row-1",
+          redeemId: "local-preview:stripe:1",
+          company: "Stripe",
+          contactName: "Megan Arora",
+        },
+      ],
+    },
+    { allowLocalRedeemWithoutApiKey: true },
+  );
+
+  assert.equal(payload.mode, "redeem");
+  assert.equal(payload.estimatedCreditsUsed, 1);
+  assert.equal(payload.redeemed[0].rowId, "row-1");
+  assert.match(payload.redeemed[0].manualEmail, /@stripe\.example$/);
+  assert.match(payload.redeemed[0].manualMobile, /^\+15550001/);
+  assert.match(payload.warning, /local redeem data/);
 });
 
 test("preview route helper filters contacts by required mobile", async () => {

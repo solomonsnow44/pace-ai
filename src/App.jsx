@@ -4,7 +4,6 @@ import * as XLSX from "xlsx";
 import {
   ArrowRight,
   ArrowLeft,
-  Bot,
   BriefcaseBusiness,
   Building2,
   CalendarDays,
@@ -21,6 +20,7 @@ import {
   KanbanSquare,
   LayoutDashboard,
   ListFilter,
+  LoaderCircle,
   LockKeyhole,
   LogOut,
   LogIn,
@@ -53,8 +53,13 @@ const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, 
 const CRM_DATA_METADATA_KEY = "crm_data";
 const ALLOWED_EMAIL_DOMAIN = "paceops.com";
 const LEAD_FINDER_SEARCH_STATE_KEY = "paceops-lead-finder-search-state";
-const LEAD_FINDER_SEARCH_STATE_VERSION = 2;
-const DEFAULT_MAX_CONTACTS_PER_COMPANY = 10;
+const LEAD_FINDER_SEARCH_STATE_VERSION = 4;
+const DEFAULT_MAX_CONTACTS_PER_COMPANY = 1;
+const DEFAULT_ADMIN_SETTINGS = {
+  cognism_preview_enabled: true,
+  contact_deletion_enabled: false,
+};
+const ADMIN_ROLES = new Set(["platform_admin", "org_owner", "org_admin"]);
 
 const demoClients = [
   {
@@ -184,6 +189,7 @@ const demoContacts = [
     email: "contact-01@example.test",
     phone: "+35315550101",
     mobile: "+353871110101",
+    directDial: "+35315550101",
     owner: "Workspace Admin",
     status: "Researching",
     lastTouch: "Profile enriched today",
@@ -198,6 +204,7 @@ const demoContacts = [
     email: "contact-02@example.test",
     phone: "+442071110202",
     mobile: "+447700900202",
+    directDial: "+442071110202",
     owner: "Campaign Manager",
     status: "Call back",
     lastTouch: "Voicemail yesterday",
@@ -212,6 +219,7 @@ const demoContacts = [
     email: "contact-03@example.test",
     phone: "+442071110303",
     mobile: "+447700900303",
+    directDial: "+442071110303",
     owner: "Workspace Admin",
     status: "New",
     lastTouch: "Added from list",
@@ -226,6 +234,7 @@ const demoContacts = [
     email: "contact-04@example.test",
     phone: "+35315550404",
     mobile: "+353871110404",
+    directDial: "+35315550404",
     owner: "Campaign Manager",
     status: "Meeting booked",
     lastTouch: "Meeting confirmed",
@@ -240,6 +249,7 @@ const demoContacts = [
     email: "contact-05@example.test",
     phone: "+35315550505",
     mobile: "+353871110505",
+    directDial: "+35315550505",
     owner: "Workspace Admin",
     status: "Contacted",
     lastTouch: "Email opened",
@@ -254,6 +264,7 @@ const demoContacts = [
     email: "contact-06@example.test",
     phone: "+442071110606",
     mobile: "+447700900606",
+    directDial: "+442071110606",
     owner: "Campaign Manager",
     status: "Priority",
     lastTouch: "LinkedIn viewed",
@@ -336,7 +347,7 @@ const callOutcomes = [
   "Meeting booked",
   "Wrong number",
 ];
-const COGNISM_REDEEM_CONFIRMATION = "ENABLE REDEEM";
+const COGNISM_REDEEM_CONFIRMATION = "ENABLE";
 
 const collaborativeActivityTypes = new Set([
   "Call",
@@ -381,7 +392,6 @@ const baseIntegrations = [
   { name: "Cognism", icon: Target, status: "Connected", note: "Lead Finder searches preview contact data and saves selected rows.", action: "Open Lead Finder", view: "cognism", redeemEnabled: false },
   // Calls workspace disabled: { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with saved phone numbers.", action: "Open Calls", view: "calls" },
   { name: "Aircall", icon: Phone, status: "Partial", note: "Click-to-call is available for contacts with saved phone numbers.", action: "Open Contacts", view: "contacts" },
-  { name: "OpenAI", icon: Bot, status: "Available", note: "Used in account intelligence and script generation when an API key is configured.", action: "", workflow: "" },
   { name: "HubSpot", icon: Database, status: "Connected", note: "Lead Finder contacts can be exported to HubSpot contacts. Company association depends on HubSpot app scopes.", action: "Open Lead Finder", view: "cognism" },
 ];
 const connectedIntegrationStatuses = new Set(["Available", "Connected", "Partial"]);
@@ -665,6 +675,19 @@ function mergeWorkspaceUsers(users, fallbackUser) {
   return merged;
 }
 
+function normalizeAdminSettings(settings = {}) {
+  return {
+    ...DEFAULT_ADMIN_SETTINGS,
+    ...(settings && typeof settings === "object" ? settings : {}),
+    cognism_preview_enabled: settings?.cognism_preview_enabled !== false,
+    contact_deletion_enabled: settings?.contact_deletion_enabled === true,
+  };
+}
+
+function formatRole(role) {
+  return titleCase(String(role || "member").replaceAll("_", " "));
+}
+
 function mapLeadListRecord(record) {
   return {
     id: record.id,
@@ -825,6 +848,7 @@ function hydrateLeadWithContactDatabase(lead, contactDatabase = []) {
     ...lead,
     manualEmail: match.manualEmail || lead.manualEmail || "",
     manualMobile: match.manualMobile || lead.manualMobile || "",
+    manualDirectDial: match.manualDirectDial || lead.manualDirectDial || "",
     linkedinProfileUrl: match.linkedinProfileUrl || lead.linkedinProfileUrl || "",
     sourceNote: match.sourceNote || lead.sourceNote || "Added manually by PaceOps user",
     dataSource: match.dataSource || lead.dataSource || "manual",
@@ -841,13 +865,54 @@ function hydrateLeadsWithContactDatabase(leads, contactDatabase = []) {
   return (leads || []).map(lead => hydrateLeadWithContactDatabase(lead, contactDatabase));
 }
 
+function leadMergeKey(lead = {}) {
+  const cognismRedeemId = normalizeLookupValue(lead.cognismRedeemId).toLowerCase();
+  if (cognismRedeemId) return `redeem:${cognismRedeemId}`;
+  const cognismContactId = normalizeLookupValue(lead.cognismContactId).toLowerCase();
+  if (cognismContactId) return `cognism:${cognismContactId}`;
+  const linkedinUrl = normalizeLinkedinUrl(lead.linkedinProfileUrl).toLowerCase();
+  if (linkedinUrl) return `linkedin:${linkedinUrl}`;
+  return `person:${normalizeLookupValue(lead.contactName).toLowerCase()}|${normalizeLookupValue(lead.company).toLowerCase()}`;
+}
+
+function mergeLeadResults(existingLeads = [], incomingLeads = []) {
+  const merged = [...existingLeads];
+  const indexByKey = new Map(merged.map((lead, index) => [leadMergeKey(lead), index]));
+
+  for (const incomingLead of incomingLeads) {
+    const key = leadMergeKey(incomingLead);
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, merged.length);
+      merged.push(incomingLead);
+    } else {
+      merged[existingIndex] = {
+        ...incomingLead,
+        ...merged[existingIndex],
+        emailAvailable: incomingLead.emailAvailable || merged[existingIndex].emailAvailable,
+        mobileAvailable: incomingLead.mobileAvailable || merged[existingIndex].mobileAvailable,
+        directDialAvailable: incomingLead.directDialAvailable || merged[existingIndex].directDialAvailable,
+        matchScore: Math.max(Number(incomingLead.matchScore) || 0, Number(merged[existingIndex].matchScore) || 0),
+      };
+    }
+  }
+
+  return merged;
+}
+
 function loadLeadFinderSearchState() {
   if (typeof window === "undefined") return null;
   try {
     const parsed = JSON.parse(window.localStorage.getItem(LEAD_FINDER_SEARCH_STATE_KEY) || "null");
     if (!parsed || typeof parsed !== "object") return null;
-    if (parsed.version !== LEAD_FINDER_SEARCH_STATE_VERSION && Number(parsed.maxPerCompany) <= 1) {
-      return { ...parsed, maxPerCompany: DEFAULT_MAX_CONTACTS_PER_COMPANY };
+    if (parsed.version !== LEAD_FINDER_SEARCH_STATE_VERSION) {
+      return {
+        ...parsed,
+        maxPerCompany: DEFAULT_MAX_CONTACTS_PER_COMPANY,
+        requireMobileAvailable: true,
+        searchMode: "preview",
+        version: LEAD_FINDER_SEARCH_STATE_VERSION,
+      };
     }
     return parsed;
   } catch {
@@ -870,9 +935,16 @@ function leadHasPaceOpsData(lead = {}) {
     normalizeLookupValue(lead.linkedinProfileUrl)
     || normalizeLookupValue(lead.manualEmail)
     || normalizeLookupValue(lead.manualMobile)
+    || normalizeLookupValue(lead.manualDirectDial)
     || normalizeLookupValue(lead.notes)
     || normalizeLookupValue(lead.dbContactId)
   );
+}
+
+function leadHasSavedMobileData(lead = {}, contactDatabase = []) {
+  if (normalizeLookupValue(lead.manualMobile) || normalizeLookupValue(lead.manualDirectDial)) return true;
+  const match = findLeadDatabaseMatch(lead, contactDatabase);
+  return Boolean(normalizeLookupValue(match?.manualMobile) || normalizeLookupValue(match?.manualDirectDial));
 }
 
 function leadHasManualData(lead = {}) {
@@ -880,6 +952,7 @@ function leadHasManualData(lead = {}) {
     normalizeLookupValue(lead.linkedinProfileUrl)
     || normalizeLookupValue(lead.manualEmail)
     || normalizeLookupValue(lead.manualMobile)
+    || normalizeLookupValue(lead.manualDirectDial)
     || normalizeLookupValue(lead.notes)
   );
 }
@@ -888,6 +961,7 @@ function validateLeadManualFields(lead = {}) {
   const linkedinUrl = normalizeLinkedinUrl(lead.linkedinProfileUrl);
   const email = normalizeLookupValue(lead.manualEmail);
   const mobile = normalizeLookupValue(lead.manualMobile);
+  const directDial = normalizeLookupValue(lead.manualDirectDial);
   const phonePattern = /^[+\d\s()-]+$/;
 
   if (linkedinUrl && !/^https:\/\/(www\.)?linkedin\.com\/in\/.+/i.test(linkedinUrl)) {
@@ -898,6 +972,9 @@ function validateLeadManualFields(lead = {}) {
   }
   if (mobile && !phonePattern.test(mobile)) {
     return "Manual mobile can only include +, digits, spaces, brackets, and dashes.";
+  }
+  if (directDial && !phonePattern.test(directDial)) {
+    return "Manual direct dial can only include +, digits, spaces, brackets, and dashes.";
   }
   return "";
 }
@@ -911,7 +988,9 @@ function findPotentialContactConflicts(lead = {}, contactDatabase = []) {
       && normalizeEmail(lead.manualEmail) === normalizeEmail(contact.manualEmail);
     const sameMobile = lead.manualMobile && contact.manualMobile
       && normalizePhone(lead.manualMobile) === normalizePhone(contact.manualMobile);
-    return sameLinkedin || sameEmail || sameMobile;
+    const sameDirectDial = lead.manualDirectDial && contact.manualDirectDial
+      && normalizePhone(lead.manualDirectDial) === normalizePhone(contact.manualDirectDial);
+    return sameLinkedin || sameEmail || sameMobile || sameDirectDial;
   });
 }
 
@@ -935,7 +1014,7 @@ function buildLeadContactDatabasePayload(lead, organizationId, userId) {
     linkedin_profile_url: normalizeLinkedinUrl(lead.linkedinProfileUrl) || null,
     manual_email: normalizeEmail(lead.manualEmail) || null,
     manual_mobile: normalizeLookupValue(lead.manualMobile) || null,
-    manual_direct_dial: null,
+    manual_direct_dial: normalizeLookupValue(lead.manualDirectDial) || null,
     notes: normalizeLookupValue(lead.notes) || null,
     source_note: sourceNote,
     data_source: dataSource,
@@ -1111,7 +1190,15 @@ function getRedeemedPhoneNumber(contact) {
 }
 
 function getContactPhoneNumber(contact) {
-  return getRedeemedPhoneNumber(contact) || contact?.phoneNumber || contact?.mobile || contact?.phone || "";
+  return getRedeemedPhoneNumber(contact) || contact?.phoneNumber || contact?.mobile || contact?.directDial || contact?.phone || "";
+}
+
+function getContactMobileNumber(contact) {
+  return contact?.mobile || "";
+}
+
+function getContactDirectDialNumber(contact) {
+  return contact?.directDial || contact?.phone || "";
 }
 
 async function buildApiHeaders() {
@@ -1159,7 +1246,7 @@ function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", sou
         },
         body: JSON.stringify({ phoneNumber: dialPhoneNumber, contactId: contact.id, source }),
       });
-      const payload = await response.json();
+      const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Aircall dial failed");
       setStatus("success");
       setMessage(payload.message || "Number sent to Aircall.");
@@ -1173,7 +1260,7 @@ function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", sou
     <div className={`aircall-dial ${compact ? "compact" : ""}`}>
       {!compact ? <span>{phoneNumber || "Phone number needed"}</span> : null}
       <button className={`secondary-button ${status === "error" ? "dial-button-error" : ""}`} type="button" disabled={!canDial || status === "loading"} onClick={dialContact} title={buttonTitle} aria-label={buttonTitle}>
-        <Phone size={16} />
+        {status === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Phone size={16} />}
         {!compact ? (status === "loading" ? "Dialing" : label) : null}
       </button>
       {message && !compact ? <small className={status === "error" ? "dial-error" : "dial-success"}>{message}</small> : null}
@@ -1844,7 +1931,7 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
   );
 }
 
-function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveContact }) {
+function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveContact, canDeleteContacts }) {
   const { contacts } = useCrmData();
   const importInputRef = useRef(null);
   const [importStatus, setImportStatus] = useState("idle");
@@ -1856,7 +1943,8 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
       const searchableText = [
         contact.name,
         contact.email,
-        getContactPhoneNumber(contact),
+        getContactMobileNumber(contact),
+        getContactDirectDialNumber(contact),
         contact.role,
         contact.account,
       ].map(value => normalizeLookupValue(value).toLowerCase()).join(" ");
@@ -1892,7 +1980,7 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
       >
         <input ref={importInputRef} className="visually-hidden" type="file" accept=".csv,.xlsx" multiple onChange={importContacts} />
         <button className="secondary-button" type="button" onClick={() => importInputRef.current?.click()} disabled={importStatus === "loading"}>
-          <Upload size={16} />
+          {importStatus === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Upload size={16} />}
           {importStatus === "loading" ? "Importing" : "Import contacts"}
         </button>
         <button className="primary-button" type="button" onClick={() => onNewContact()}>
@@ -1909,7 +1997,7 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
       <section className="panel">
         {contacts.length ? (
           filteredContacts.length
-            ? <ContactTable contacts={filteredContacts} onOpenContact={onOpenContact} onRemoveContact={onRemoveContact} />
+            ? <ContactTable contacts={filteredContacts} onOpenContact={onOpenContact} onRemoveContact={onRemoveContact} canDeleteContacts={canDeleteContacts} />
             : <EmptyState icon={Search} title="No matching contacts" text="Try a different name, email, phone number, role, or account." />
         ) : <EmptyState icon={Contact} title="No contacts yet" text="Add contacts after creating accounts, or import a contact list." />}
       </section>
@@ -1917,13 +2005,40 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
   );
 }
 
-function ContactTable({ contacts, onOpenContact, onRemoveContact }) {
+function ContactTable({ contacts, onOpenContact, onRemoveContact, canDeleteContacts }) {
   const [pendingRemoval, setPendingRemoval] = useState(null);
+  const [confirmationValue, setConfirmationValue] = useState("");
+  const [removalStatus, setRemovalStatus] = useState("idle");
+  const [removalError, setRemovalError] = useState("");
+
+  function openRemoval(contact) {
+    setPendingRemoval(contact);
+    setConfirmationValue("");
+    setRemovalStatus("idle");
+    setRemovalError("");
+  }
+
+  async function confirmRemoval() {
+    if (!pendingRemoval || confirmationValue.trim() !== pendingRemoval.name) return;
+    setRemovalStatus("saving");
+    setRemovalError("");
+    try {
+      await onRemoveContact?.(pendingRemoval);
+      setPendingRemoval(null);
+      setConfirmationValue("");
+      setRemovalStatus("idle");
+    } catch (error) {
+      setRemovalStatus("idle");
+      setRemovalError(error?.message || "Could not archive contact.");
+    }
+  }
 
   return (
     <>
       <div className="contact-list-table">
         {contacts.map(contact => {
+          const mobileNumber = getContactMobileNumber(contact);
+          const directDialNumber = getContactDirectDialNumber(contact);
           const phoneNumber = getContactPhoneNumber(contact);
           return (
             <article
@@ -1947,8 +2062,12 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact }) {
                 </div>
               </div>
               <div className="contact-list-phone">
-                <span>Phone</span>
-                <strong>{phoneNumber || "Missing"}</strong>
+                <span>Mobile</span>
+                <strong>{mobileNumber || "Missing"}</strong>
+              </div>
+              <div className="contact-list-phone">
+                <span>Direct</span>
+                <strong>{directDialNumber || "Missing"}</strong>
               </div>
               <div className="contact-list-actions">
                 <button className="icon-action" type="button" onClick={event => {
@@ -1962,12 +2081,12 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact }) {
                     <AircallDialButton contact={contact} compact />
                   </div>
                 ) : null}
-                <button className="icon-action danger-button" type="button" onClick={event => {
+                {canDeleteContacts ? <button className="icon-action danger-button" type="button" onClick={event => {
                   event.stopPropagation();
-                  setPendingRemoval(contact);
+                  openRemoval(contact);
                 }} title={`Remove ${contact.name}`} aria-label={`Remove ${contact.name}`}>
                   <Trash2 size={16} />
-                </button>
+                </button> : null}
               </div>
             </article>
           );
@@ -1980,22 +2099,23 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact }) {
           <div className="workflow-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="remove-contact-title">
             <div className="modal-header">
               <div>
-                <span className="eyebrow">Remove contact</span>
+                <span className="eyebrow">Archive contact</span>
                 <h2 id="remove-contact-title">{pendingRemoval.name}</h2>
               </div>
               <button className="icon-action" type="button" onClick={() => setPendingRemoval(null)} aria-label="Close">
                 <X size={16} />
               </button>
             </div>
-            <p className="modal-helper-text">This removes the contact from the CRM contact list. It does not delete saved Lead Finder records.</p>
+            <p className="modal-helper-text">Type the contact name to archive this contact and remove it from CRM lists.</p>
+            <FormField label={`Type ${pendingRemoval.name}`}>
+              <input value={confirmationValue} onChange={event => setConfirmationValue(event.target.value)} autoFocus />
+            </FormField>
+            {removalError ? <div className="form-error">{removalError}</div> : null}
             <div className="modal-actions">
               <button className="secondary-button" type="button" onClick={() => setPendingRemoval(null)}>Cancel</button>
-              <button className="secondary-button danger-button" type="button" onClick={() => {
-                onRemoveContact?.(pendingRemoval);
-                setPendingRemoval(null);
-              }}>
-                <Trash2 size={16} />
-                Remove contact
+              <button className="secondary-button danger-button" type="button" onClick={confirmRemoval} disabled={removalStatus === "saving" || confirmationValue.trim() !== pendingRemoval.name}>
+                {removalStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Trash2 size={16} />}
+                {removalStatus === "saving" ? "Archiving" : "Archive contact"}
               </button>
             </div>
           </div>
@@ -2005,20 +2125,27 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact }) {
   );
 }
 
-function ContactDetailPage({ contact, privateNote = "", onUpdateContact, onSavePrivateNote, onLogCall }) {
+function ContactDetailPage({ contact, privateNote = "", onUpdateContact, onSavePrivateNote, onLogCall, onRemoveContact, canDeleteContacts }) {
   const { accounts } = useCrmData();
   const [outcome, setOutcome] = useState("Connected");
   const [noteDraft, setNoteDraft] = useState(privateNote);
   const [noteStatus, setNoteStatus] = useState("idle");
   const [editing, setEditing] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deleteStatus, setDeleteStatus] = useState("idle");
+  const [deleteError, setDeleteError] = useState("");
   const [draft, setDraft] = useState(() => ({
     accountId: contact.accountId,
     name: contact.name || "",
     role: contact.role || "",
     email: contact.email || "",
-    phone: getContactPhoneNumber(contact),
+    mobile: getContactMobileNumber(contact),
+    directDial: getContactDirectDialNumber(contact),
   }));
   const phoneNumber = getContactPhoneNumber(contact);
+  const mobileNumber = getContactMobileNumber(contact);
+  const directDialNumber = getContactDirectDialNumber(contact);
 
   function updateDraft(field, value) {
     setDraft(current => ({ ...current, [field]: value }));
@@ -2029,6 +2156,19 @@ function ContactDetailPage({ contact, privateNote = "", onUpdateContact, onSaveP
     setEditing(false);
   }
 
+  async function archiveContact() {
+    if (deleteConfirmation.trim() !== contact.name) return;
+    setDeleteStatus("saving");
+    setDeleteError("");
+    try {
+      await onRemoveContact?.(contact);
+      setDeleteOpen(false);
+    } catch (error) {
+      setDeleteStatus("idle");
+      setDeleteError(error?.message || "Could not archive contact.");
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -2037,6 +2177,17 @@ function ContactDetailPage({ contact, privateNote = "", onUpdateContact, onSaveP
         description={`${contact.role} at ${contact.account}.`}
       >
         {phoneNumber ? <AircallDialButton contact={contact} /> : null}
+        {canDeleteContacts ? (
+          <button className="secondary-button danger-button" type="button" onClick={() => {
+            setDeleteOpen(true);
+            setDeleteConfirmation("");
+            setDeleteError("");
+            setDeleteStatus("idle");
+          }}>
+            <Trash2 size={16} />
+            Delete contact
+          </button>
+        ) : null}
       </PageHeader>
       <div className="record-hero">
         <span className="record-avatar large">{accountInitial(contact.name)}</span>
@@ -2074,14 +2225,18 @@ function ContactDetailPage({ contact, privateNote = "", onUpdateContact, onSaveP
               <FormField label="Email">
                 <input type="email" value={draft.email} onChange={event => updateDraft("email", event.target.value)} />
               </FormField>
-              <FormField label="Phone number">
-                <input value={draft.phone} onChange={event => updateDraft("phone", event.target.value)} />
+              <FormField label="Mobile">
+                <input value={draft.mobile} onChange={event => updateDraft("mobile", event.target.value)} />
+              </FormField>
+              <FormField label="Direct dial">
+                <input value={draft.directDial} onChange={event => updateDraft("directDial", event.target.value)} />
               </FormField>
             </div>
           ) : (
             <div className="detail-list">
               <div><span>Email</span><strong>{contact.email || "Email needed"}</strong></div>
-              <div><span>Phone</span><strong>{phoneNumber || "Phone number needed"}</strong></div>
+              <div><span>Mobile</span><strong>{mobileNumber || "Mobile needed"}</strong></div>
+              <div><span>Direct dial</span><strong>{directDialNumber || "Direct dial needed"}</strong></div>
             </div>
           )}
         </section>
@@ -2126,10 +2281,42 @@ function ContactDetailPage({ contact, privateNote = "", onUpdateContact, onSaveP
               } catch {
                 setNoteStatus("error");
               }
-            }}>{noteStatus === "saving" ? "Saving" : "Save note"}</button>
+            }}>
+              {noteStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : null}
+              {noteStatus === "saving" ? "Saving" : "Save note"}
+            </button>
           </div>
         </section>
       </div>
+      {deleteOpen ? (
+        <section className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) setDeleteOpen(false);
+        }}>
+          <div className="workflow-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="archive-contact-detail-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Archive contact</span>
+                <h2 id="archive-contact-detail-title">{contact.name}</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setDeleteOpen(false)} aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <p className="modal-helper-text">Type the contact name to archive this contact and remove it from CRM lists.</p>
+            <FormField label={`Type ${contact.name}`}>
+              <input value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.target.value)} autoFocus />
+            </FormField>
+            {deleteError ? <div className="form-error">{deleteError}</div> : null}
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setDeleteOpen(false)}>Cancel</button>
+              <button className="secondary-button danger-button" type="button" onClick={archiveContact} disabled={deleteStatus === "saving" || deleteConfirmation.trim() !== contact.name}>
+                {deleteStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Trash2 size={16} />}
+                {deleteStatus === "saving" ? "Archiving" : "Archive contact"}
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
     </>
   );
 }
@@ -2392,11 +2579,11 @@ function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource
           Add source
         </button>
         <button className="primary-button" type="button" onClick={() => onQueueResearch()}>
-          <Sparkles size={16} />
+          <ListFilter size={16} />
           Queue research
         </button>
         <button className="secondary-button" type="button" onClick={onGenerateScripts}>
-          <Bot size={16} />
+          <FileText size={16} />
           Generate scripts
         </button>
       </PageHeader>
@@ -2445,7 +2632,7 @@ function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource
         <div className="panel-header">
           <div>
             <span className="eyebrow">Script builder</span>
-            <h2>AI script board</h2>
+            <h2>Script board</h2>
           </div>
           <StatusBadge>{scopedScripts.length} scripts</StatusBadge>
         </div>
@@ -2528,7 +2715,8 @@ const contactImportColumnMap = {
   account: ["account", "account name", "company", "company name", "organisation", "organization"],
   role: ["role", "title", "job title", "position"],
   email: ["email", "email address", "work email"],
-  phone: ["phone", "phone number", "mobile", "mobile phone", "telephone", "number"],
+  mobile: ["mobile", "mobile phone", "mobile number", "cell", "cell phone"],
+  directDial: ["direct", "direct dial", "direct phone", "direct number", "phone", "phone number", "telephone", "number"],
 };
 
 function normalizeImportHeader(value) {
@@ -2607,7 +2795,8 @@ function dedupeContactImportRows(rows) {
       contactName.toLowerCase(),
       accountName.toLowerCase(),
       normalizeEmail(row.email),
-      normalizePhone(row.phone),
+      normalizePhone(row.mobile),
+      normalizePhone(row.directDial),
     ].join("|");
     if (seenContacts.has(key)) continue;
     seenContacts.add(key);
@@ -2629,7 +2818,8 @@ function extractContactImportRowsFromSheet(rows, sourceFile, sourceSheet = "") {
   const accountColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.account);
   const roleColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.role);
   const emailColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.email);
-  const phoneColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.phone);
+  const mobileColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.mobile);
+  const directDialColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.directDial);
 
   return rows
     .slice(headerRowIndex + 1)
@@ -2638,7 +2828,8 @@ function extractContactImportRowsFromSheet(rows, sourceFile, sourceSheet = "") {
       account: String(row[accountColumnIndex] || "").trim(),
       role: roleColumnIndex === -1 ? "" : String(row[roleColumnIndex] || "").trim(),
       email: emailColumnIndex === -1 ? "" : normalizeEmail(row[emailColumnIndex]),
-      phone: phoneColumnIndex === -1 ? "" : String(row[phoneColumnIndex] || "").trim(),
+      mobile: mobileColumnIndex === -1 ? "" : String(row[mobileColumnIndex] || "").trim(),
+      directDial: directDialColumnIndex === -1 ? "" : String(row[directDialColumnIndex] || "").trim(),
       sourceFile,
       sourceSheet,
     }))
@@ -2674,6 +2865,7 @@ const cognismExportColumns = [
   ["linkedinProfileUrl", "LinkedIn profile URL"],
   ["manualEmail", "Manual email"],
   ["manualMobile", "Manual mobile"],
+  ["manualDirectDial", "Manual direct dial"],
   ["notes", "Notes"],
   ["dataSource", "Data source"],
   ["sourceNote", "Source note"],
@@ -2875,6 +3067,7 @@ function createManualLeadDraft() {
     linkedinProfileUrl: "",
     manualEmail: "",
     manualMobile: "",
+    manualDirectDial: "",
     notes: "",
     dataSource: "manual",
     sourceNote: "Added manually by PaceOps user",
@@ -2984,6 +3177,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       linkedinProfileUrl: normalizeLinkedinUrl(draft.linkedinProfileUrl),
       manualEmail: normalizeEmail(draft.manualEmail),
       manualMobile: normalizeLookupValue(draft.manualMobile),
+      manualDirectDial: normalizeLookupValue(draft.manualDirectDial),
       notes: normalizeLookupValue(draft.notes),
       dbContactId: contact.id,
       sourceNote: draft.sourceNote || "Edited in Lead Lookup",
@@ -3107,6 +3301,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                 <th>Position</th>
                 <th>Email</th>
                 <th>Mobile</th>
+                <th>Direct dial</th>
                 <th>Location</th>
                 <th>Lists</th>
                 <th>Contacts</th>
@@ -3128,7 +3323,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                     <td>
                       {editMode ? (
                         <div className="lookup-name-action-cell">
-                          <AircallDialButton contact={{ id: contact.id }} phoneNumber={draft.manualMobile || ""} source="lead_database" label="Call" compact />
+                          <AircallDialButton contact={{ id: contact.id }} phoneNumber={draft.manualMobile || draft.manualDirectDial || ""} source="lead_database" label="Call" compact />
                           <input className="table-input" value={draft.contactName || ""} onChange={event => updateLookupDraft(contact, "contactName", event.target.value)} placeholder="Contact name" />
                         </div>
                       ) : (
@@ -3146,7 +3341,8 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                     <td>{editMode ? <input className="table-input" value={draft.company || ""} onChange={event => updateLookupDraft(contact, "company", event.target.value)} placeholder="Company" /> : contact.company || "Not available"}</td>
                     <td>{editMode ? <input className="table-input" value={draft.jobTitle || ""} onChange={event => updateLookupDraft(contact, "jobTitle", event.target.value)} placeholder="Position" /> : contact.jobTitle || "Not available"}</td>
                     <td className="lead-lookup-email" title={editMode ? draft.manualEmail || "" : contact.manualEmail || ""}>{editMode ? <input className="table-input" value={draft.manualEmail || ""} onChange={event => updateLookupDraft(contact, "manualEmail", event.target.value)} placeholder="name@company.com" /> : contact.manualEmail || "Not available"}</td>
-                    <td className="lead-lookup-mobile" title={editMode ? draft.manualMobile || "" : phoneNumber}>{editMode ? <input className="table-input" value={draft.manualMobile || ""} onChange={event => updateLookupDraft(contact, "manualMobile", event.target.value)} placeholder="+353 ..." /> : phoneNumber || "Not available"}</td>
+                    <td className="lead-lookup-mobile" title={editMode ? draft.manualMobile || "" : contact.manualMobile || ""}>{editMode ? <input className="table-input" value={draft.manualMobile || ""} onChange={event => updateLookupDraft(contact, "manualMobile", event.target.value)} placeholder="+353 mobile" /> : contact.manualMobile || "Not available"}</td>
+                    <td className="lead-lookup-mobile" title={editMode ? draft.manualDirectDial || "" : contact.manualDirectDial || ""}>{editMode ? <input className="table-input" value={draft.manualDirectDial || ""} onChange={event => updateLookupDraft(contact, "manualDirectDial", event.target.value)} placeholder="+353 direct" /> : contact.manualDirectDial || "Not available"}</td>
                     <td>{editMode ? <input className="table-input" value={draft.location || ""} onChange={event => updateLookupDraft(contact, "location", event.target.value)} placeholder="Location" /> : contact.location || "Not available"}</td>
                     <td>{memberships.length ? memberships.map(item => item.name).join(", ") : "No active list"}</td>
                     <td>
@@ -3168,7 +3364,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                 );
               }) : (
                 <tr>
-                  <td colSpan={editMode ? 10 : 9} className="empty-table-cell">
+                  <td colSpan={editMode ? 11 : 10} className="empty-table-cell">
                     {contactDatabase.length ? "No saved leads match those filters." : "Saved Lead Finder records will appear here."}
                   </td>
                 </tr>
@@ -3201,6 +3397,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
   const [listHubspotExportStatus, setListHubspotExportStatus] = useState("idle");
   const [listHubspotExportSummary, setListHubspotExportSummary] = useState("");
   const [listHubspotExportDialog, setListHubspotExportDialog] = useState(null);
+  const [pendingConfirmation, setPendingConfirmation] = useState(null);
   const selectedList = leadLists.find(list => list.id === selectedListId) || leadLists[0] || null;
   const assignedUsers = selectedList ? userNamesForIds(selectedList.assignedUserIds, workspaceUsers) : [];
   const displayedLeads = selectedList ? hydrateLeadsWithContactDatabase(selectedList.leads, contactDatabase) : [];
@@ -3243,6 +3440,55 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
       [selectedList.id]: typeof updater === "function" ? updater(accessUserIds) : updater,
     }));
     setAccessStatus("idle");
+  }
+
+  function closeConfirmation() {
+    setPendingConfirmation(null);
+  }
+
+  function confirmListAction(action) {
+    setPendingConfirmation(action);
+  }
+
+  function requestListExport(format) {
+    if (!exportableListLeads.length) return;
+    confirmListAction({
+      title: "Export lead list",
+      message: `Export ${exportableListLeads.length} ${selectedLeads.length ? "selected" : "visible"} lead${exportableListLeads.length === 1 ? "" : "s"} from "${selectedList?.name || "this list"}" as ${format.toUpperCase()}?`,
+      confirmLabel: "Export",
+      onConfirm: () => exportCognismResults(exportableListLeads, format, assignedUsers),
+    });
+  }
+
+  function requestListHubSpotExport() {
+    if (!selectedList || !exportableListLeads.length) {
+      setManualError("Select a lead list with at least one lead before exporting to HubSpot.");
+      return;
+    }
+    confirmListAction({
+      title: "Export to HubSpot",
+      message: `Export ${exportableListLeads.length} ${selectedLeads.length ? "selected" : "visible"} lead${exportableListLeads.length === 1 ? "" : "s"} from "${selectedList.name}" to HubSpot?`,
+      confirmLabel: "Export to HubSpot",
+      onConfirm: exportSelectedListToHubSpot,
+    });
+  }
+
+  function requestManualListSubmit() {
+    const validationError = validateManualLeadList({ requireName: manualMode === "create" });
+    if (validationError) {
+      setManualError(validationError);
+      return;
+    }
+
+    const isCreate = manualMode === "create";
+    confirmListAction({
+      title: isCreate ? "Create lead list" : "Add leads to list",
+      message: isCreate
+        ? `Create "${manualListName.trim()}" with ${cleanManualLeads.length} lead${cleanManualLeads.length === 1 ? "" : "s"}?`
+        : `Add ${cleanManualLeads.length} lead${cleanManualLeads.length === 1 ? "" : "s"} to "${selectedList?.name || "this list"}"?`,
+      confirmLabel: isCreate ? "Create list" : "Add to list",
+      onConfirm: isCreate ? createManualList : appendManualLeads,
+    });
   }
 
   function leadEditKey(lead) {
@@ -3414,7 +3660,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
         },
         body: JSON.stringify({ rows: hubspotRows }),
       });
-      const payload = await response.json();
+      const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "HubSpot export failed.");
 
       const resultsByRowId = new Map((payload.results || []).map(result => [result.rowId, result]));
@@ -3656,22 +3902,22 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                 </div>
                 <div className="export-actions compact-export-actions">
                   <button className="secondary-button" type="button" onClick={saveSelectedListName} disabled={listNameStatus === "saving" || selectedListNameDraft.trim() === selectedList.name}>
-                    <CheckCircle2 size={16} />
+                    {listNameStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <CheckCircle2 size={16} />}
                     {listNameStatus === "saving" ? "Saving" : listNameStatus === "saved" ? "Saved name" : "Save name"}
                   </button>
-                  <button className="secondary-button" type="button" onClick={() => exportCognismResults(exportableListLeads, "csv", assignedUsers)} disabled={!exportableListLeads.length}>
+                  <button className="secondary-button" type="button" onClick={() => requestListExport("csv")} disabled={!exportableListLeads.length}>
                     <FileText size={16} />
                     {selectedLeads.length ? "Export selected CSV" : "Export CSV"}
                   </button>
-                  <button className="secondary-button" type="button" onClick={() => exportCognismResults(exportableListLeads, "xls", assignedUsers)} disabled={!exportableListLeads.length}>
+                  <button className="secondary-button" type="button" onClick={() => requestListExport("xls")} disabled={!exportableListLeads.length}>
                     <FileText size={16} />
                     {selectedLeads.length ? "Export selected Excel" : "Export Excel"}
                   </button>
-                  <button className="secondary-button" type="button" onClick={() => exportCognismResults(exportableListLeads, "json", assignedUsers)} disabled={!exportableListLeads.length}>
+                  <button className="secondary-button" type="button" onClick={() => requestListExport("json")} disabled={!exportableListLeads.length}>
                     <FileText size={16} />
                     {selectedLeads.length ? "Export selected JSON" : "Export JSON"}
                   </button>
-                  <button className="secondary-button" type="button" onClick={exportSelectedListToHubSpot} disabled={listHubspotExportStatus === "exporting" || !displayedLeads.length}>
+                  <button className="secondary-button" type="button" onClick={requestListHubSpotExport} disabled={listHubspotExportStatus === "exporting" || !displayedLeads.length}>
                     <Database size={16} />
                     {listHubspotExportStatus === "exporting" ? "Exporting" : listHubspotExportStatus === "exported" ? "Exported" : selectedLeads.length ? "Export selected to HubSpot" : "Export to HubSpot"}
                   </button>
@@ -3723,6 +3969,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                     <col className="saved-lead-list-col-linkedin" />
                     <col className="saved-lead-list-col-email" />
                     <col className="saved-lead-list-col-mobile" />
+                    <col className="saved-lead-list-col-mobile" />
                     <col className="saved-lead-list-col-call" />
                     <col className="saved-lead-list-col-notes" />
                     <col className="saved-lead-list-col-saved" />
@@ -3739,6 +3986,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                       <th>LinkedIn profile</th>
                       <th>Email</th>
                       <th>Mobile</th>
+                      <th>Direct dial</th>
                       <th>Call</th>
                       <th>Notes</th>
                       <th>Saved</th>
@@ -3763,7 +4011,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                         </td>
                         <td>
                           <div className="lookup-name-action-cell lookup-name-action-cell-with-linkedin">
-                            <AircallDialButton contact={{ id: lead.dbContactId || buildLeadIdentityKey(lead) }} phoneNumber={draft.manualMobile || ""} source="lead_database" label="Call" compact />
+                            <AircallDialButton contact={{ id: lead.dbContactId || buildLeadIdentityKey(lead) }} phoneNumber={draft.manualMobile || draft.manualDirectDial || ""} source="lead_database" label="Call" compact />
                             <LeadLookupLinkedInButton contact={draft} />
                             <input className="table-input" value={draft.contactName || ""} onChange={event => updateLeadEditDraft(lead, "contactName", event.target.value)} placeholder="Contact name" />
                           </div>
@@ -3780,8 +4028,9 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                           />
                         </td>
                         <td><input className="table-input" value={draft.manualEmail || ""} onChange={event => updateLeadEditDraft(lead, "manualEmail", event.target.value)} placeholder="name@company.com" /></td>
-                        <td><input className="table-input" value={draft.manualMobile || ""} onChange={event => updateLeadEditDraft(lead, "manualMobile", event.target.value)} placeholder="+353 ..." /></td>
-                        <td><AircallDialButton contact={{ id: lead.dbContactId || buildLeadIdentityKey(lead) }} phoneNumber={draft.manualMobile || ""} source="lead_database" label="Call" compact /></td>
+                        <td><input className="table-input" value={draft.manualMobile || ""} onChange={event => updateLeadEditDraft(lead, "manualMobile", event.target.value)} placeholder="+353 mobile" /></td>
+                        <td><input className="table-input" value={draft.manualDirectDial || ""} onChange={event => updateLeadEditDraft(lead, "manualDirectDial", event.target.value)} placeholder="+353 direct" /></td>
+                        <td><AircallDialButton contact={{ id: lead.dbContactId || buildLeadIdentityKey(lead) }} phoneNumber={draft.manualMobile || draft.manualDirectDial || ""} source="lead_database" label="Call" compact /></td>
                         <td><textarea className="table-textarea" value={draft.notes || ""} onChange={event => updateLeadEditDraft(lead, "notes", event.target.value)} placeholder="Notes" /></td>
                         <td><DataSourceBadge lead={lead} /></td>
                         <td>
@@ -3798,11 +4047,11 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                         <td>
                           <div className="row-actions">
                             <button className="secondary-button" type="button" onClick={() => saveLeadEdit(lead)} disabled={leadEditStatuses[key] === "saving" || leadEditStatuses[key] === "removing"}>
-                              <Database size={16} />
+                              {leadEditStatuses[key] === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Database size={16} />}
                               {leadEditStatuses[key] === "saving" ? "Saving" : leadEditStatuses[key] === "saved" ? "Saved" : "Save"}
                             </button>
                             <button className="secondary-button danger-button" type="button" onClick={() => removeLeadFromList(lead)} disabled={leadEditStatuses[key] === "removing"}>
-                              <Circle size={16} />
+                              {leadEditStatuses[key] === "removing" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Circle size={16} />}
                               {leadEditStatuses[key] === "removing" ? "Removing" : "Remove"}
                             </button>
                           </div>
@@ -3879,6 +4128,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                         <th>LinkedIn</th>
                         <th>Email</th>
                         <th>Mobile</th>
+                        <th>Direct dial</th>
                         <th>Notes</th>
                         <th></th>
                       </tr>
@@ -3892,7 +4142,8 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                           <td><input value={lead.location} onChange={event => updateManualLead(lead.localId, "location", event.target.value)} placeholder="Dublin" /></td>
                           <td><input value={lead.linkedinProfileUrl} onChange={event => updateManualLead(lead.localId, "linkedinProfileUrl", event.target.value)} placeholder="https://www.linkedin.com/in/..." /></td>
                           <td><input value={lead.manualEmail} onChange={event => updateManualLead(lead.localId, "manualEmail", event.target.value)} placeholder="name@company.com" /></td>
-                          <td><input value={lead.manualMobile} onChange={event => updateManualLead(lead.localId, "manualMobile", event.target.value)} placeholder="+353 ..." /></td>
+                          <td><input value={lead.manualMobile} onChange={event => updateManualLead(lead.localId, "manualMobile", event.target.value)} placeholder="+353 mobile" /></td>
+                          <td><input value={lead.manualDirectDial} onChange={event => updateManualLead(lead.localId, "manualDirectDial", event.target.value)} placeholder="+353 direct" /></td>
                           <td><textarea value={lead.notes} onChange={event => updateManualLead(lead.localId, "notes", event.target.value)} placeholder="Notes" /></td>
                           <td><button className="secondary-button danger-button" type="button" onClick={() => removeManualLead(lead.localId)}>Remove</button></td>
                         </tr>
@@ -3906,8 +4157,8 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                     <Plus size={16} />
                     Add row
                   </button>
-                  <button className="primary-button" type="button" onClick={manualMode === "create" ? createManualList : appendManualLeads} disabled={manualStatus === "saving"}>
-                    <ListFilter size={16} />
+                  <button className="primary-button" type="button" onClick={requestManualListSubmit} disabled={manualStatus === "saving"}>
+                    {manualStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <ListFilter size={16} />}
                     {manualStatus === "saving" ? "Saving" : manualMode === "create" ? "Create list" : "Add to list"}
                   </button>
                 </div>
@@ -3953,7 +4204,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
             {manualError ? <div className="form-error">{manualError}</div> : null}
             <div className="modal-actions">
               <button className="primary-button" type="button" onClick={saveListAccess} disabled={accessStatus === "saving"}>
-                <Users size={16} />
+                {accessStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Users size={16} />}
                 {accessStatus === "saving" ? "Saving" : "Save sharing"}
               </button>
             </div>
@@ -3961,21 +4212,38 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
         </div>
       ) : null}
       <HubSpotExportResultModal result={listHubspotExportDialog} onClose={() => setListHubspotExportDialog(null)} />
+      {pendingConfirmation ? (
+        <ConfirmationModal
+          eyebrow="Lead Lists"
+          title={pendingConfirmation.title}
+          message={pendingConfirmation.message}
+          confirmLabel={pendingConfirmation.confirmLabel}
+          onCancel={closeConfirmation}
+          onConfirm={() => {
+            const action = pendingConfirmation.onConfirm;
+            closeConfirmation();
+            action?.();
+          }}
+        />
+      ) : null}
     </>
   );
 }
 
-function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLeadContact, onPersistSearchResults }) {
+function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLeadContact, onPersistSearchResults, cognismPreviewEnabled = true, canUseRedeemMode = false, currentUserId = "" }) {
   const { workspaceUsers = [] } = useCrmData();
   const savedSearchState = loadLeadFinderSearchState();
   const companyImportInputRef = useRef(null);
+  const defaultAssignedUserId = currentUserId || workspaceUsers[0]?.id || "";
+  const defaultAssignedUserIds = defaultAssignedUserId ? [defaultAssignedUserId] : [];
   const [companiesText, setCompaniesText] = useState(savedSearchState?.companiesText || "");
   const [roleQuery, setRoleQuery] = useState(savedSearchState?.roleQuery || "");
   const [suggestedRoles, setSuggestedRoles] = useState(Array.isArray(savedSearchState?.suggestedRoles) ? savedSearchState.suggestedRoles : []);
   const [selectedRoles, setSelectedRoles] = useState(Array.isArray(savedSearchState?.selectedRoles) ? savedSearchState.selectedRoles : []);
-  const [selectedUserIds, setSelectedUserIds] = useState(Array.isArray(savedSearchState?.selectedUserIds) ? savedSearchState.selectedUserIds : []);
+  const [selectedUserIds, setSelectedUserIds] = useState(Array.isArray(savedSearchState?.selectedUserIds) && savedSearchState.selectedUserIds.length ? savedSearchState.selectedUserIds : defaultAssignedUserIds);
   const [maxPerCompany, setMaxPerCompany] = useState(String(savedSearchState?.maxPerCompany || DEFAULT_MAX_CONTACTS_PER_COMPANY));
-  const [requireMobileAvailable, setRequireMobileAvailable] = useState(Boolean(savedSearchState?.requireMobileAvailable));
+  const [requireMobileAvailable, setRequireMobileAvailable] = useState(savedSearchState?.requireMobileAvailable === false ? false : true);
+  const [redeemReviewActive, setRedeemReviewActive] = useState(savedSearchState?.redeemReviewActive === true);
   const [countryQuery, setCountryQuery] = useState("");
   const [selectedCountries, setSelectedCountries] = useState(Array.isArray(savedSearchState?.selectedCountries) ? savedSearchState.selectedCountries : []);
   const [leadListName, setLeadListName] = useState(savedSearchState?.leadListName || "");
@@ -3991,12 +4259,18 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const [hubspotExportStatus, setHubspotExportStatus] = useState("idle");
   const [hubspotExportSummary, setHubspotExportSummary] = useState("");
   const [hubspotExportDialog, setHubspotExportDialog] = useState(null);
+  const [redeemStatus, setRedeemStatus] = useState("idle");
+  const [redeemDiagnostics, setRedeemDiagnostics] = useState(null);
+  const [redeemDiagnosticsCopyStatus, setRedeemDiagnosticsCopyStatus] = useState("");
   const [companyImportOpen, setCompanyImportOpen] = useState(false);
   const [companyImportRows, setCompanyImportRows] = useState([]);
   const [companyImportStatus, setCompanyImportStatus] = useState("idle");
   const [companyImportError, setCompanyImportError] = useState("");
   const [resultCompanyFilter, setResultCompanyFilter] = useState("");
   const [companyListSaveStatus, setCompanyListSaveStatus] = useState("idle");
+  const [redeemConfirmOpen, setRedeemConfirmOpen] = useState(false);
+  const [redeemConfirmCount, setRedeemConfirmCount] = useState(0);
+  const [pendingConfirmation, setPendingConfirmation] = useState(null);
   const roleOptions = suggestedRoles;
   const selectedUsers = workspaceUsers.filter(user => selectedUserIds.includes(user.id));
   const canAssignResults = results.length > 0;
@@ -4014,6 +4288,15 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const existingCompanyKeys = new Set(parseLines(companiesText).map(company => company.toLowerCase()));
   const companyImportFileCount = new Set(companyImportRows.map(row => row.sourceFile).filter(Boolean)).size;
   const companyImportNewCompanyCount = companyImportRows.filter(row => !existingCompanyKeys.has(row.companyName.toLowerCase())).length;
+  const selectedLeadsMissingSavedMobile = selectedResults.filter(lead => !leadHasSavedMobileData(lead, contactDatabase));
+  const redeemableResultEntries = results
+    .map((result, index) => ({ result, index, resultId: leadResultId(result, index) }))
+    .filter(({ result }) => !leadHasSavedMobileData(result, contactDatabase));
+  const displayedRedeemableEntries = displayedResultEntries.filter(({ result }) => !leadHasSavedMobileData(result, contactDatabase));
+  const canOfferRedeemReview = canUseRedeemMode && status === "done" && results.length > 0;
+  const displayModeLabel = redeemReviewActive ? "Redeem" : "Preview";
+  const displayCreditsLabel = `Credits: ${meta.estimatedCreditsUsed || 0}`;
+  const displayMaxPerCompany = Math.max(Number(maxPerCompany) || DEFAULT_MAX_CONTACTS_PER_COMPANY, 1);
   const matchingCountries = countrySuggestions
     .filter(country => country.toLowerCase().includes(countryQuery.trim().toLowerCase()))
     .filter(country => !selectedCountries.includes(country))
@@ -4029,6 +4312,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       selectedUserIds,
       maxPerCompany,
       requireMobileAvailable,
+      redeemReviewActive,
       selectedCountries,
       leadListName,
       customRolesText,
@@ -4036,7 +4320,16 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       selectedResultIds,
       meta,
     });
-  }, [companiesText, customRolesText, leadListName, maxPerCompany, meta, requireMobileAvailable, results, roleQuery, selectedCountries, selectedResultIds, selectedRoles, selectedUserIds, suggestedRoles]);
+  }, [companiesText, customRolesText, leadListName, maxPerCompany, meta, redeemReviewActive, requireMobileAvailable, results, roleQuery, selectedCountries, selectedResultIds, selectedRoles, selectedUserIds, suggestedRoles]);
+
+  useEffect(() => {
+    if (!defaultAssignedUserId) return;
+    setSelectedUserIds(current => current.length ? current : [defaultAssignedUserId]);
+  }, [defaultAssignedUserId]);
+
+  useEffect(() => {
+    if (!canUseRedeemMode && redeemReviewActive) setRedeemReviewActive(false);
+  }, [canUseRedeemMode, redeemReviewActive]);
 
   useEffect(() => {
     if (!hubspotExportSummary) return undefined;
@@ -4067,23 +4360,31 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       : [...current, resultId]);
   }
 
+  function selectRedeemableRows(entries = redeemableResultEntries) {
+    setSelectedResultIds(entries.map(({ resultId, result, index }) => resultId || leadResultId(result, index)));
+  }
+
   function clearSearch() {
     clearLeadFinderSearchState();
     setCompaniesText("");
     setRoleQuery("");
     setSuggestedRoles([]);
     setSelectedRoles([]);
-    setSelectedUserIds([]);
+    setSelectedUserIds(defaultAssignedUserIds);
     setMaxPerCompany(String(DEFAULT_MAX_CONTACTS_PER_COMPANY));
-    setRequireMobileAvailable(false);
+    setRequireMobileAvailable(true);
+    setRedeemReviewActive(false);
     setCountryQuery("");
     setSelectedCountries([]);
     setLeadListName("");
     setSaveStatus("idle");
+    setRedeemStatus("idle");
+    setRedeemDiagnostics(null);
+    setRedeemDiagnosticsCopyStatus("");
     setCustomRolesText("");
     setResults([]);
     setSelectedResultIds([]);
-    setMeta({ mode: "preview_only", estimatedCreditsUsed: 0, maxPerCompany: DEFAULT_MAX_CONTACTS_PER_COMPANY, requireMobileAvailable: false, countries: [] });
+    setMeta({ mode: "preview_only", estimatedCreditsUsed: 0, maxPerCompany: DEFAULT_MAX_CONTACTS_PER_COMPANY, requireMobileAvailable: true, countries: [] });
     setStatus("idle");
     setRoleStatus("idle");
     setRoleMode("");
@@ -4166,6 +4467,152 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     setMaxPerCompany(current => String(Math.max(Number(current) || 1, 1)));
   }
 
+  function requestRedeemSelectedMissingData() {
+    if (!canUseRedeemMode) {
+      setError("Redeem access is not enabled for this workspace.");
+      return;
+    }
+    if (status !== "done" || !results.length) {
+      setError("Run a preview before redeeming contacts.");
+      return;
+    }
+    if (!selectedResults.length) {
+      setError("Select at least one preview row before redeeming.");
+      return;
+    }
+    if (!selectedLeadsMissingSavedMobile.length) {
+      setError("All selected leads already have saved mobile or direct dial data in the PaceOps lead database.");
+      return;
+    }
+    if (selectedLeadsMissingSavedMobile.length > 20) {
+      setError("Redeem up to 20 selected leads at a time.");
+      return;
+    }
+    if (selectedLeadsMissingSavedMobile.some(lead => !normalizeLookupValue(lead.cognismRedeemId))) {
+      setError("Run a fresh preview before redeeming. These saved preview rows do not include Cognism redeem IDs.");
+      return;
+    }
+    setRedeemConfirmCount(selectedLeadsMissingSavedMobile.length);
+    setRedeemConfirmOpen(true);
+  }
+
+  async function confirmRedeemSelectedMissingData() {
+    const redeemEntries = selectedResultEntries.filter(({ result }) => !leadHasSavedMobileData(result, contactDatabase));
+    if (!redeemEntries.length) {
+      setRedeemConfirmOpen(false);
+      setError("No selected leads need redeem data.");
+      return;
+    }
+    if (redeemEntries.length > 20) {
+      setError("Redeem up to 20 selected leads at a time.");
+      return;
+    }
+    if (redeemEntries.some(({ result }) => !normalizeLookupValue(result.cognismRedeemId))) {
+      setRedeemConfirmOpen(false);
+      setError("Run a fresh preview before redeeming. These saved preview rows do not include Cognism redeem IDs.");
+      return;
+    }
+
+    setRedeemStatus("loading");
+    setRedeemDiagnostics(null);
+    setRedeemDiagnosticsCopyStatus("");
+    setError("");
+
+    try {
+      const response = await fetch("/api/cognism/redeem", {
+        method: "POST",
+        headers: await buildApiHeaders(),
+        body: JSON.stringify({
+          leads: redeemEntries.map(({ result, resultId }) => ({
+            ...result,
+            rowId: resultId,
+            redeemId: result.cognismRedeemId,
+          })),
+          debug: true,
+        }),
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || "Redeem request failed");
+
+      const redeemedRows = Array.isArray(payload.redeemed) ? payload.redeemed : [];
+      const redeemedByKey = new Map();
+      redeemedRows.forEach(lead => {
+        [lead.rowId, lead.cognismRedeemId, lead.cognismContactId].map(normalizeLookupValue).filter(Boolean).forEach(key => redeemedByKey.set(key, lead));
+      });
+
+      const nextSelectedIds = redeemEntries.map(({ resultId }) => resultId);
+      const nextResults = results.map((result, index) => {
+        const rowId = leadResultId(result, index);
+        const redeemedLead = redeemedByKey.get(normalizeLookupValue(rowId))
+          || redeemedByKey.get(normalizeLookupValue(result.cognismRedeemId))
+          || redeemedByKey.get(normalizeLookupValue(result.cognismContactId));
+        return redeemedLead ? hydrateLeadWithContactDatabase({ ...result, ...redeemedLead, rowId }, contactDatabase) : result;
+      });
+
+      setResults(nextResults);
+
+      const savedContacts = [];
+      for (const redeemedLead of redeemedRows) {
+        const matchingLead = nextResults.find((result, index) => leadResultId(result, index) === redeemedLead.rowId)
+          || hydrateLeadWithContactDatabase(redeemedLead, contactDatabase);
+        try {
+          const savedContact = await onSaveLeadContact(matchingLead, { allowPreviewOnly: true, skipConflictPrompt: true });
+          savedContacts.push(savedContact);
+        } catch {
+          // Keep redeemed values visible even if local persistence is unavailable.
+        }
+      }
+
+      if (savedContacts.length) {
+        setResults(current => hydrateLeadsWithContactDatabase(current, savedContacts));
+      }
+
+      const nextRedeemDiagnostics = {
+        requestedAt: new Date().toISOString(),
+        requested: redeemEntries.map(({ result, resultId }) => ({
+          rowId: resultId,
+          contactName: result.contactName,
+          company: result.company,
+          jobTitle: result.jobTitle,
+          cognismContactId: result.cognismContactId,
+          cognismRedeemId: result.cognismRedeemId,
+          currentManualEmail: result.manualEmail || "",
+          currentManualMobile: result.manualMobile || "",
+          currentManualDirectDial: result.manualDirectDial || "",
+        })),
+        mappedRedeemed: redeemedRows,
+        rawCognismRecords: payload.diagnostics?.rawRecords || [],
+      };
+      setRedeemDiagnostics(nextRedeemDiagnostics);
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(nextRedeemDiagnostics, null, 2));
+        setRedeemDiagnosticsCopyStatus("Copied to clipboard");
+      } catch {
+        setRedeemDiagnosticsCopyStatus("Clipboard copy failed. Use the JSON below.");
+      }
+
+      setSelectedResultIds(current => current.filter(resultId => nextSelectedIds.includes(resultId)));
+      setRedeemReviewActive(true);
+      setMeta(current => ({
+        ...current,
+        mode: payload.mode || "redeem",
+        estimatedCreditsUsed: payload.estimatedCreditsUsed ?? redeemedRows.length,
+        maxPerCompany: Math.max(Number(maxPerCompany) || DEFAULT_MAX_CONTACTS_PER_COMPANY, 1),
+        requireMobileAvailable,
+        countries: selectedCountries,
+        warning: [
+          payload.warning,
+          savedContacts.length < redeemedRows.length ? "Redeemed values are shown, but some rows were not saved to the PaceOps lead database in this local session." : "",
+        ].filter(Boolean).join(" "),
+      }));
+      setRedeemConfirmOpen(false);
+      setRedeemStatus("done");
+    } catch (redeemError) {
+      setError(redeemError.message || "Redeem request failed");
+      setRedeemStatus("error");
+    }
+  }
+
   function updateResultField(resultId, field, value) {
     setResults(current => current.map((result, index) => {
       if (leadResultId(result, index) !== resultId) return result;
@@ -4173,7 +4620,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         ...result,
         [field]: value,
       };
-      if (["manualEmail", "manualMobile", "linkedinProfileUrl", "notes"].includes(field)) {
+      if (["manualEmail", "manualMobile", "manualDirectDial", "linkedinProfileUrl", "notes"].includes(field)) {
         nextResult.dataSource = "manual";
         nextResult.sourceNote = "Added manually by PaceOps user";
       }
@@ -4221,6 +4668,76 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     setSelectedCountries(current => current.filter(item => item !== country));
   }
 
+  function closeConfirmation() {
+    setPendingConfirmation(null);
+  }
+
+  function confirmLeadFinderAction(action) {
+    setPendingConfirmation(action);
+  }
+
+  function requestSaveLeadList() {
+    if (!leadListName.trim()) {
+      setError("Name this lead list before saving.");
+      return;
+    }
+    if (!selectedUserIds.length) {
+      setError("Assign the lead list to at least one user.");
+      return;
+    }
+    if (!selectedResults.length) {
+      setError("Select at least one retrieved lead before saving.");
+      return;
+    }
+    confirmLeadFinderAction({
+      title: "Save lead list",
+      message: `Save ${selectedResults.length} selected lead${selectedResults.length === 1 ? "" : "s"} to "${leadListName.trim()}"?`,
+      confirmLabel: "Save lead list",
+      onConfirm: saveLeadList,
+    });
+  }
+
+  function requestSaveCompanyLeadList() {
+    if (!resultCompanyFilter) {
+      setError("Choose a company filter before saving a company list.");
+      return;
+    }
+    if (!selectedUserIds.length) {
+      setError("Assign the lead list to at least one user.");
+      return;
+    }
+    if (!displayedResults.length) {
+      setError("No leads found for the selected company.");
+      return;
+    }
+    confirmLeadFinderAction({
+      title: "Save company list",
+      message: `Save ${displayedResults.length} visible lead${displayedResults.length === 1 ? "" : "s"} for ${resultCompanyFilter} as a lead list?`,
+      confirmLabel: "Save company list",
+      onConfirm: saveFilteredCompanyLeadList,
+    });
+  }
+
+  function requestExportResults(format) {
+    if (!selectedResults.length) return;
+    confirmLeadFinderAction({
+      title: "Export selected leads",
+      message: `Export ${selectedResults.length} selected lead${selectedResults.length === 1 ? "" : "s"} as ${format.toUpperCase()}?`,
+      confirmLabel: "Export",
+      onConfirm: () => exportCognismResults(selectedResults, format, selectedUsers),
+    });
+  }
+
+  function requestHubSpotExport() {
+    if (!selectedResults.length) return;
+    confirmLeadFinderAction({
+      title: "Export to HubSpot",
+      message: `Export ${selectedResults.length} selected lead${selectedResults.length === 1 ? "" : "s"} to HubSpot?`,
+      confirmLabel: "Export to HubSpot",
+      onConfirm: exportSelectedToHubSpot,
+    });
+  }
+
   async function loadRoleSuggestions() {
     setError("");
     setRoleStatus("loading");
@@ -4231,9 +4748,10 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         headers: await buildApiHeaders(),
         body: JSON.stringify({ query: roleQuery }),
       });
-      const payload = await response.json();
+      const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Role suggestion failed");
       const roles = Array.isArray(payload.roles) ? payload.roles : [];
+      if (!roles.length) throw new Error("Role taxonomy returned no role options.");
       setSuggestedRoles(roles);
       setSelectedRoles(roles);
       setRoleMode(payload.mode || "fallback");
@@ -4245,6 +4763,11 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   }
 
   async function previewContacts() {
+    if (!cognismPreviewEnabled) {
+      setError("Cognism preview is disabled by an administrator.");
+      return;
+    }
+
     const companies = parseLines(companiesText);
     const customRoles = parseLines(customRolesText);
     const targetTitles = [...new Set([...selectedRoles, ...customRoles])];
@@ -4261,10 +4784,12 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     }
 
     setError("");
+    setRedeemStatus("idle");
+    setRedeemDiagnostics(null);
+    setRedeemDiagnosticsCopyStatus("");
+    setRedeemReviewActive(false);
     setStatus("loading");
-    setResults([]);
-    setSelectedResultIds([]);
-    setSelectedUserIds([]);
+    setSelectedUserIds(defaultAssignedUserIds);
     setResultCompanyFilter("");
     setCompanyListSaveStatus("idle");
 
@@ -4274,7 +4799,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         headers: await buildApiHeaders(),
         body: JSON.stringify({ companies, targetTitles, maxPerCompany: requestedMax, requireMobileAvailable, countries: selectedCountries }),
       });
-      const payload = await response.json();
+      const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Preview request failed");
       setMeta({
         mode: payload.mode,
@@ -4282,12 +4807,29 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         maxPerCompany: payload.maxPerCompany,
         requireMobileAvailable: Boolean(payload.requireMobileAvailable),
         countries: Array.isArray(payload.countries) ? payload.countries : [],
+        warning: payload.warning || "",
       });
-      const nextResults = hydrateLeadsWithContactDatabase(Array.isArray(payload.results) ? payload.results : [], contactDatabase);
-      setResults(nextResults);
-      setSelectedResultIds(nextResults.map((result, index) => leadResultId(result, index)));
-      const savedContacts = await onPersistSearchResults(nextResults);
-      setResults(current => hydrateLeadsWithContactDatabase(current, savedContacts));
+      const incomingResults = hydrateLeadsWithContactDatabase(Array.isArray(payload.results) ? payload.results : [], contactDatabase);
+      const mergedResults = mergeLeadResults(results, incomingResults);
+      setResults(mergedResults);
+      setSelectedResultIds(mergedResults
+        .map((result, index) => ({ result, index }))
+        .filter(({ result }) => !leadHasSavedMobileData(result, contactDatabase))
+        .map(({ result, index }) => leadResultId(result, index)));
+      try {
+        const savedContacts = await onPersistSearchResults(mergedResults);
+        const hydratedResults = hydrateLeadsWithContactDatabase(mergedResults, [...contactDatabase, ...savedContacts]);
+        setResults(hydratedResults);
+        setSelectedResultIds(hydratedResults
+          .map((result, index) => ({ result, index }))
+          .filter(({ result }) => !leadHasSavedMobileData(result, [...contactDatabase, ...savedContacts]))
+          .map(({ result, index }) => leadResultId(result, index)));
+      } catch (persistError) {
+        setMeta(current => ({
+          ...current,
+          warning: [current.warning, "Preview results are shown, but they were not saved to the PaceOps lead database in this local session."].filter(Boolean).join(" "),
+        }));
+      }
       setStatus("done");
     } catch (previewError) {
       setError(previewError.message || "Preview request failed");
@@ -4429,7 +4971,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         },
         body: JSON.stringify({ rows: hubspotRows }),
       });
-      const payload = await response.json();
+      const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "HubSpot export failed.");
 
       const resultsByRowId = new Map((payload.results || []).map(result => [result.rowId, result]));
@@ -4510,6 +5052,37 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           </div>
           <StatusBadge tone="accent">Configurable max</StatusBadge>
         </div>
+          <div className="finder-input-section filter-section lead-filter-panel">
+            <div className="finder-section-heading unnumbered">
+              <div>
+                <strong>Lead filters</strong>
+                <small>Control volume and contact availability.</small>
+              </div>
+            </div>
+            <div className="finder-priority-controls">
+              <div className="finder-availability-filters">
+                <label className={`role-choice mobile-filter-choice ${requireMobileAvailable ? "selected" : ""}`}>
+                  <input type="checkbox" checked={requireMobileAvailable} onChange={event => setRequireMobileAvailable(event.target.checked)} />
+                  <span>
+                    <strong>Must include mobile</strong>
+                    <small>Only return leads with mobile numbers.</small>
+                  </span>
+                </label>
+              </div>
+              <label className="form-field max-contacts-field">
+                <span>Max contacts per company</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={maxPerCompany}
+                  onChange={event => updateMaxPerCompany(event.target.value)}
+                  onBlur={normalizeMaxPerCompany}
+                  aria-label="Max contacts per company"
+                />
+              </label>
+            </div>
+          </div>
           <div className="finder-input-section primary-section">
             <div className="finder-section-heading">
               <span>1</span>
@@ -4533,9 +5106,14 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
               />
             </label>
             <button className="secondary-button role-suggest-button" type="button" onClick={loadRoleSuggestions} disabled={roleStatus === "loading" || !roleQuery.trim()}>
-              <Sparkles size={16} />
+              {roleStatus === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <ListFilter size={16} />}
               {roleStatus === "loading" ? "Loading roles" : "Load role options"}
             </button>
+            {roleStatus === "loading" ? (
+              <span className="inline-loading-status" role="status" aria-live="polite">
+                Matching persona to role taxonomy...
+              </span>
+            ) : null}
           </div>
           <div className="finder-input-section company-section">
             <div className="finder-section-heading">
@@ -4558,7 +5136,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
                 accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
                 onChange={handleCompanyImportFile}
               />
-              <StatusBadge>{targetCompanyCount} targets</StatusBadge>
+              <StatusBadge>{targetCompanyCount} target{targetCompanyCount === 1 ? "" : "s"}</StatusBadge>
             </div>
             <label className="form-field">
               <span>Companies or domains</span>
@@ -4569,36 +5147,9 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
               />
             </label>
           </div>
-          <div className="finder-input-section filter-section">
-            <div className="finder-section-heading">
-              <span>3</span>
-              <div>
-                <strong>Lead filters</strong>
-                <small>Control volume and contact availability.</small>
-              </div>
-            </div>
-            <label className="form-field">
-              <span>Max contacts per company</span>
-              <input
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={maxPerCompany}
-                onChange={event => updateMaxPerCompany(event.target.value)}
-                onBlur={normalizeMaxPerCompany}
-                aria-label="Max contacts per company"
-              />
-            </label>
-            <div className="finder-availability-filters">
-              <label className={`role-choice ${requireMobileAvailable ? "selected" : ""}`}>
-                <input type="checkbox" checked={requireMobileAvailable} onChange={event => setRequireMobileAvailable(event.target.checked)} />
-                <span>Must include mobile</span>
-              </label>
-            </div>
-          </div>
           <div className="finder-input-section geography-section country-picker">
             <div className="finder-section-heading">
-              <span>4</span>
+              <span>3</span>
               <div>
                 <strong>Geography</strong>
                 <small>Add one or more countries.</small>
@@ -4689,7 +5240,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
               <Circle size={16} />
               Deselect all
             </button>
-            {roleMode ? <StatusBadge>{roleMode === "openai" ? "OpenAI suggested" : "Fallback suggested"}</StatusBadge> : null}
+            {roleMode ? <StatusBadge>{roleMode === "taxonomy" ? "Taxonomy suggested" : "Fallback suggested"}</StatusBadge> : null}
           </div>
           {roleOptions.length ? (
             <div className="role-choice-grid">
@@ -4724,14 +5275,30 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       </div>
 
       <div className="finder-retrieve-actions">
-        <button className="primary-button" type="button" onClick={previewContacts} disabled={status === "loading"}>
-          <Search size={16} />
-          {status === "loading" ? "Retrieving" : "Retrieve leads"}
+        <button className="primary-button" type="button" onClick={() => previewContacts()} disabled={status === "loading" || !cognismPreviewEnabled} aria-busy={status === "loading"}>
+          {status === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Search size={16} />}
+          {status === "loading" ? "Retrieving" : "Retrieve preview"}
         </button>
+        {canOfferRedeemReview ? (
+          <button className="secondary-button success-button" type="button" onClick={requestRedeemSelectedMissingData} disabled={redeemStatus === "loading" || !selectedLeadsMissingSavedMobile.length}>
+            {redeemStatus === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <LockKeyhole size={16} />}
+            {redeemStatus === "loading" ? "Redeeming" : selectedLeadsMissingSavedMobile.length ? `Redeem ${selectedLeadsMissingSavedMobile.length} missing` : "Redeem missing data"}
+          </button>
+        ) : null}
         <button className="secondary-button danger-button" type="button" onClick={clearSearch}>
           <Circle size={16} />
           Clear search
         </button>
+        {status === "loading" ? (
+          <span className="retrieve-loading-status" role="status" aria-live="polite">
+            Searching lead data. Results will appear below.
+          </span>
+        ) : null}
+        {!cognismPreviewEnabled ? (
+          <span className="retrieve-loading-status warning" role="status">
+            Cognism preview is disabled by an administrator.
+          </span>
+        ) : null}
       </div>
 
       <section className="panel">
@@ -4741,13 +5308,14 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
             <h2>Lead matches</h2>
           </div>
           <div className="cognism-meta">
-            <StatusBadge tone="success">{meta.mode}</StatusBadge>
-            <StatusBadge>Credits: {meta.estimatedCreditsUsed}</StatusBadge>
-            <StatusBadge>Max: {meta.maxPerCompany}</StatusBadge>
-            {meta.requireMobileAvailable ? <StatusBadge>Mobile required</StatusBadge> : null}
-            {meta.countries?.length ? <StatusBadge>{meta.countries.join(", ")}</StatusBadge> : null}
+            <StatusBadge tone="success">{displayModeLabel}</StatusBadge>
+            <StatusBadge>{displayCreditsLabel}</StatusBadge>
+            <StatusBadge>Max: {displayMaxPerCompany}</StatusBadge>
+            {requireMobileAvailable ? <StatusBadge>Mobile required</StatusBadge> : null}
+            {selectedCountries.length ? <StatusBadge>{selectedCountries.join(", ")}</StatusBadge> : null}
           </div>
         </div>
+        {meta.warning ? <div className="form-success warning">{meta.warning}</div> : null}
         <div className="results-summary">
           <div>
             <span>Matches</span>
@@ -4785,8 +5353,8 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           </label>
           <StatusBadge>{displayedResults.length} visible</StatusBadge>
           {resultCompanyFilter ? (
-            <button className="primary-button" type="button" onClick={saveFilteredCompanyLeadList} disabled={companyListSaveStatus === "saving" || !displayedResults.length}>
-              <ListFilter size={16} />
+            <button className="primary-button" type="button" onClick={requestSaveCompanyLeadList} disabled={companyListSaveStatus === "saving" || !displayedResults.length}>
+              {companyListSaveStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <ListFilter size={16} />}
               {companyListSaveStatus === "saving" ? "Saving" : companyListSaveStatus === "saved" ? "Saved" : "Save company list"}
             </button>
           ) : null}
@@ -4803,23 +5371,23 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
               placeholder="Stripe Ireland product support leads"
             />
           </label>
-          <button className="primary-button" type="button" onClick={saveLeadList} disabled={saveStatus === "saving" || !selectedResults.length}>
-            <ListFilter size={16} />
+          <button className="primary-button" type="button" onClick={requestSaveLeadList} disabled={saveStatus === "saving" || !selectedResults.length}>
+            {saveStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <ListFilter size={16} />}
             {saveStatus === "saving" ? "Saving" : saveStatus === "saved" ? "Saved" : "Save lead list"}
           </button>
-          <button className="secondary-button" type="button" disabled={!selectedResults.length} onClick={() => exportCognismResults(selectedResults, "csv", selectedUsers)}>
+          <button className="secondary-button" type="button" disabled={!selectedResults.length} onClick={() => requestExportResults("csv")}>
             <FileText size={16} />
             Export selected CSV
           </button>
-          <button className="secondary-button" type="button" disabled={!selectedResults.length} onClick={() => exportCognismResults(selectedResults, "xls", selectedUsers)}>
+          <button className="secondary-button" type="button" disabled={!selectedResults.length} onClick={() => requestExportResults("xls")}>
             <FileText size={16} />
             Export selected Excel
           </button>
-          <button className="secondary-button" type="button" disabled={!selectedResults.length} onClick={() => exportCognismResults(selectedResults, "json", selectedUsers)}>
+          <button className="secondary-button" type="button" disabled={!selectedResults.length} onClick={() => requestExportResults("json")}>
             <FileText size={16} />
             Export selected JSON
           </button>
-          <button className="secondary-button" type="button" onClick={exportSelectedToHubSpot} disabled={hubspotExportStatus === "exporting" || !selectedResults.length}>
+          <button className="secondary-button" type="button" onClick={requestHubSpotExport} disabled={hubspotExportStatus === "exporting" || !selectedResults.length}>
             <Database size={16} />
             {hubspotExportStatus === "exporting" ? "Exporting" : hubspotExportStatus === "exported" ? "Exported" : "Export to HubSpot"}
           </button>
@@ -4834,8 +5402,13 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           <div>
             <span className="eyebrow">Generated rows</span>
             <strong>{selectedDisplayedResults.length} of {displayedResults.length} visible selected, {selectedResults.length} total selected</strong>
+            {canOfferRedeemReview ? <small>{selectedLeadsMissingSavedMobile.length} selected need redeem. Saved phone rows are skipped automatically.</small> : null}
           </div>
           <div className="role-actions">
+            <button className="secondary-button success-button" type="button" onClick={() => selectRedeemableRows(displayedRedeemableEntries)} disabled={!displayedRedeemableEntries.length}>
+              <LockKeyhole size={16} />
+              Select missing visible
+            </button>
             <button className="secondary-button" type="button" onClick={() => setSelectedResultIds(current => [...new Set([...current, ...displayedResultEntries.map(({ result, index }) => leadResultId(result, index))])])} disabled={!displayedResultEntries.length || selectedDisplayedResults.length === displayedResults.length}>
               <CheckCircle2 size={16} />
               Select visible
@@ -4861,6 +5434,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
                 <th>LinkedIn</th>
                 <th>Email</th>
                 <th>Mobile</th>
+                <th>Direct dial</th>
                 <th>Notes</th>
                 <th>Saved</th>
                 <th>HubSpot</th>
@@ -4912,6 +5486,15 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
                     />
                   </td>
                   <td>
+                    <input
+                      className="table-input"
+                      value={result.manualDirectDial || ""}
+                      onChange={event => updateResultField(resultId, "manualDirectDial", event.target.value)}
+                      onBlur={() => leadHasPaceOpsData(result) && saveContactResult(resultId)}
+                      placeholder="+353 direct"
+                    />
+                  </td>
+                  <td>
                     <textarea
                       className="table-textarea"
                       value={result.notes || ""}
@@ -4944,7 +5527,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
                 );
               }) : (
                 <tr>
-                  <td colSpan="12" className="empty-table-cell">
+                  <td colSpan="13" className="empty-table-cell">
                     {status === "done" ? "No preview matches returned for this company filter." : "Run a preview to see lead metadata."}
                   </td>
                 </tr>
@@ -4953,6 +5536,54 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           </table>
         </div>
       </section>
+      {redeemConfirmOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) setRedeemConfirmOpen(false);
+        }}>
+          <section className="workflow-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="redeem-confirm-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Lead Finder</span>
+                <h2 id="redeem-confirm-title">Confirm redeem retrieval</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setRedeemConfirmOpen(false)} aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <p className="modal-helper-text">This will redeem {redeemConfirmCount} selected lead{redeemConfirmCount === 1 ? "" : "s"} missing saved mobile or direct dial data.</p>
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setRedeemConfirmOpen(false)} disabled={redeemStatus === "loading"}>Cancel</button>
+              <button className="primary-button success-button" type="button" onClick={confirmRedeemSelectedMissingData} disabled={redeemStatus === "loading"}>
+                {redeemStatus === "loading" ? "Redeeming" : "Redeem missing data"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {redeemDiagnostics ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) setRedeemDiagnostics(null);
+        }}>
+          <section className="workflow-modal redeem-diagnostics-modal" role="dialog" aria-modal="true" aria-labelledby="redeem-diagnostics-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Lead Finder</span>
+                <h2 id="redeem-diagnostics-title">Redeem diagnostics</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setRedeemDiagnostics(null)} aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <p className="modal-helper-text">
+              {redeemDiagnosticsCopyStatus || "Send this JSON back so the returned phone labels and mapped fields can be checked."}
+            </p>
+            <pre className="redeem-diagnostics-json">{JSON.stringify(redeemDiagnostics, null, 2)}</pre>
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setRedeemDiagnostics(null)}>Close</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {companyImportOpen ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={event => {
           if (event.target === event.currentTarget) closeCompanyImport();
@@ -4967,7 +5598,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
             </div>
             <div className="company-import-toolbar">
               <button className="secondary-button" type="button" onClick={() => companyImportInputRef.current?.click()} disabled={companyImportStatus === "loading"}>
-                <Upload size={16} />
+                {companyImportStatus === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Upload size={16} />}
                 {companyImportStatus === "loading" ? "Reading files" : companyImportRows.length ? "Add files" : "Choose files"}
               </button>
               <StatusBadge>{companyImportFileCount ? `${companyImportFileCount} files` : "No files selected"}</StatusBadge>
@@ -5010,22 +5641,32 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         </div>
       ) : null}
       <HubSpotExportResultModal result={hubspotExportDialog} onClose={() => setHubspotExportDialog(null)} />
+      {pendingConfirmation ? (
+        <ConfirmationModal
+          eyebrow="Lead Finder"
+          title={pendingConfirmation.title}
+          message={pendingConfirmation.message}
+          confirmLabel={pendingConfirmation.confirmLabel}
+          onCancel={closeConfirmation}
+          onConfirm={() => {
+            const action = pendingConfirmation.onConfirm;
+            closeConfirmation();
+            action?.();
+          }}
+        />
+      ) : null}
     </>
   );
 }
 
-function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, integrationCredentials, onSaveIntegrationCredentials }) {
+function IntegrationsPage({ onNavigate, onOpenWorkflow, integrationCredentials, onSaveIntegrationCredentials }) {
   const { integrations } = useCrmData();
-  const [cognismRedeemCode, setCognismRedeemCode] = useState("");
-  const [cognismRedeemError, setCognismRedeemError] = useState("");
-  const [cognismRedeemModalOpen, setCognismRedeemModalOpen] = useState(false);
   const [credentialProvider, setCredentialProvider] = useState("");
   const [credentialValues, setCredentialValues] = useState({});
   const [credentialVisibleFields, setCredentialVisibleFields] = useState({});
   const [credentialStatus, setCredentialStatus] = useState("idle");
   const [credentialError, setCredentialError] = useState("");
 
-  const cognismIntegration = integrations.find(integration => integration.name === "Cognism");
   const credentialFormByName = new Map(integrationCredentialForms.map(form => [form.integrationName, form]));
   const activeCredentialForm = integrationCredentialForms.find(form => form.provider === credentialProvider);
 
@@ -5061,23 +5702,6 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
     }
   }
 
-  function enableCognismRedeem() {
-    if (cognismRedeemCode.trim() !== COGNISM_REDEEM_CONFIRMATION) {
-      setCognismRedeemError(`Type ${COGNISM_REDEEM_CONFIRMATION} to enable full data mode.`);
-      return;
-    }
-    setCognismRedeemError("");
-    onUpdateIntegration("Cognism", { redeemEnabled: true });
-    setCognismRedeemCode("");
-    setCognismRedeemModalOpen(false);
-  }
-
-  function closeCognismRedeemModal() {
-    setCognismRedeemModalOpen(false);
-    setCognismRedeemCode("");
-    setCognismRedeemError("");
-  }
-
   return (
     <>
       <PageHeader
@@ -5099,17 +5723,6 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
               </div>
               <h2>{integration.name}</h2>
               <p>{integration.note}</p>
-              {integration.name === "Cognism" ? (
-                <div className="integration-setting">
-                  <div>
-                    <span>Full data mode</span>
-                    <StatusBadge tone={integration.redeemEnabled ? "warning" : "success"}>{integration.redeemEnabled ? "Full data on" : "Preview data"}</StatusBadge>
-                  </div>
-                  <button className="secondary-button" type="button" onClick={() => integration.redeemEnabled ? onUpdateIntegration(integration.name, { redeemEnabled: false }) : setCognismRedeemModalOpen(true)}>
-                    {integration.redeemEnabled ? "Use preview data" : "Enable full data"}
-                  </button>
-                </div>
-              ) : null}
               {SHOW_INTEGRATION_KEY_CONTROLS && credentialForm ? (
                 <div className="integration-setting">
                   <div>
@@ -5135,42 +5748,6 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
           );
         })}
       </div>
-      {cognismRedeemModalOpen ? (
-        <div className="modal-backdrop" role="presentation" onMouseDown={event => {
-          if (event.target === event.currentTarget) closeCognismRedeemModal();
-        }}>
-          <section className="workflow-modal cognism-redeem-modal" role="dialog" aria-modal="true">
-            <div className="modal-header">
-              <div>
-                <span className="eyebrow">Cognism</span>
-                <h2>Enable full data mode</h2>
-              </div>
-              <button className="secondary-button" type="button" onClick={closeCognismRedeemModal}>Close</button>
-            </div>
-            <p className="modal-helper-text">Full data mode can consume Cognism credits. Enter access code to turn it on.</p>
-            <label className="form-field">
-              <span>Confirmation</span>
-              <input
-                type="text"
-                value={cognismRedeemCode}
-                onChange={event => {
-                  setCognismRedeemCode(event.target.value);
-                  setCognismRedeemError("");
-                }}
-                placeholder=""
-                autoComplete="off"
-              />
-            </label>
-            {cognismRedeemError ? <div className="form-error">{cognismRedeemError}</div> : null}
-            <div className="modal-actions">
-              <button className="secondary-button" type="button" onClick={closeCognismRedeemModal}>Cancel</button>
-              <button className="primary-button" type="button" onClick={enableCognismRedeem} disabled={!cognismIntegration}>
-                Enable full data
-              </button>
-            </div>
-          </section>
-        </div>
-      ) : null}
       {activeCredentialForm ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={event => {
           if (event.target === event.currentTarget) closeCredentialModal();
@@ -5228,13 +5805,6 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
 
 const integrationCredentialForms = [
   {
-    provider: "openai",
-    integrationName: "OpenAI",
-    title: "ChatGPT / OpenAI",
-    description: "Used for role suggestions, account lookup, and account intelligence scripts.",
-    fields: [{ name: "apiKey", label: "OpenAI API key", placeholder: "sk-..." }],
-  },
-  {
     provider: "cognism",
     integrationName: "Cognism",
     title: "Cognism",
@@ -5261,7 +5831,19 @@ const integrationCredentialForms = [
   },
 ];
 
-function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdateProfile, currencyCode, onCurrencyChange }) {
+function SettingsPage({
+  isDark,
+  onThemeToggle,
+  onInviteTeamMember,
+  user,
+  onUpdateProfile,
+  currencyCode,
+  onCurrencyChange,
+  adminSettingsState,
+  onUpdateAdminSettings,
+  cognismRedeemEnabled,
+  onUpdateIntegration,
+}) {
   const { teamMembers, workspaceUsers } = useCrmData();
   const { currencyOptions: availableCurrencies } = useCurrency();
   const visibleTeamMembers = workspaceUsers?.length ? workspaceUsers : teamMembers;
@@ -5273,6 +5855,14 @@ function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdat
   });
   const [profileStatus, setProfileStatus] = useState("idle");
   const [profileError, setProfileError] = useState("");
+  const [adminSettingsStatus, setAdminSettingsStatus] = useState("idle");
+  const [adminSettingsError, setAdminSettingsError] = useState("");
+  const [cognismRedeemCode, setCognismRedeemCode] = useState("");
+  const [cognismRedeemError, setCognismRedeemError] = useState("");
+  const [cognismRedeemModalOpen, setCognismRedeemModalOpen] = useState(false);
+  const adminSettings = normalizeAdminSettings(adminSettingsState?.settings);
+  const currentRole = adminSettingsState?.role || "member";
+  const currentUserIsAdmin = Boolean(adminSettingsState?.isAdmin);
 
   async function submitProfile(event) {
     event.preventDefault();
@@ -5288,6 +5878,29 @@ function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdat
       setProfileStatus("idle");
       setProfileError(error?.message || "Could not update profile.");
     }
+  }
+
+  async function toggleAdminSetting(key, value) {
+    setAdminSettingsStatus("saving");
+    setAdminSettingsError("");
+    try {
+      await onUpdateAdminSettings?.({ [key]: value });
+      setAdminSettingsStatus("saved");
+    } catch (error) {
+      setAdminSettingsStatus("idle");
+      setAdminSettingsError(error?.message || "Could not update admin settings.");
+    }
+  }
+
+  function enableCognismRedeem() {
+    if (cognismRedeemCode.trim() !== COGNISM_REDEEM_CONFIRMATION) {
+      setCognismRedeemError(`Type ${COGNISM_REDEEM_CONFIRMATION} to enable redeem mode.`);
+      return;
+    }
+    setCognismRedeemError("");
+    setCognismRedeemCode("");
+    setCognismRedeemModalOpen(false);
+    onUpdateIntegration?.("Cognism", { redeemEnabled: true });
   }
 
   return (
@@ -5331,7 +5944,7 @@ function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdat
             </FormField>
             {profileError ? <div className="form-error">{profileError}</div> : null}
             <button className="primary-button" type="submit" disabled={profileStatus === "saving"}>
-              <UserRound size={16} />
+              {profileStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <UserRound size={16} />}
               {profileStatus === "saving" ? "Saving" : profileStatus === "saved" ? "Saved" : "Save profile"}
             </button>
           </form>
@@ -5371,8 +5984,97 @@ function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdat
             </div>
           </div>
         </section>
+        <section className="panel admin-controls-panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Admin Settings</span>
+              <h2>Admin controls</h2>
+            </div>
+            <StatusBadge>{formatRole(currentRole)}</StatusBadge>
+          </div>
+          {currentUserIsAdmin ? (
+            <div className="settings-list admin-settings-list">
+              <AdminSettingToggle
+                title="Cognism preview mode"
+                description="Allow users to run Cognism preview searches."
+                checked={adminSettings.cognism_preview_enabled}
+                disabled={adminSettingsStatus === "saving"}
+                onChange={checked => toggleAdminSetting("cognism_preview_enabled", checked)}
+              />
+              <AdminSettingToggle
+                title="Contact deletion"
+                description="Allow admins to archive/delete CRM contacts."
+                checked={adminSettings.contact_deletion_enabled}
+                disabled={adminSettingsStatus === "saving"}
+                onChange={checked => toggleAdminSetting("contact_deletion_enabled", checked)}
+              />
+              <div className="admin-redeem-control">
+                <div>
+                  <strong>Cognism redeem mode</strong>
+                  <small>Allow organization admins to use redeem mode in Lead Finder.</small>
+                </div>
+                <StatusBadge tone={cognismRedeemEnabled ? "warning" : "success"}>{cognismRedeemEnabled ? "Redeem enabled" : "Preview only"}</StatusBadge>
+                <button className="secondary-button" type="button" onClick={() => cognismRedeemEnabled ? onUpdateIntegration?.("Cognism", { redeemEnabled: false }) : setCognismRedeemModalOpen(true)}>
+                  {cognismRedeemEnabled ? "Use preview only" : "Enable redeem"}
+                </button>
+              </div>
+              <div className="admin-settings-feedback">
+                {adminSettingsStatus === "saved" ? <div className="form-success">Admin controls saved.</div> : null}
+                {adminSettingsError ? <div className="form-error">{adminSettingsError}</div> : null}
+              </div>
+            </div>
+          ) : (
+            <p className="modal-helper-text">Admin controls are available to organization admins only.</p>
+          )}
+        </section>
       </div>
+      {cognismRedeemModalOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) setCognismRedeemModalOpen(false);
+        }}>
+          <section className="workflow-modal cognism-redeem-modal" role="dialog" aria-modal="true">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Cognism</span>
+                <h2>Enable redeem mode</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setCognismRedeemModalOpen(false)} aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <p className="modal-helper-text">Redeem mode can consume Cognism credits. Type ENABLE to turn it on.</p>
+            <FormField label="Type ENABLE">
+              <input
+                type="text"
+                value={cognismRedeemCode}
+                onChange={event => {
+                  setCognismRedeemCode(event.target.value);
+                  setCognismRedeemError("");
+                }}
+                autoComplete="off"
+              />
+            </FormField>
+            {cognismRedeemError ? <div className="form-error">{cognismRedeemError}</div> : null}
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setCognismRedeemModalOpen(false)}>Cancel</button>
+              <button className="primary-button" type="button" onClick={enableCognismRedeem}>Enable redeem</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </>
+  );
+}
+
+function AdminSettingToggle({ title, description, checked, disabled, onChange }) {
+  return (
+    <label className="admin-setting-toggle">
+      <span>
+        <strong>{title}</strong>
+        <small>{description}</small>
+      </span>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} />
+    </label>
   );
 }
 
@@ -5484,6 +6186,31 @@ function EmptyState({ icon, title, text }) {
       <h2>{title}</h2>
       <p>{text}</p>
     </div>
+  );
+}
+
+function ConfirmationModal({ title, eyebrow = "Confirm", message, confirmLabel = "Confirm", onConfirm, onCancel }) {
+  return (
+    <section className="modal-backdrop" role="presentation" onMouseDown={event => {
+      if (event.target === event.currentTarget) onCancel?.();
+    }}>
+      <div className="workflow-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="confirmation-modal-title">
+        <div className="modal-header">
+          <div>
+            <span className="eyebrow">{eyebrow}</span>
+            <h2 id="confirmation-modal-title">{title}</h2>
+          </div>
+          <button className="icon-action" type="button" onClick={onCancel} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        <p className="modal-helper-text">{message}</p>
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button>
+          <button className="primary-button" type="button" onClick={onConfirm}>{confirmLabel}</button>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -5608,7 +6335,7 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
             {error && <div className="auth-error">{error}</div>}
 
             <button className="primary-button auth-submit" type="submit" disabled={!canSubmit}>
-              <LogIn size={16} />
+              {loading ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <LogIn size={16} />}
               {loading ? "Working..." : mode === "signin" ? "Sign in" : "Create account"}
             </button>
           </form>
@@ -5714,9 +6441,9 @@ function RightDrawer({ open, activeView, selectedAccount, activeCampaign, isDark
   return (
     <aside className="right-drawer">
       <div className="drawer-head">
-        <span className="assistant-mark"><Bot size={15} /></span>
+        <span className="assistant-mark"><FileText size={15} /></span>
         <div>
-          <strong>AI research assistant</strong>
+          <strong>Workflow panel</strong>
           <small>Workflow guidance</small>
         </div>
       </div>
@@ -5819,7 +6546,7 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
     case "account":
       return { clientId, name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || "Lead In", status: "New", nextAction: "Map buying committee", insight: "" };
     case "contact":
-      return { accountId, accountName: data.accounts.find(account => account.id === accountId)?.name || "", name: "", role: "", email: "", phone: "", status: "New" };
+      return { accountId, accountName: data.accounts.find(account => account.id === accountId)?.name || "", name: "", role: "", email: "", mobile: "", directDial: "", status: "New" };
     case "deal":
       return { accountId, contactId, stage: "lead", value: "0", due: "Today", owner: "Workspace user" };
     case "call":
@@ -5951,7 +6678,7 @@ function WorkflowModal({
         headers: await buildApiHeaders(),
         body: JSON.stringify({ name: values.name, clientName }),
       });
-      const suggestions = await response.json();
+      const suggestions = await readJsonResponse(response);
       if (!response.ok) throw new Error(suggestions.error || "Account lookup failed");
       setValues(current => ({
         ...current,
@@ -5963,7 +6690,7 @@ function WorkflowModal({
         insight: accountTouchedFields.insight ? current.insight : suggestions.insight || current.insight,
         evidence: suggestions.evidence || current.evidence || [],
       }));
-      setAccountLookupStatus(["web_search", "openai_web"].includes(suggestions.source) ? "found" : "fallback");
+      setAccountLookupStatus(suggestions.source === "web_search" ? "found" : "fallback");
     } catch {
       setAccountLookupStatus("failed");
     }
@@ -5978,10 +6705,10 @@ function WorkflowModal({
         headers: await buildApiHeaders(),
         body: JSON.stringify(values),
       });
-      const payload = await response.json();
+      const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Script generation failed");
       setValues(current => ({ ...current, scripts: payload.scripts || current.scripts }));
-      setAccountScriptStatus(payload.mode === "openai" ? "found" : "fallback");
+      setAccountScriptStatus(payload.mode === "template" ? "found" : "fallback");
     } catch {
       setAccountScriptStatus("failed");
     }
@@ -6021,12 +6748,13 @@ function WorkflowModal({
             </FormField>
             <label className="company-lookup-toggle">
               <span>
-                <Sparkles size={16} />
-                Enable company lookup
+                <Search size={16} />
+                Company lookup disabled
               </span>
               <input
                 type="checkbox"
                 checked={companyLookupEnabled}
+                disabled
                 onChange={event => {
                   setCompanyLookupEnabled(event.target.checked);
                   setCompanyLookupStatus("idle");
@@ -6043,7 +6771,7 @@ function WorkflowModal({
             {companyLookupEnabled && companyLookupStatus !== "idle" && (
               <div className={`lookup-status ${companyLookupStatus}`}>
                 {companyLookupStatus === "loading" && "Searching web..."}
-                {companyLookupStatus === "found" && "Details found from OpenAI web search."}
+                {companyLookupStatus === "found" && "Details found from web search."}
                 {companyLookupStatus === "fallback" && (companyLookupMessage ? `Used a local fallback suggestion. ${companyLookupMessage}` : "Used a local fallback suggestion.")}
                 {companyLookupStatus === "failed" && (companyLookupMessage || "Could not confidently identify this company from web results.")}
               </div>
@@ -6109,12 +6837,13 @@ function WorkflowModal({
             </FormField>
             <label className="company-lookup-toggle">
               <span>
-                <Sparkles size={16} />
-                Enable account intelligence
+                <Search size={16} />
+                Account lookup disabled
               </span>
               <input
                 type="checkbox"
                 checked={accountLookupEnabled}
+                disabled
                 onChange={event => {
                   setAccountLookupEnabled(event.target.checked);
                   setAccountLookupStatus("idle");
@@ -6145,7 +6874,7 @@ function WorkflowModal({
             {accountLookupEnabled && accountScriptStatus !== "idle" && (
               <div className={`lookup-status ${accountScriptStatus}`}>
                 {accountScriptStatus === "loading" && "Generating scripts..."}
-                {accountScriptStatus === "found" && "Scripts generated with GPT."}
+                {accountScriptStatus === "found" && "Scripts generated."}
                 {accountScriptStatus === "fallback" && "Used backup script templates."}
                 {accountScriptStatus === "failed" && "Could not generate scripts right now."}
               </div>
@@ -6225,8 +6954,11 @@ function WorkflowModal({
             <FormField label="Email">
               <input type="email" value={values.email} onChange={event => update("email", event.target.value)} placeholder="name@company.com" />
             </FormField>
-            <FormField label="Phone number">
-              <input value={values.phone} onChange={event => update("phone", event.target.value)} placeholder="+44..." />
+            <FormField label="Mobile">
+              <input value={values.mobile} onChange={event => update("mobile", event.target.value)} placeholder="+44 mobile" />
+            </FormField>
+            <FormField label="Direct dial">
+              <input value={values.directDial} onChange={event => update("directDial", event.target.value)} placeholder="+44 direct" />
             </FormField>
           </>
         );
@@ -6400,6 +7132,11 @@ export default function App() {
   const [leadContactDatabase, setLeadContactDatabase] = useState([]);
   const [privateContactNotes, setPrivateContactNotes] = useState({});
   const [integrationCredentials, setIntegrationCredentials] = useState({ providers: {} });
+  const [adminSettingsState, setAdminSettingsState] = useState({
+    settings: DEFAULT_ADMIN_SETTINGS,
+    role: "member",
+    isAdmin: false,
+  });
   const [activeView, setActiveView] = useState("dashboard");
   const [showHomePage, setShowHomePage] = useState(false);
   const [activeClientId, setActiveClientId] = useState("each-other");
@@ -6440,6 +7177,7 @@ export default function App() {
       setLeadContactDatabase([]);
       setPrivateContactNotes({});
       setIntegrationCredentials({ providers: {} });
+      setAdminSettingsState({ settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false });
       setUser(null);
       setShowHomePage(false);
       setAuthReady(true);
@@ -6475,6 +7213,12 @@ export default function App() {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "organizations", filter: `id=eq.${dataOrgId}` },
         payload => {
+          if (payload.new?.metadata?.admin_settings) {
+            setAdminSettingsState(current => ({
+              ...current,
+              settings: normalizeAdminSettings(payload.new.metadata.admin_settings),
+            }));
+          }
           const syncedData = payload.new?.metadata?.[CRM_DATA_METADATA_KEY];
           if (!syncedData || typeof syncedData !== "object") return;
           const nextData = refreshCrmData(normalizeCrmData(syncedData));
@@ -6552,7 +7296,7 @@ export default function App() {
     try {
       const organizationId = await ensureWorkspace(nextUser);
       const currentWorkspaceUser = mapAuthUserToWorkspaceUser(nextUser);
-      const [syncedCrmData, workspaceUsers, nextLeadLists, nextLeadContactDatabase, nextPrivateContactNotes] = await Promise.all([
+      const [syncedCrmData, workspaceUsers, nextLeadLists, nextLeadContactDatabase, nextPrivateContactNotes, nextAdminSettings] = await Promise.all([
         loadSyncedCrmData(nextUser.id, organizationId),
         loadWorkspaceUsers(organizationId),
         loadLeadLists(organizationId).catch(error => {
@@ -6569,6 +7313,10 @@ export default function App() {
           console.error("Could not load private contact notes", error);
           return {};
         }),
+        loadAdminSettings(organizationId, nextUser.id).catch(error => {
+          console.error("Could not load admin settings", error);
+          return { settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false };
+        }),
       ]);
       const nextCrmData = {
         ...refreshCrmData(syncedCrmData),
@@ -6579,6 +7327,11 @@ export default function App() {
       setLeadLists(nextLeadLists);
       setLeadContactDatabase(nextLeadContactDatabase);
       setPrivateContactNotes(nextPrivateContactNotes);
+      setAdminSettingsState({
+        settings: normalizeAdminSettings(nextAdminSettings.settings),
+        role: nextAdminSettings.role || "member",
+        isAdmin: Boolean(nextAdminSettings.isAdmin),
+      });
       loadIntegrationCredentialsStatus().catch(error => {
         console.error("Could not load integration credential status", error);
       });
@@ -6611,6 +7364,7 @@ export default function App() {
       setLeadContactDatabase([]);
       setPrivateContactNotes({});
       setIntegrationCredentials({ providers: {} });
+      setAdminSettingsState({ settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false });
       setDataUserId(nextUser.id);
       setUser(nextUser);
     } finally {
@@ -6638,9 +7392,86 @@ export default function App() {
       method: "GET",
       headers: await buildApiHeaders(),
     });
-    const payload = await response.json();
+    const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload.error || "Could not load integration settings.");
     setIntegrationCredentials(payload);
+    return payload;
+  }
+
+  async function loadAdminSettings(organizationId, currentUserId) {
+    if (supabase && organizationId && currentUserId) {
+      const { data: userRecord, error: userError } = await supabase
+        .from("users")
+        .select("role")
+        .eq("id", currentUserId)
+        .single();
+      if (userError) throw userError;
+
+      const { data: rpcSettings, error: rpcError } = await supabase.rpc("get_admin_settings", {
+        target_organization_id: organizationId,
+      });
+
+      if (!rpcError) {
+        return {
+          settings: normalizeAdminSettings(rpcSettings),
+          role: userRecord?.role || "member",
+          isAdmin: ADMIN_ROLES.has(userRecord?.role),
+        };
+      }
+
+      const { data: organization, error: organizationError } = await supabase
+        .from("organizations")
+        .select("metadata")
+        .eq("id", organizationId)
+        .single();
+      if (organizationError) throw organizationError;
+
+      return {
+        settings: normalizeAdminSettings(organization?.metadata?.admin_settings),
+        role: userRecord?.role || "member",
+        isAdmin: ADMIN_ROLES.has(userRecord?.role),
+      };
+    }
+
+    const response = await fetch("/api/admin-settings", {
+      method: "GET",
+      headers: await buildApiHeaders(),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || "Could not load admin settings.");
+    return payload;
+  }
+
+  async function handleUpdateAdminSettings(values) {
+    if (supabase && dataOrgId) {
+      const { data, error } = await supabase.rpc("update_admin_settings", {
+        target_organization_id: dataOrgId,
+        cognism_preview_enabled: typeof values.cognism_preview_enabled === "boolean" ? values.cognism_preview_enabled : null,
+        contact_deletion_enabled: typeof values.contact_deletion_enabled === "boolean" ? values.contact_deletion_enabled : null,
+      });
+      if (!error) {
+        const nextState = {
+          settings: normalizeAdminSettings(data),
+          role: adminSettingsState.role,
+          isAdmin: ADMIN_ROLES.has(adminSettingsState.role),
+        };
+        setAdminSettingsState(nextState);
+        return nextState;
+      }
+    }
+
+    const response = await fetch("/api/admin-settings", {
+      method: "POST",
+      headers: await buildApiHeaders(),
+      body: JSON.stringify(values),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || "Could not update admin settings.");
+    setAdminSettingsState({
+      settings: normalizeAdminSettings(payload.settings),
+      role: payload.role || adminSettingsState.role,
+      isAdmin: Boolean(payload.isAdmin),
+    });
     return payload;
   }
 
@@ -6650,7 +7481,7 @@ export default function App() {
       headers: await buildApiHeaders(),
       body: JSON.stringify({ provider, values }),
     });
-    const payload = await response.json();
+    const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload.error || "Could not save integration settings.");
     setIntegrationCredentials(current => ({
       providers: {
@@ -7064,8 +7895,9 @@ export default function App() {
             name: values.name.trim() || contact.name,
             role: values.role || "Stakeholder",
             email: values.email,
-            phone: values.phone,
-            mobile: undefined,
+            phone: values.directDial,
+            mobile: values.mobile,
+            directDial: values.directDial,
             phoneNumber: undefined,
             redeemed: undefined,
             lastTouch: "Updated just now",
@@ -7116,17 +7948,33 @@ export default function App() {
     }));
   }
 
-  function handleRemoveContact(contact) {
+  async function handleRemoveContact(contact) {
     if (!contact?.id) return;
 
-    updateData(current => ({
-      ...current,
-      contacts: current.contacts.filter(item => item.id !== contact.id),
-      deals: current.deals.map(deal => deal.contactId === contact.id
-        ? { ...deal, contactId: "", contact: "No primary contact" }
-        : deal),
-      activities: [makeActivity("Contact", `Contact removed: ${contact.name || "Untitled contact"}`, contact.account || "Workspace"), ...current.activities],
-    }));
+    const response = await fetch("/api/contacts/archive", {
+      method: "POST",
+      headers: await buildApiHeaders(),
+      body: JSON.stringify({ contactId: contact.id }),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || "Could not archive contact.");
+
+    if (payload.crmData && typeof payload.crmData === "object") {
+      setCrmData(current => ({
+        ...refreshCrmData(normalizeCrmData(payload.crmData)),
+        workspaceUsers: current.workspaceUsers || [],
+      }));
+      lastSyncedCrmJsonRef.current = JSON.stringify(serializeCrmData(normalizeCrmData(payload.crmData)));
+    } else {
+      updateData(current => ({
+        ...current,
+        contacts: current.contacts.filter(item => item.id !== contact.id),
+        deals: current.deals.map(deal => deal.contactId === contact.id
+          ? { ...deal, contactId: "", contact: "No primary contact" }
+          : deal),
+        activities: [makeActivity("Contact", `Contact archived: ${contact.name || "Untitled contact"}`, contact.account || "Workspace"), ...current.activities],
+      }));
+    }
     setSelectedContactId(current => current === contact.id ? null : current);
     setActiveView("contacts");
   }
@@ -7212,14 +8060,16 @@ export default function App() {
           continue;
         }
 
-        const phone = normalizeLookupValue(row.phone);
+        const mobile = normalizeLookupValue(row.mobile);
+        const directDial = normalizeLookupValue(row.directDial);
         const email = normalizeEmail(row.email);
         const duplicate = contacts.some(contact => {
           const sameEmail = email && normalizeEmail(contact.email) === email;
-          const samePhone = phone && normalizePhone(getContactPhoneNumber(contact)) === normalizePhone(phone);
+          const sameMobile = mobile && normalizePhone(getContactMobileNumber(contact)) === normalizePhone(mobile);
+          const sameDirectDial = directDial && normalizePhone(getContactDirectDialNumber(contact)) === normalizePhone(directDial);
           const samePersonAtAccount = normalizeLookupValue(contact.name).toLowerCase() === contactName.toLowerCase()
             && normalizeLookupValue(contact.account).toLowerCase() === accountName.toLowerCase();
-          return sameEmail || samePhone || samePersonAtAccount;
+          return sameEmail || sameMobile || sameDirectDial || samePersonAtAccount;
         });
 
         if (duplicate) {
@@ -7257,7 +8107,9 @@ export default function App() {
           name: contactName,
           role: normalizeLookupValue(row.role) || "Stakeholder",
           email,
-          phone,
+          phone: directDial,
+          mobile,
+          directDial,
           owner: "Workspace user",
           status: "New",
           lastTouch: "Imported",
@@ -7343,7 +8195,7 @@ export default function App() {
       return {
         ...current,
         scriptItems: [...scripts, ...(current.scriptItems || [])],
-        activities: [makeActivity("AI", `Generated scripts for ${contextName}`, account?.name || "Workspace"), ...current.activities],
+        activities: [makeActivity("Script", `Generated scripts for ${contextName}`, account?.name || "Workspace"), ...current.activities],
       };
     });
   }
@@ -7379,7 +8231,7 @@ export default function App() {
       const leadMobile = normalizePhone(lead.manualMobile || lead.manualDirectDial);
       const existingContact = current.contacts.find(contact => {
         const sameEmail = leadEmail && normalizeEmail(contact.email) === leadEmail;
-        const sameMobile = leadMobile && normalizePhone(contact.mobile || contact.phone) === leadMobile;
+        const sameMobile = leadMobile && normalizePhone(contact.mobile || contact.directDial || contact.phone) === leadMobile;
         const samePersonAtCompany = normalizeLookupValue(contact.name).toLowerCase() === leadName.toLowerCase()
           && normalizeLookupValue(contact.account).toLowerCase() === companyName.toLowerCase();
         return sameEmail || sameMobile || samePersonAtCompany;
@@ -7423,7 +8275,8 @@ export default function App() {
         insight: "Created from a saved Lead Finder contact.",
         scripts: null,
       };
-      const phoneNumber = normalizeLookupValue(lead.manualMobile || lead.manualDirectDial);
+      const mobileNumber = normalizeLookupValue(lead.manualMobile);
+      const directDialNumber = normalizeLookupValue(lead.manualDirectDial);
       const contact = {
         id: makeId("contact"),
         clientId: account.clientId,
@@ -7433,7 +8286,9 @@ export default function App() {
         role: normalizeLookupValue(lead.jobTitle) || "Stakeholder",
         persona: "Lead Finder",
         email: leadEmail,
-        phone: phoneNumber,
+        phone: directDialNumber,
+        mobile: mobileNumber,
+        directDial: directDialNumber,
         owner: "Workspace user",
         status: "New",
         lastTouch: "Added from Lead Lookup",
@@ -7560,8 +8415,9 @@ export default function App() {
               name: values.name.trim() || contact.name,
               role: values.role || "Stakeholder",
               email: values.email,
-              phone: values.phone,
-              mobile: undefined,
+              phone: values.directDial,
+              mobile: values.mobile,
+              directDial: values.directDial,
               phoneNumber: undefined,
               redeemed: undefined,
               lastTouch: "Updated just now",
@@ -7688,7 +8544,9 @@ export default function App() {
             name: values.name.trim() || "Untitled contact",
             role: values.role || "Stakeholder",
             email: values.email,
-            phone: values.phone,
+            phone: values.directDial,
+            mobile: values.mobile,
+            directDial: values.directDial,
             owner: "Workspace user",
             status: values.status || "New",
             lastTouch: "Created just now",
@@ -7816,6 +8674,9 @@ export default function App() {
   }
 
   function renderPage() {
+    const canDeleteContacts = Boolean(adminSettingsState.isAdmin && normalizeAdminSettings(adminSettingsState.settings).contact_deletion_enabled);
+    const cognismRedeemEnabled = Boolean(crmData.integrations?.find(integration => integration.name === "Cognism")?.redeemEnabled);
+    const canUseCognismRedeemMode = Boolean(adminSettingsState.isAdmin && cognismRedeemEnabled);
     switch (activeView) {
       case "clients":
         return <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} />;
@@ -7843,13 +8704,13 @@ export default function App() {
           ? <AccountDetailPage account={selectedAccount} onOpenContact={openContact} onEditAccount={editAccount} onQueueResearch={(accountId) => openWorkflow("research", { accountId })} onNewContact={(accountId) => openWorkflow("contact", { accountId })} onNewDeal={(accountId) => openWorkflow("deal", { accountId })} />
           : <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} />;
       case "contacts":
-        return <ContactsPage onOpenContact={openContact} onNewContact={(accountId) => openWorkflow("contact", accountId ? { accountId } : {})} onImportContacts={handleImportContacts} onRemoveContact={handleRemoveContact} />;
+        return <ContactsPage onOpenContact={openContact} onNewContact={(accountId) => openWorkflow("contact", accountId ? { accountId } : {})} onImportContacts={handleImportContacts} onRemoveContact={handleRemoveContact} canDeleteContacts={canDeleteContacts} />;
       case "contact-detail":
         return selectedContact
-          ? <ContactDetailPage key={selectedContact.id} contact={selectedContact} privateNote={privateContactNotes[selectedContact.id] || ""} onUpdateContact={handleUpdateContact} onSavePrivateNote={handleSavePrivateContactNote} onLogCall={handleLogCall} />
-          : <ContactsPage onOpenContact={openContact} onNewContact={() => openWorkflow("contact")} onImportContacts={handleImportContacts} onRemoveContact={handleRemoveContact} />;
+          ? <ContactDetailPage key={selectedContact.id} contact={selectedContact} privateNote={privateContactNotes[selectedContact.id] || ""} onUpdateContact={handleUpdateContact} onSavePrivateNote={handleSavePrivateContactNote} onLogCall={handleLogCall} onRemoveContact={handleRemoveContact} canDeleteContacts={canDeleteContacts} />
+          : <ContactsPage onOpenContact={openContact} onNewContact={() => openWorkflow("contact")} onImportContacts={handleImportContacts} onRemoveContact={handleRemoveContact} canDeleteContacts={canDeleteContacts} />;
       case "cognism":
-        return <CognismContactFinder contactDatabase={leadContactDatabase} onSaveLeadList={handleSaveLeadList} onSaveLeadContact={handleUpsertLeadContact} onPersistSearchResults={handlePersistSearchResults} />;
+        return <CognismContactFinder contactDatabase={leadContactDatabase} onSaveLeadList={handleSaveLeadList} onSaveLeadContact={handleUpsertLeadContact} onPersistSearchResults={handlePersistSearchResults} cognismPreviewEnabled={normalizeAdminSettings(adminSettingsState.settings).cognism_preview_enabled} canUseRedeemMode={canUseCognismRedeemMode} currentUserId={user?.id || ""} />;
       case "lead-lists":
         return <LeadListsPage leadLists={leadLists} workspaceUsers={workspaceUsers} contactDatabase={leadContactDatabase} error={leadListsError} onSaveLeadList={handleSaveLeadList} onAppendToLeadList={handleAppendToLeadList} onUpdateLeadList={handleUpdateLeadList} onDeleteLeadList={handleDeleteLeadList} onSaveLeadContact={handleUpsertLeadContact} />;
       case "lead-lookup":
@@ -7864,7 +8725,7 @@ export default function App() {
       case "files":
         return <FilesPage onUploadFile={() => openWorkflow("file", { returnTo: "files" })} />;
       case "integrations":
-        return <IntegrationsPage onNavigate={openView} onOpenWorkflow={(type) => openWorkflow(type)} onUpdateIntegration={updateIntegration} integrationCredentials={integrationCredentials} onSaveIntegrationCredentials={handleSaveIntegrationCredentials} />;
+        return <IntegrationsPage onNavigate={openView} onOpenWorkflow={(type) => openWorkflow(type)} integrationCredentials={integrationCredentials} onSaveIntegrationCredentials={handleSaveIntegrationCredentials} />;
       case "settings":
         return <SettingsPage
           isDark={isDark}
@@ -7874,6 +8735,10 @@ export default function App() {
           onUpdateProfile={handleUpdateProfile}
           currencyCode={currencyCode}
           onCurrencyChange={handleCurrencyChange}
+          adminSettingsState={adminSettingsState}
+          onUpdateAdminSettings={handleUpdateAdminSettings}
+          cognismRedeemEnabled={cognismRedeemEnabled}
+          onUpdateIntegration={updateIntegration}
         />;
       default:
         return (

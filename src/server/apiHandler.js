@@ -1,21 +1,26 @@
 import { createClient } from '@supabase/supabase-js'
 import { dialAircall } from './aircallDial.js'
-import { createCognismPreview } from './cognismPreview.js'
+import { createCognismPreview, redeemCognismContacts } from './cognismPreview.js'
 import { exportContactsToHubSpot } from './hubspotContacts.js'
 import { getRedeemedContactById } from './redeemedContactStore.js'
 import { suggestTargetRoles } from './roleSuggestions.js'
-import { suggestAccountFieldsFromWeb, suggestClientFieldsFromWeb } from './clientSuggestions.js'
-import { generateAccountScripts } from './accountScripts.js'
 
 let supabaseServer = null;
 let supabaseService = null;
 
 const integrationSecretFields = {
-  openai: ['apiKey'],
   cognism: ['apiKey'],
   aircall: ['apiId', 'apiToken', 'userId'],
   hubspot: ['privateAppToken'],
 };
+
+const CRM_DATA_METADATA_KEY = 'crm_data';
+const ADMIN_SETTINGS_METADATA_KEY = 'admin_settings';
+const DEFAULT_ADMIN_SETTINGS = {
+  cognism_preview_enabled: true,
+  contact_deletion_enabled: false,
+};
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function getSupabaseUrl() {
   return process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -27,6 +32,10 @@ function getSupabaseAnonKey() {
 
 function getSupabaseServiceKey() {
   return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+}
+
+function hasSupabaseServiceCredentials() {
+  return Boolean(getSupabaseUrl() && getSupabaseServiceKey());
 }
 
 export async function readJsonBody(req) {
@@ -92,7 +101,7 @@ async function getAuthenticatedCrmUserWithOrganization(req) {
   const serviceClient = getServiceClient();
   const { data, error } = await serviceClient
     .from('users')
-    .select('organization_id')
+    .select('organization_id, role')
     .eq('id', user.id)
     .single();
 
@@ -102,7 +111,204 @@ async function getAuthenticatedCrmUserWithOrganization(req) {
     throw orgError;
   }
 
-  return { ...user, organizationId: data.organization_id };
+  return { ...user, organizationId: data.organization_id, role: data.role || 'member' };
+}
+
+function isAdminRole(role) {
+  return ['platform_admin', 'org_owner', 'org_admin'].includes(role);
+}
+
+function assertOrgAdmin(user) {
+  if (isAdminRole(user?.role)) return;
+  const error = new Error('Admin controls are available to organization admins only.');
+  error.statusCode = 403;
+  throw error;
+}
+
+function normalizeAdminSettings(settings = {}) {
+  return {
+    ...DEFAULT_ADMIN_SETTINGS,
+    ...(settings && typeof settings === 'object' ? settings : {}),
+    cognism_preview_enabled: settings?.cognism_preview_enabled !== false,
+    contact_deletion_enabled: settings?.contact_deletion_enabled === true,
+  };
+}
+
+async function loadOrganizationMetadata(serviceClient, organizationId) {
+  const { data, error } = await serviceClient
+    .from('organizations')
+    .select('metadata')
+    .eq('id', organizationId)
+    .single();
+
+  if (error) throw error;
+  return data?.metadata && typeof data.metadata === 'object' ? data.metadata : {};
+}
+
+async function writeAuditLog(serviceClient, user, action, objectType, objectId, beforeData, afterData, metadata = {}) {
+  const { error } = await serviceClient
+    .from('audit_logs')
+    .insert({
+      organization_id: user.organizationId,
+      actor_id: user.id,
+      action,
+      object_type: objectType,
+      object_id: UUID_PATTERN.test(String(objectId || '')) ? objectId : null,
+      before_data: beforeData || null,
+      after_data: afterData || null,
+      metadata,
+    });
+
+  if (error) throw error;
+}
+
+async function getAdminSettings(req) {
+  if (canUseLocalCognismPreviewFallback() && !hasSupabaseServiceCredentials()) {
+    return { settings: DEFAULT_ADMIN_SETTINGS, role: 'org_admin', isAdmin: true };
+  }
+
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  const serviceClient = getServiceClient();
+  const metadata = await loadOrganizationMetadata(serviceClient, user.organizationId);
+  const settings = normalizeAdminSettings(metadata[ADMIN_SETTINGS_METADATA_KEY]);
+  return {
+    settings,
+    role: user.role,
+    isAdmin: isAdminRole(user.role),
+  };
+}
+
+async function updateAdminSettings(req, input = {}) {
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  assertOrgAdmin(user);
+
+  const serviceClient = getServiceClient();
+  const metadata = await loadOrganizationMetadata(serviceClient, user.organizationId);
+  const beforeSettings = normalizeAdminSettings(metadata[ADMIN_SETTINGS_METADATA_KEY]);
+  const nextSettings = normalizeAdminSettings({
+    ...beforeSettings,
+    ...(typeof input.cognism_preview_enabled === 'boolean' ? { cognism_preview_enabled: input.cognism_preview_enabled } : {}),
+    ...(typeof input.contact_deletion_enabled === 'boolean' ? { contact_deletion_enabled: input.contact_deletion_enabled } : {}),
+    updated_at: new Date().toISOString(),
+    updated_by: user.id,
+  });
+
+  const nextMetadata = {
+    ...metadata,
+    [ADMIN_SETTINGS_METADATA_KEY]: nextSettings,
+  };
+
+  const { error } = await serviceClient
+    .from('organizations')
+    .update({ metadata: nextMetadata })
+    .eq('id', user.organizationId);
+
+  if (error) throw error;
+  await writeAuditLog(serviceClient, user, 'admin_settings.updated', 'organization', user.organizationId, beforeSettings, nextSettings);
+  return {
+    settings: nextSettings,
+    role: user.role,
+    isAdmin: true,
+  };
+}
+
+async function assertCognismPreviewEnabled(req) {
+  if (canUseLocalCognismPreviewFallback() && !hasSupabaseServiceCredentials()) return null;
+
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  const serviceClient = getServiceClient();
+  const metadata = await loadOrganizationMetadata(serviceClient, user.organizationId);
+  const settings = normalizeAdminSettings(metadata[ADMIN_SETTINGS_METADATA_KEY]);
+  if (settings.cognism_preview_enabled) return user;
+
+  const error = new Error('Cognism preview is disabled by an administrator.');
+  error.statusCode = 403;
+  throw error;
+}
+
+function archiveContactInCrmData(crmData, contactId) {
+  const data = crmData && typeof crmData === 'object' ? crmData : {};
+  const contacts = Array.isArray(data.contacts) ? data.contacts : [];
+  const contact = contacts.find(item => String(item.id) === String(contactId));
+  if (!contact) return { data, contact: null };
+
+  const nextData = {
+    ...data,
+    contacts: contacts.filter(item => String(item.id) !== String(contactId)),
+    deals: Array.isArray(data.deals)
+      ? data.deals.map(deal => String(deal.contactId || '') === String(contactId)
+        ? { ...deal, contactId: '', contact: 'No primary contact' }
+        : deal)
+      : data.deals,
+    activities: [
+      {
+        id: `activity-${Date.now()}`,
+        type: 'Contact',
+        title: `Contact archived: ${contact.name || 'Untitled contact'}`,
+        account: contact.account || 'Workspace',
+        time: 'Just now',
+        owner: 'Workspace Admin',
+      },
+      ...(Array.isArray(data.activities) ? data.activities : []),
+    ],
+    archived_contacts: [
+      { ...contact, status: 'Archived', archivedAt: new Date().toISOString() },
+      ...(Array.isArray(data.archived_contacts) ? data.archived_contacts : []),
+    ],
+  };
+
+  return { data: nextData, contact };
+}
+
+async function archiveContact(req, input = {}) {
+  const contactId = String(input.contactId || '').trim();
+  if (!contactId) {
+    const error = new Error('Contact id is required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  assertOrgAdmin(user);
+  const serviceClient = getServiceClient();
+  const metadata = await loadOrganizationMetadata(serviceClient, user.organizationId);
+  const settings = normalizeAdminSettings(metadata[ADMIN_SETTINGS_METADATA_KEY]);
+  if (!settings.contact_deletion_enabled) {
+    const error = new Error('Contact deletion is disabled by an administrator.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const { data: nextCrmData, contact } = archiveContactInCrmData(metadata[CRM_DATA_METADATA_KEY], contactId);
+  if (!contact) {
+    const error = new Error('Contact was not found.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (UUID_PATTERN.test(contactId)) {
+    await serviceClient
+      .from('contacts')
+      .update({ status: 'archived', updated_by: user.id })
+      .eq('organization_id', user.organizationId)
+      .eq('id', contactId)
+      .throwOnError();
+  }
+
+  const nextMetadata = {
+    ...metadata,
+    [CRM_DATA_METADATA_KEY]: nextCrmData,
+    crm_data_updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await serviceClient
+    .from('organizations')
+    .update({ metadata: nextMetadata })
+    .eq('id', user.organizationId);
+
+  if (error) throw error;
+  await writeAuditLog(serviceClient, user, 'contact.archived', 'contact', contactId, contact, { ...contact, status: 'Archived' }, { source: 'admin_controls', contact_id: contactId });
+  return { contactId, crmData: nextCrmData };
 }
 
 function sendJson(res, statusCode, payload) {
@@ -148,7 +354,6 @@ async function findIntegrationConnection(serviceClient, organizationId, provider
 }
 
 function getEnvironmentCredentialStatus(provider) {
-  if (provider === 'openai') return { configured: Boolean(process.env.OPENAI_API_KEY), hints: { apiKey: maskSecret(process.env.OPENAI_API_KEY) }, source: 'env' };
   if (provider === 'cognism') return { configured: Boolean(process.env.COGNISM_API_KEY), hints: { apiKey: maskSecret(process.env.COGNISM_API_KEY) }, source: 'env' };
   if (provider === 'aircall') {
     const configured = Boolean(process.env.AIRCALL_API_ID && process.env.AIRCALL_API_TOKEN && process.env.AIRCALL_USER_ID);
@@ -164,6 +369,10 @@ function getEnvironmentCredentialStatus(provider) {
   }
   if (provider === 'hubspot') return { configured: Boolean(process.env.HUBSPOT_PRIVATE_APP_TOKEN), hints: { privateAppToken: maskSecret(process.env.HUBSPOT_PRIVATE_APP_TOKEN) }, source: 'env' };
   return { configured: false, hints: {}, source: 'none' };
+}
+
+function canUseLocalCognismPreviewFallback() {
+  return process.env.VERCEL !== '1' && process.env.NODE_ENV !== 'production';
 }
 
 function buildCredentialStatus(provider, connection) {
@@ -207,6 +416,13 @@ async function getCredentialValue(req, provider, field, envKey) {
 }
 
 async function getIntegrationStatuses(req) {
+  if (canUseLocalCognismPreviewFallback() && !hasSupabaseServiceCredentials()) {
+    const providers = Object.keys(integrationSecretFields);
+    return {
+      providers: Object.fromEntries(providers.map(provider => [provider, getEnvironmentCredentialStatus(provider)])),
+    };
+  }
+
   const user = await getAuthenticatedCrmUserWithOrganization(req);
   const serviceClient = getServiceClient();
   const providers = Object.keys(integrationSecretFields);
@@ -324,7 +540,6 @@ export async function handleApiRequest(req, res) {
         'SUPABASE_ANON_KEY',
         'SUPABASE_SERVICE_ROLE_KEY',
         'SUPABASE_SERVICE_KEY',
-        'OPENAI_API_KEY',
         'COGNISM_API_KEY',
         'HUBSPOT_PRIVATE_APP_TOKEN',
         'AIRCALL_API_ID',
@@ -358,38 +573,74 @@ export async function handleApiRequest(req, res) {
     return true;
   }
 
+  if (pathname === '/api/admin-settings') {
+    if (req.method === 'GET') {
+      try {
+        sendJson(res, 200, await getAdminSettings(req));
+      } catch (error) {
+        sendJson(res, error.statusCode || 500, { error: error.message || 'Admin settings failed' });
+      }
+      return true;
+    }
+
+    if (req.method === 'POST') {
+      try {
+        sendJson(res, 200, await updateAdminSettings(req, await readJsonBody(req)));
+      } catch (error) {
+        sendJson(res, error.statusCode || 500, { error: error.message || 'Admin settings failed' });
+      }
+      return true;
+    }
+
+    sendJson(res, 405, { error: 'Method not allowed' });
+    return true;
+  }
+
+  if (pathname === '/api/contacts/archive') {
+    return handlePostRoute(req, res, async body => archiveContact(req, body), 'Contact archive failed');
+  }
+
   if (pathname === '/api/cognism/roles') {
-    return handlePostRoute(req, res, async body => suggestTargetRoles(body, {
-      apiKey: await getCredentialValue(req, 'openai', 'apiKey', 'OPENAI_API_KEY'),
-    }), 'Role suggestion failed');
+    return handlePostRoute(req, res, async body => suggestTargetRoles(body), 'Role suggestion failed');
   }
 
   if (pathname === '/api/client-suggestions') {
-    return handlePostRoute(req, res, async body => suggestClientFieldsFromWeb(body, {
-      apiKey: await getCredentialValue(req, 'openai', 'apiKey', 'OPENAI_API_KEY'),
-    }), 'Client suggestion failed');
+    sendJson(res, 503, { error: 'Company lookup is disabled.' });
+    return true;
   }
 
   if (pathname === '/api/account-suggestions') {
-    return handlePostRoute(req, res, async body => suggestAccountFieldsFromWeb(body, {
-      apiKey: await getCredentialValue(req, 'openai', 'apiKey', 'OPENAI_API_KEY'),
-    }), 'Account suggestion failed');
+    sendJson(res, 503, { error: 'Account lookup is disabled.' });
+    return true;
   }
 
   if (pathname === '/api/account-scripts') {
-    return handlePostRoute(req, res, async body => generateAccountScripts(body, {
-      apiKey: await getCredentialValue(req, 'openai', 'apiKey', 'OPENAI_API_KEY'),
-    }), 'Account script generation failed');
+    sendJson(res, 503, { error: 'Script generation is disabled.' });
+    return true;
   }
 
   if (pathname === '/api/cognism/preview') {
     return handlePostRoute(req, res, async body => {
+      await assertCognismPreviewEnabled(req);
       const payload = await createCognismPreview(body, {
         apiKey: await getCredentialValue(req, 'cognism', 'apiKey', 'COGNISM_API_KEY'),
+        allowLocalPreviewWithoutApiKey: canUseLocalCognismPreviewFallback(),
       });
       console.info('Lead Finder preview estimated credits used:', payload.estimatedCreditsUsed);
       return payload;
     }, 'Lead Finder preview failed');
+  }
+
+  if (pathname === '/api/cognism/redeem') {
+    return handlePostRoute(req, res, async body => {
+      await assertCognismPreviewEnabled(req);
+      const payload = await redeemCognismContacts(body, {
+        apiKey: await getCredentialValue(req, 'cognism', 'apiKey', 'COGNISM_API_KEY'),
+        allowLocalRedeemWithoutApiKey: canUseLocalCognismPreviewFallback(),
+      });
+      console.info('Lead Finder redeem estimated credits used:', payload.estimatedCreditsUsed);
+      return payload;
+    }, 'Lead Finder redeem failed');
   }
 
   if (pathname === '/api/aircall/dial') {

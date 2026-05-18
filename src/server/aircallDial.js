@@ -29,7 +29,7 @@ function normalizePhone(value) {
 }
 
 function getContactPhoneNumbers(contact = {}) {
-  return [contact.phoneNumber, contact.phone, contact.mobile].map(normalizePhone).filter(Boolean);
+  return [contact.phoneNumber, contact.mobile, contact.directDial, contact.phone].map(normalizePhone).filter(Boolean);
 }
 
 export async function dialAircall(input = {}, options = {}) {

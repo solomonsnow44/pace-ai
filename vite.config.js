@@ -6,7 +6,11 @@ function cognismPreviewApiPlugin() {
   return {
     name: 'paceops-lead-finder-preview-api',
     configureServer(server) {
-      server.middlewares.use('/api', async (req, res, next) => {
+      server.middlewares.use(async (req, res, next) => {
+        if (!req.url?.startsWith('/api')) {
+          next();
+          return;
+        }
         if (await handleApiRequest(req, res)) return;
         next();
       });

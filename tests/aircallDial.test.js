@@ -55,6 +55,26 @@ test("redeemed contacts with valid phone numbers can call Aircall dial", async (
   assert.equal(logs[0].status, "sent_to_aircall");
 });
 
+test("redeemed contacts with direct dial numbers can call Aircall dial", async () => {
+  const logs = [];
+
+  const payload = await dialAircall(
+    { phoneNumber: "+441234567891", contactId: "crm_contact_2" },
+    {
+      userId: "user_1",
+      aircallUserId: "123",
+      apiId: "api-id",
+      apiToken: "api-token",
+      getContactById: async () => ({ id: "crm_contact_2", redeemed: true, directDial: "+441234567891" }),
+      auditLogger: entry => logs.push(entry),
+      fetcher: async () => ({ status: 204 }),
+    },
+  );
+
+  assert.equal(payload.message, "Number sent to Aircall.");
+  assert.equal(logs[0].status, "sent_to_aircall");
+});
+
 test("invalid phone numbers are rejected", async () => {
   assert.equal(validateE164PhoneNumber("01234567890"), false);
 

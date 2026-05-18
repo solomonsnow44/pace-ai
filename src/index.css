@@ -406,6 +406,16 @@ textarea::placeholder {
   cursor: not-allowed;
 }
 
+.button-spinner {
+  animation: button-spin 0.8s linear infinite;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .text-button {
   color: var(--accent);
   background: transparent;
@@ -671,6 +681,10 @@ textarea::placeholder {
   grid-column: 1 / -1;
 }
 
+.content-grid.two .admin-controls-panel {
+  grid-column: 1 / -1;
+}
+
 .content-grid.calls-layout {
   grid-template-columns: minmax(0, 1fr) 320px;
 }
@@ -924,8 +938,8 @@ textarea::placeholder {
 .contact-list-row {
   min-height: 72px;
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) 180px 132px;
-  column-gap: 20px;
+  grid-template-columns: minmax(260px, 1fr) minmax(150px, 180px) minmax(150px, 180px) 132px;
+  column-gap: 14px;
   align-items: center;
   padding: 10px 12px;
   border: 1px solid var(--border);
@@ -1324,6 +1338,73 @@ textarea::placeholder {
   padding: 9px 10px;
 }
 
+.admin-setting-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-setting-toggle:last-child {
+  border-bottom: 0;
+}
+
+.admin-setting-toggle > span {
+  display: grid;
+  gap: 4px;
+}
+
+.admin-setting-toggle small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-setting-toggle input {
+  width: 44px;
+  height: 24px;
+  accent-color: var(--accent);
+}
+
+.admin-redeem-control {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-redeem-control > div {
+  display: grid;
+  gap: 4px;
+}
+
+.admin-redeem-control small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-redeem-control > button {
+  justify-self: start;
+}
+
+.admin-settings-feedback {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+}
+
+.admin-settings-feedback .form-success,
+.admin-settings-feedback .form-error {
+  width: 100%;
+  margin-bottom: 0;
+  overflow-wrap: anywhere;
+}
+
 .detail-edit-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1615,6 +1696,11 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 
+.company-lookup-toggle:has(input:disabled) {
+  color: var(--muted);
+  background: var(--soft);
+}
+
 .lookup-status {
   min-height: 40px;
   display: flex;
@@ -1743,6 +1829,10 @@ textarea::placeholder {
   gap: 10px;
 }
 
+.finder-section-heading.unnumbered {
+  align-items: flex-start;
+}
+
 .finder-section-heading > span {
   width: 26px;
   height: 26px;
@@ -1770,6 +1860,10 @@ textarea::placeholder {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.lead-filter-panel {
+  background: var(--surface);
 }
 
 .cognism-controls .form-field span,
@@ -1828,13 +1922,26 @@ textarea::placeholder {
 
 .finder-retrieve-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-start;
   gap: 14px;
   margin: -4px 0 18px;
+  flex-wrap: wrap;
 }
 
 .finder-retrieve-actions .primary-button {
   justify-content: center;
+  min-width: 138px;
+}
+
+.retrieve-loading-status {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.retrieve-loading-status.warning {
+  color: var(--danger);
 }
 
 .danger-button {
@@ -1849,8 +1956,40 @@ textarea::placeholder {
   color: var(--danger);
 }
 
+.success-button {
+  border-color: var(--success);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.success-button:hover {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success-soft) 70%, var(--surface));
+  color: var(--success);
+}
+
+.primary-button.success-button {
+  background: var(--success);
+  border-color: var(--success);
+  color: #ffffff;
+}
+
+.primary-button.success-button:hover {
+  background: color-mix(in srgb, var(--success) 86%, #000000);
+  color: #ffffff;
+}
+
 .role-suggest-button {
   width: fit-content;
+}
+
+.inline-loading-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .export-actions {
@@ -2030,6 +2169,107 @@ textarea::placeholder {
   gap: 8px;
 }
 
+.mobile-filter-choice {
+  min-height: 38px;
+  padding: 6px 9px;
+}
+
+.finder-priority-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(130px, 160px);
+  align-items: start;
+  gap: 10px;
+}
+
+.max-contacts-field {
+  margin: 0;
+  gap: 5px;
+}
+
+.max-contacts-field input {
+  min-height: 38px;
+}
+
+.mobile-filter-choice:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.mobile-filter-choice.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.mobile-filter-choice input {
+  width: 16px;
+  height: 16px;
+}
+
+.mobile-filter-choice span {
+  gap: 2px;
+  font-size: 13px;
+}
+
+.mobile-filter-choice strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.mobile-filter-choice small {
+  white-space: normal;
+}
+
+.finder-mode-toggle {
+  display: inline-flex;
+  width: fit-content;
+  padding: 3px;
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.finder-mode-toggle label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.finder-mode-toggle label.selected {
+  color: var(--text);
+  background: var(--card);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.finder-mode-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (max-width: 720px) {
+  .finder-priority-controls {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .finder-mode-toggle {
+    width: 100%;
+  }
+
+  .finder-mode-toggle label {
+    flex: 1;
+  }
+}
+
 .country-picker {
   display: grid;
   gap: 8px;
@@ -2118,6 +2358,12 @@ textarea::placeholder {
 .result-selection-actions strong {
   color: var(--text);
   font-size: 13px;
+}
+
+.result-selection-actions small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .table-select-cell {
@@ -2346,14 +2592,14 @@ textarea::placeholder {
 }
 
 .lead-lookup-table {
-  width: 1440px;
-  min-width: 1440px;
+  width: 1580px;
+  min-width: 1580px;
   table-layout: fixed;
 }
 
 .lead-lookup-table.editing {
-  width: 1600px;
-  min-width: 1600px;
+  width: 1740px;
+  min-width: 1740px;
 }
 
 .lead-lookup-table th,
@@ -2382,18 +2628,22 @@ textarea::placeholder {
 }
 
 .lead-lookup-table th:nth-child(6) {
-  width: 130px;
+  width: 160px;
 }
 
 .lead-lookup-table th:nth-child(7) {
-  width: 110px;
+  width: 130px;
 }
 
 .lead-lookup-table th:nth-child(8) {
-  width: 140px;
+  width: 110px;
 }
 
 .lead-lookup-table th:nth-child(9) {
+  width: 140px;
+}
+
+.lead-lookup-table th:nth-child(10) {
   width: 100px;
 }
 
@@ -2423,14 +2673,18 @@ textarea::placeholder {
 }
 
 .lead-lookup-table.editing th:nth-child(8) {
-  width: 140px;
+  width: 130px;
 }
 
 .lead-lookup-table.editing th:nth-child(9) {
-  width: 100px;
+  width: 140px;
 }
 
 .lead-lookup-table.editing th:nth-child(10) {
+  width: 100px;
+}
+
+.lead-lookup-table.editing th:nth-child(11) {
   width: 110px;
 }
 
@@ -2812,6 +3066,39 @@ textarea::placeholder {
   border-color: var(--warning);
   background: var(--warning-soft);
   color: var(--warning);
+}
+
+.redeem-efficiency-warning {
+  display: grid;
+  gap: 4px;
+}
+
+.redeem-efficiency-warning span,
+.redeem-efficiency-warning small {
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+
+.redeem-efficiency-warning small {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.redeem-diagnostics-modal {
+  max-width: min(920px, calc(100vw - 28px));
+}
+
+.redeem-diagnostics-json {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  white-space: pre-wrap;
 }
 
 .modal-prerequisite {
@@ -3558,6 +3845,15 @@ textarea::placeholder {
 
   .integration-credential-fields {
     grid-template-columns: 1fr;
+  }
+
+  .admin-redeem-control {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .admin-redeem-control > button {
+    justify-self: stretch;
   }
 
   .marketing-nav {

@@ -1,7 +1,9 @@
 export const COGNISM_PREVIEW_MODE = "preview_only";
 export const FORBIDDEN_COGNISM_URL_PARTS = ["redeem", "reveal", "export", "enrich"];
 export const COGNISM_CONTACT_SEARCH_URL = "https://app.cognism.com/api/search/contact/search?lastReturnedKey=&indexSize=100";
-export const DEFAULT_MAX_CONTACTS_PER_COMPANY = 10;
+export const COGNISM_CONTACT_REDEEM_URL = "https://app.cognism.com/api/search/contact/redeem";
+export const DEFAULT_MAX_CONTACTS_PER_COMPANY = 1;
+export const MAX_COGNISM_REDEEM_IDS = 20;
 
 export const DEFAULT_TARGET_TITLES = [
   "Chief Product Officer",
@@ -47,6 +49,10 @@ export const DEFAULT_EXCLUDED_TITLES = [
 
 function compactString(value) {
   return String(value || "").trim();
+}
+
+function compactLower(value) {
+  return compactString(value).toLowerCase();
 }
 
 function uniqueValues(values) {
@@ -140,6 +146,13 @@ export function assertSafeCognismPreviewUrl(url) {
   }
 }
 
+export function assertSafeCognismRedeemUrl(url) {
+  const targetUrl = new URL(String(url || ""));
+  if (targetUrl.origin !== "https://app.cognism.com" || targetUrl.pathname !== "/api/search/contact/redeem") {
+    throw new Error("Blocked unsafe Cognism redeem URL");
+  }
+}
+
 function buildSearchPageUrl(searchUrl, lastReturnedKey = "") {
   const url = new URL(searchUrl);
   url.searchParams.set("lastReturnedKey", lastReturnedKey);
@@ -219,6 +232,7 @@ function scoreContact(contact, targetTitles) {
 export function mapCognismPreviewContact(company, contact, targetTitles) {
   const account = contact.account || {};
   const location = [contact.city, contact.state, contact.country].map(compactString).filter(Boolean).join(", ");
+  const redeemId = compactString(contact.redeemId || contact.redeemID || contact.redeem_id || contact.id || contact.contactId);
 
   return {
     company: compactString(account.name) || company,
@@ -234,7 +248,271 @@ export function mapCognismPreviewContact(company, contact, targetTitles) {
     directDialAvailable: Boolean(contact.hasDirectPhoneNumbers),
     matchScore: scoreContact(contact, targetTitles),
     cognismContactId: compactString(contact.id || contact.contactId || contact.redeemId),
+    cognismRedeemId: redeemId,
     dataSource: "cognism_preview",
+  };
+}
+
+function createLocalPreviewResults(companies, targetTitles, maxPerCompany, requireMobileAvailable) {
+  return companies.flatMap(company => {
+    const safeCompany = compactString(company) || "Target account";
+    return Array.from({ length: maxPerCompany }, (_, index) => {
+      const title = targetTitles[index % targetTitles.length] || "Target contact";
+      return {
+        company: safeCompany,
+        contactName: `${safeCompany} ${title} ${index + 1}`,
+        jobTitle: title,
+        location: "",
+        emailAvailable: true,
+        mobileAvailable: requireMobileAvailable ? true : index % 2 === 0,
+        directDialAvailable: false,
+        confidence: 0.5,
+        matchScore: 0.5,
+        cognismContactId: `local-preview:${safeCompany.toLowerCase()}:${index + 1}`,
+        cognismRedeemId: `local-preview:${safeCompany.toLowerCase()}:${index + 1}`,
+        dataSource: "cognism_preview",
+      };
+    });
+  });
+}
+
+function normalizeRedeemInput(input = {}) {
+  const requestedLeads = Array.isArray(input.leads) ? input.leads : [];
+  const requestedIds = Array.isArray(input.redeemIds) ? input.redeemIds : [];
+  const seen = new Set();
+  const leads = [];
+
+  for (const lead of requestedLeads) {
+    const redeemId = compactString(lead?.redeemId || lead?.cognismRedeemId || lead?.cognismContactId || lead?.id);
+    if (!redeemId || seen.has(redeemId)) continue;
+    seen.add(redeemId);
+    leads.push({ ...lead, redeemId, rowId: compactString(lead?.rowId) || redeemId });
+  }
+
+  for (const redeemIdValue of requestedIds) {
+    const redeemId = compactString(redeemIdValue);
+    if (!redeemId || seen.has(redeemId)) continue;
+    seen.add(redeemId);
+    leads.push({ redeemId, rowId: redeemId });
+  }
+
+  if (!leads.length) {
+    const error = new Error("At least one Cognism redeem ID is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (leads.length > MAX_COGNISM_REDEEM_IDS) {
+    const error = new Error(`Redeem up to ${MAX_COGNISM_REDEEM_IDS} contacts at a time`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    leads,
+    redeemIds: leads.map(lead => lead.redeemId),
+  };
+}
+
+function extractRecords(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.results)) return data.results;
+  if (Array.isArray(data?.result)) return data.result;
+  if (Array.isArray(data?.contacts)) return data.contacts;
+  if (Array.isArray(data?.redeemedContacts)) return data.redeemedContacts;
+  if (Array.isArray(data?.data?.results)) return data.data.results;
+  if (Array.isArray(data?.data?.result)) return data.data.result;
+  if (Array.isArray(data?.data?.contacts)) return data.data.contacts;
+  return [];
+}
+
+async function responseErrorDetail(response) {
+  try {
+    const data = await response.clone().json();
+    return compactString(
+      data?.message
+      || data?.error
+      || data?.errors?.[0]?.message
+      || data?.errors?.[0]
+      || data?.detail
+    );
+  } catch {
+    try {
+      return compactString(await response.text());
+    } catch {
+      return "";
+    }
+  }
+}
+
+function extractEmail(record = {}) {
+  const candidates = [
+    record.email?.address,
+    record.email?.value,
+    record.emailAddress,
+    typeof record.email === "string" ? record.email : "",
+    ...(Array.isArray(record.emails) ? record.emails.map(email => email?.address || email?.value || email) : []),
+  ];
+  return compactString(candidates.find(Boolean));
+}
+
+function phoneNumberValue(phone) {
+  if (!phone) return "";
+  if (typeof phone === "string") return compactString(phone);
+  return compactString(phone.number || phone.phoneNumber || phone.value || phone.rawNumber);
+}
+
+function phoneLabelValue(phone) {
+  if (!phone || typeof phone === "string") return "";
+  return compactLower([phone.label, phone.type, phone.phoneType, phone.category].filter(Boolean).join(" "));
+}
+
+function phoneEntries(record = {}) {
+  const sourceLists = [
+    ["mobile", record.mobilePhoneNumbers],
+    ["mobile", record.mobilePhones],
+    ["mobile", record.mobileNumbers],
+    ["mobile", record.mobiles],
+    ["direct", record.directPhoneNumbers],
+    ["direct", record.directPhones],
+    ["direct", record.directNumbers],
+    ["direct", record.directDials],
+    ["generic", record.phoneNumbers],
+    ["generic", record.phones],
+  ];
+
+  return sourceLists.flatMap(([source, list]) => Array.isArray(list)
+    ? list.map(phone => ({ phone, source, label: phoneLabelValue(phone), number: phoneNumberValue(phone) })).filter(entry => entry.number)
+    : []);
+}
+
+function labelledPhoneKind(entry) {
+  if (entry.label.includes("mobile") || entry.label.includes("cell")) return "mobile";
+  if (entry.label.includes("direct")) return "direct";
+  return "";
+}
+
+function extractPhoneNumbers(record = {}) {
+  const entries = phoneEntries(record);
+  const labelledMobile = entries.find(entry => labelledPhoneKind(entry) === "mobile")?.number || "";
+  const labelledDirect = entries.find(entry => labelledPhoneKind(entry) === "direct")?.number || "";
+  const sourceMobile = entries.find(entry => entry.source === "mobile" && !labelledPhoneKind(entry))?.number || "";
+  const sourceDirect = entries.find(entry => entry.source === "direct" && !labelledPhoneKind(entry))?.number || "";
+
+  return {
+    mobile: labelledMobile || sourceMobile,
+    directDial: labelledDirect || sourceDirect,
+  };
+}
+
+function recordRedeemId(record = {}) {
+  return compactString(record.redeemId || record.redeemID || record.redeem_id || record.id || record.contactId);
+}
+
+function mapCognismRedeemedContact(record = {}, requestedLead = {}) {
+  const account = record.account || {};
+  const firstName = compactString(record.firstName);
+  const lastName = compactString(record.lastName);
+  const { mobile, directDial } = extractPhoneNumbers(record);
+
+  return {
+    ...requestedLead,
+    rowId: compactString(requestedLead.rowId) || recordRedeemId(record),
+    cognismContactId: requestedLead.cognismContactId || compactString(record.id || record.contactId || requestedLead.redeemId),
+    cognismRedeemId: recordRedeemId(record) || requestedLead.redeemId,
+    company: compactString(account.name) || compactString(record.companyName) || requestedLead.company || "",
+    contactName: compactString(record.fullName) || [firstName, lastName].filter(Boolean).join(" ") || requestedLead.contactName || "",
+    jobTitle: compactString(record.jobTitle) || requestedLead.jobTitle || "",
+    location: [record.city, record.state, record.country].map(compactString).filter(Boolean).join(", ") || requestedLead.location || "",
+    linkedinProfileUrl: compactString(record.linkedinUrl || record.linkedInUrl || record.linkedinURL || record.linkedInURL || record.linkedinProfileUrl) || requestedLead.linkedinProfileUrl || "",
+    manualEmail: extractEmail(record) || requestedLead.manualEmail || "",
+    manualMobile: mobile || requestedLead.manualMobile || "",
+    manualDirectDial: directDial || requestedLead.manualDirectDial || "",
+    emailAvailable: Boolean(extractEmail(record) || requestedLead.emailAvailable),
+    mobileAvailable: Boolean(mobile || requestedLead.mobileAvailable),
+    directDialAvailable: Boolean(directDial || requestedLead.directDialAvailable),
+    redeemed: true,
+    redeemedAt: new Date().toISOString(),
+    dataSource: "cognism_redeem",
+  };
+}
+
+function createLocalRedeemResults(leads) {
+  return leads.map((lead, index) => {
+    const nameParts = compactString(lead.contactName)
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]/g, "")
+      .split(/\s+/)
+      .filter(Boolean);
+    const first = nameParts[0] || "lead";
+    const last = nameParts[1] || String(index + 1);
+    const companySlug = compactString(lead.company).toLowerCase().replace(/[^a-z0-9]+/g, "") || "company";
+    return {
+      ...lead,
+      manualEmail: lead.manualEmail || `${first}.${last}@${companySlug}.example`,
+      manualMobile: lead.manualMobile || `+15550001${String(index + 1).padStart(3, "0")}`,
+      manualDirectDial: lead.manualDirectDial || `+15550002${String(index + 1).padStart(3, "0")}`,
+      mobileAvailable: true,
+      directDialAvailable: true,
+      redeemed: true,
+      redeemedAt: new Date().toISOString(),
+      dataSource: "cognism_redeem",
+    };
+  });
+}
+
+export async function redeemCognismContacts(input, options = {}) {
+  const { leads, redeemIds } = normalizeRedeemInput(input);
+  const apiKey = options.apiKey ?? process.env.COGNISM_API_KEY;
+  const fetcher = options.fetcher ?? fetch;
+  const redeemUrl = options.redeemUrl ?? COGNISM_CONTACT_REDEEM_URL;
+
+  assertSafeCognismRedeemUrl(redeemUrl);
+
+  if (!apiKey) {
+    if (options.allowLocalRedeemWithoutApiKey) {
+      return {
+        mode: "redeem",
+        estimatedCreditsUsed: leads.length,
+        redeemed: createLocalRedeemResults(leads),
+        diagnostics: input.debug ? { requested: leads, rawRecords: [] } : null,
+        warning: "Using local redeem data because COGNISM_API_KEY is not available in this local server.",
+      };
+    }
+    const error = new Error("COGNISM_API_KEY is required on the server");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const response = await fetcher(redeemUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ redeemIds }),
+  });
+
+  if (!response.ok) {
+    const detail = await responseErrorDetail(response);
+    const error = new Error(detail ? `Lead redeem request failed: ${detail}` : `Lead redeem request failed with status ${response.status}`);
+    error.statusCode = response.status;
+    throw error;
+  }
+
+  const data = await response.json();
+  const requestedByRedeemId = new Map(leads.map(lead => [lead.redeemId, lead]));
+  const records = extractRecords(data);
+  const redeemed = records.map((record, index) => {
+    const requestedLead = requestedByRedeemId.get(recordRedeemId(record)) || leads[index] || {};
+    return mapCognismRedeemedContact(record, requestedLead);
+  });
+
+  return {
+    mode: "redeem",
+    estimatedCreditsUsed: redeemed.length,
+    redeemed,
+    diagnostics: input.debug ? { requested: leads, rawRecords: records } : null,
   };
 }
 
@@ -248,6 +526,19 @@ export async function createCognismPreview(input, options = {}) {
   assertSafeCognismPreviewUrl(searchUrl);
 
   if (!apiKey) {
+    if (options.allowLocalPreviewWithoutApiKey) {
+      return {
+        mode: COGNISM_PREVIEW_MODE,
+        estimatedCreditsUsed: 0,
+        maxPerCompany,
+        requireEmail,
+        requireMobile,
+        requireMobileAvailable,
+        countries,
+        results: createLocalPreviewResults(companies, expandedTargetTitles, maxPerCompany, requireMobileAvailable),
+        warning: "Using local preview data because COGNISM_API_KEY is not available in this local server.",
+      };
+    }
     const error = new Error("COGNISM_API_KEY is required on the server");
     error.statusCode = 500;
     throw error;

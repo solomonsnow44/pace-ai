@@ -424,6 +424,19 @@ $$;
 ALTER FUNCTION "public"."current_user_role"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."default_admin_settings"() RETURNS "jsonb"
+    LANGUAGE "sql" IMMUTABLE
+    AS $$
+  select jsonb_build_object(
+    'cognism_preview_enabled', true,
+    'contact_deletion_enabled', false
+  )
+$$;
+
+
+ALTER FUNCTION "public"."default_admin_settings"() OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."ensure_default_pipeline"() RETURNS "uuid"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -592,6 +605,30 @@ CREATE OR REPLACE FUNCTION "public"."ensure_default_pipeline"() RETURNS "uuid"
 ALTER FUNCTION "public"."ensure_default_pipeline"() OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."get_admin_settings"("target_organization_id" "uuid") RETURNS "jsonb"
+    LANGUAGE "plpgsql" STABLE SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  settings jsonb;
+begin
+  if not public.is_org_member(target_organization_id) then
+    raise exception 'Admin settings are not available for this organization.' using errcode = '42501';
+  end if;
+
+  select public.default_admin_settings() || coalesce(o.metadata->'admin_settings', '{}'::jsonb)
+    into settings
+  from public.organizations o
+  where o.id = target_organization_id;
+
+  return coalesce(settings, public.default_admin_settings());
+end;
+$$;
+
+
+ALTER FUNCTION "public"."get_admin_settings"("target_organization_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."get_shared_pipeline_stages"() RETURNS TABLE("id" "uuid", "stage_key" "text", "name" "text", "stage_order" integer, "probability" integer)
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -682,6 +719,43 @@ $$;
 
 
 ALTER FUNCTION "public"."set_updated_at"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean DEFAULT NULL::boolean, "contact_deletion_enabled" boolean DEFAULT NULL::boolean) RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare
+  before_settings jsonb;
+  after_settings jsonb;
+begin
+  if not public.is_org_admin(target_organization_id) then
+    raise exception 'Admin controls are available to organization admins only.' using errcode = '42501';
+  end if;
+
+  select public.default_admin_settings() || coalesce(o.metadata->'admin_settings', '{}'::jsonb)
+    into before_settings
+  from public.organizations o
+  where o.id = target_organization_id;
+
+  after_settings := before_settings
+    || case when cognism_preview_enabled is null then '{}'::jsonb else jsonb_build_object('cognism_preview_enabled', cognism_preview_enabled) end
+    || case when contact_deletion_enabled is null then '{}'::jsonb else jsonb_build_object('contact_deletion_enabled', contact_deletion_enabled) end
+    || jsonb_build_object('updated_at', now(), 'updated_by', auth.uid());
+
+  update public.organizations
+  set metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object('admin_settings', after_settings)
+  where id = target_organization_id;
+
+  insert into public.audit_logs (organization_id, actor_id, action, object_type, object_id, before_data, after_data)
+  values (target_organization_id, auth.uid(), 'admin_settings.updated', 'organization', target_organization_id, before_settings, after_settings);
+
+  return after_settings;
+end;
+$$;
+
+
+ALTER FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean) OWNER TO "postgres";
 
 SET default_tablespace = '';
 
@@ -1111,7 +1185,8 @@ CREATE TABLE IF NOT EXISTS "public"."contacts" (
     "created_by" "uuid",
     "updated_by" "uuid",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "direct_dial" "text"
 );
 
 ALTER TABLE ONLY "public"."contacts" FORCE ROW LEVEL SECURITY;
@@ -2181,6 +2256,10 @@ CREATE INDEX "contacts_created_at_idx" ON "public"."contacts" USING "btree" ("cr
 
 
 
+CREATE INDEX "contacts_direct_dial_idx" ON "public"."contacts" USING "btree" ("organization_id", "direct_dial") WHERE (("direct_dial" IS NOT NULL) AND ("direct_dial" <> ''::"text"));
+
+
+
 CREATE INDEX "contacts_email_idx" ON "public"."contacts" USING "btree" ("email");
 
 
@@ -2278,6 +2357,10 @@ CREATE INDEX "integration_credentials_connection_id_idx" ON "public"."integratio
 
 
 CREATE INDEX "lead_contact_database_cognism_idx" ON "public"."lead_contact_database" USING "btree" ("organization_id", "cognism_contact_id") WHERE (("cognism_contact_id" IS NOT NULL) AND ("cognism_contact_id" <> ''::"text"));
+
+
+
+CREATE INDEX "lead_contact_database_direct_dial_idx" ON "public"."lead_contact_database" USING "btree" ("organization_id", "manual_direct_dial") WHERE (("manual_direct_dial" IS NOT NULL) AND ("manual_direct_dial" <> ''::"text"));
 
 
 
@@ -4102,9 +4185,21 @@ GRANT ALL ON FUNCTION "public"."current_user_role"() TO "service_role";
 
 
 
+GRANT ALL ON FUNCTION "public"."default_admin_settings"() TO "anon";
+GRANT ALL ON FUNCTION "public"."default_admin_settings"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."default_admin_settings"() TO "service_role";
+
+
+
 GRANT ALL ON FUNCTION "public"."ensure_default_pipeline"() TO "anon";
 GRANT ALL ON FUNCTION "public"."ensure_default_pipeline"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."ensure_default_pipeline"() TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."get_admin_settings"("target_organization_id" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."get_admin_settings"("target_organization_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_admin_settings"("target_organization_id" "uuid") TO "service_role";
 
 
 
@@ -4135,6 +4230,12 @@ GRANT ALL ON FUNCTION "public"."is_platform_admin"() TO "service_role";
 GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "anon";
 GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean) TO "anon";
+GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean) TO "service_role";
 
 
 

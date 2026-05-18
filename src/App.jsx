@@ -1076,6 +1076,14 @@ function getRedeemedPhoneNumber(contact) {
   return contact?.redeemed === true && contact?.phoneNumber ? String(contact.phoneNumber) : "";
 }
 
+async function buildApiHeaders() {
+  const headers = { "Content-Type": "application/json" };
+  if (!supabase) return headers;
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
+}
+
 function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", source = "crm_contact", label = "Call", compact = false }) {
   const phoneNumber = phoneNumberOverride || getRedeemedPhoneNumber(contact);
   const dialPhoneNumber = normalizePhone(phoneNumber);
@@ -3877,7 +3885,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     try {
       const response = await fetch("/api/cognism/roles", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await buildApiHeaders(),
         body: JSON.stringify({ query: roleQuery }),
       });
       const payload = await response.json();
@@ -3920,7 +3928,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     try {
       const response = await fetch("/api/cognism/preview", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await buildApiHeaders(),
         body: JSON.stringify({ companies, targetTitles, maxPerCompany: requestedMax, requireMobileAvailable, countries: selectedCountries }),
       });
       const payload = await response.json();
@@ -4769,7 +4777,132 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration }) {
   );
 }
 
-function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdateProfile }) {
+const integrationCredentialForms = [
+  {
+    provider: "openai",
+    title: "ChatGPT / OpenAI",
+    description: "Used for role suggestions, account lookup, and account intelligence scripts.",
+    fields: [{ name: "apiKey", label: "OpenAI API key", placeholder: "sk-..." }],
+  },
+  {
+    provider: "cognism",
+    title: "Cognism",
+    description: "Used by Lead Finder preview search.",
+    fields: [{ name: "apiKey", label: "Cognism API key", placeholder: "Bearer token" }],
+  },
+  {
+    provider: "aircall",
+    title: "Aircall",
+    description: "Used for click-to-call from saved leads and CRM contacts.",
+    fields: [
+      { name: "apiId", label: "API ID", placeholder: "Aircall API ID" },
+      { name: "apiToken", label: "API token", placeholder: "Aircall API token" },
+      { name: "userId", label: "Aircall user ID", placeholder: "Numeric user ID" },
+    ],
+  },
+  {
+    provider: "hubspot",
+    title: "HubSpot",
+    description: "Used for exporting Lead Finder contacts to HubSpot.",
+    fields: [{ name: "privateAppToken", label: "Private app token", placeholder: "pat-..." }],
+  },
+];
+
+function IntegrationCredentialsPanel({ integrationCredentials, onSaveIntegrationCredentials }) {
+  const [valuesByProvider, setValuesByProvider] = useState({});
+  const [visibleFields, setVisibleFields] = useState({});
+  const [saveState, setSaveState] = useState({});
+
+  function updateValue(provider, field, value) {
+    setSaveState(current => ({ ...current, [provider]: "idle" }));
+    setValuesByProvider(current => ({
+      ...current,
+      [provider]: {
+        ...(current[provider] || {}),
+        [field]: value,
+      },
+    }));
+  }
+
+  async function submitProvider(event, provider) {
+    event.preventDefault();
+    setSaveState(current => ({ ...current, [provider]: "saving" }));
+    try {
+      await onSaveIntegrationCredentials(provider, valuesByProvider[provider] || {});
+      setValuesByProvider(current => ({ ...current, [provider]: {} }));
+      setSaveState(current => ({ ...current, [provider]: "saved" }));
+    } catch (error) {
+      setSaveState(current => ({ ...current, [provider]: error?.message || "Could not save credentials." }));
+    }
+  }
+
+  return (
+    <section className="panel integration-credentials-panel">
+      <div className="panel-header">
+        <div>
+          <span className="eyebrow">API access</span>
+          <h2>Integration keys</h2>
+        </div>
+        <StatusBadge>{integrationCredentials?.providers ? "Synced" : "Not checked"}</StatusBadge>
+      </div>
+      <div className="integration-credential-list">
+        {integrationCredentialForms.map(form => {
+          const status = integrationCredentials?.providers?.[form.provider] || {};
+          const providerValues = valuesByProvider[form.provider] || {};
+          const providerSaveState = saveState[form.provider] || "idle";
+          const isSaving = providerSaveState === "saving";
+          return (
+            <form key={form.provider} className="integration-credential-card" onSubmit={event => submitProvider(event, form.provider)}>
+              <div className="integration-credential-head">
+                <div>
+                  <strong>{form.title}</strong>
+                  <small>{form.description}</small>
+                </div>
+                <StatusBadge tone={status.configured ? "success" : "neutral"}>
+                  {status.configured ? `Configured${status.source === "supabase" ? "" : " via env"}` : "Missing"}
+                </StatusBadge>
+              </div>
+              <div className="integration-credential-fields">
+                {form.fields.map(field => {
+                  const fieldKey = `${form.provider}.${field.name}`;
+                  return (
+                    <label key={field.name} className="api-secret-field">
+                      <span>{field.label}</span>
+                      <div>
+                        <input
+                          type={visibleFields[fieldKey] ? "text" : "password"}
+                          value={providerValues[field.name] || ""}
+                          onChange={event => updateValue(form.provider, field.name, event.target.value)}
+                          placeholder={status.hints?.[field.name] || field.placeholder}
+                          autoComplete="off"
+                        />
+                        <button
+                          className="icon-action"
+                          type="button"
+                          onClick={() => setVisibleFields(current => ({ ...current, [fieldKey]: !current[fieldKey] }))}
+                          aria-label={visibleFields[fieldKey] ? "Hide key" : "Show key"}
+                        >
+                          {visibleFields[fieldKey] ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              {typeof providerSaveState === "string" && !["idle", "saving", "saved"].includes(providerSaveState) ? <div className="form-error">{providerSaveState}</div> : null}
+              <button className="secondary-button" type="submit" disabled={isSaving}>
+                <ShieldCheck size={16} />
+                {isSaving ? "Saving" : providerSaveState === "saved" ? "Saved" : "Save keys"}
+              </button>
+            </form>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdateProfile, integrationCredentials, onSaveIntegrationCredentials }) {
   const { teamMembers, clients, workspaceUsers } = useCrmData();
   const visibleTeamMembers = workspaceUsers?.length ? workspaceUsers : teamMembers;
   const metadata = user?.user_metadata || {};
@@ -4878,6 +5011,7 @@ function SettingsPage({ isDark, onThemeToggle, onInviteTeamMember, user, onUpdat
             </div>
           </div>
         </section>
+        <IntegrationCredentialsPanel integrationCredentials={integrationCredentials} onSaveIntegrationCredentials={onSaveIntegrationCredentials} />
       </div>
     </>
   );
@@ -5371,7 +5505,7 @@ function WorkflowModal({
     try {
       const response = await fetch("/api/client-suggestions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await buildApiHeaders(),
         body: JSON.stringify({ name: values.name }),
       });
       const suggestions = await response.json();
@@ -5395,7 +5529,7 @@ function WorkflowModal({
     try {
       const response = await fetch("/api/account-suggestions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await buildApiHeaders(),
         body: JSON.stringify({ name: values.name, clientName }),
       });
       const suggestions = await response.json();
@@ -5422,7 +5556,7 @@ function WorkflowModal({
     try {
       const response = await fetch("/api/account-scripts", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: await buildApiHeaders(),
         body: JSON.stringify(values),
       });
       const payload = await response.json();
@@ -5855,6 +5989,7 @@ export default function App() {
   const [leadLists, setLeadLists] = useState([]);
   const [leadListsError, setLeadListsError] = useState("");
   const [leadContactDatabase, setLeadContactDatabase] = useState([]);
+  const [integrationCredentials, setIntegrationCredentials] = useState({ providers: {} });
   const [activeView, setActiveView] = useState("dashboard");
   const [activeClientId, setActiveClientId] = useState("each-other");
   const [activeCampaignId, setActiveCampaignId] = useState("priority-targeting");
@@ -5890,6 +6025,7 @@ export default function App() {
       setLeadLists([]);
       setLeadListsError("");
       setLeadContactDatabase([]);
+      setIntegrationCredentials({ providers: {} });
       setUser(null);
       setAuthReady(true);
       setLoggingOut(false);
@@ -5985,6 +6121,9 @@ export default function App() {
       setCrmData(nextCrmData);
       setLeadLists(nextLeadLists);
       setLeadContactDatabase(nextLeadContactDatabase);
+      loadIntegrationCredentialsStatus().catch(error => {
+        console.error("Could not load integration credential status", error);
+      });
       const isFirstAuthenticatedLoad = !hasSavedUiState(nextUser.id);
       if (isFirstAuthenticatedLoad) {
         setActiveView("dashboard");
@@ -6011,6 +6150,7 @@ export default function App() {
       setDataOrgId(null);
       setLeadLists([]);
       setLeadContactDatabase([]);
+      setIntegrationCredentials({ providers: {} });
       setDataUserId(nextUser.id);
       setUser(nextUser);
     } finally {
@@ -6031,6 +6171,34 @@ export default function App() {
     });
     if (error) throw error;
     if (data.user) setUser(data.user);
+  }
+
+  async function loadIntegrationCredentialsStatus() {
+    const response = await fetch("/api/integration-settings", {
+      method: "GET",
+      headers: await buildApiHeaders(),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not load integration settings.");
+    setIntegrationCredentials(payload);
+    return payload;
+  }
+
+  async function handleSaveIntegrationCredentials(provider, values) {
+    const response = await fetch("/api/integration-settings", {
+      method: "POST",
+      headers: await buildApiHeaders(),
+      body: JSON.stringify({ provider, values }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not save integration settings.");
+    setIntegrationCredentials(current => ({
+      providers: {
+        ...(current.providers || {}),
+        [provider]: payload,
+      },
+    }));
+    return payload;
   }
 
   async function getLeadContactSaveContext() {
@@ -6943,7 +7111,7 @@ export default function App() {
       case "integrations":
         return <IntegrationsPage onNavigate={openView} onOpenWorkflow={(type) => openWorkflow(type)} onUpdateIntegration={updateIntegration} />;
       case "settings":
-        return <SettingsPage isDark={isDark} onThemeToggle={() => setIsDark(value => !value)} onInviteTeamMember={() => openWorkflow("team")} user={user} onUpdateProfile={handleUpdateProfile} />;
+        return <SettingsPage isDark={isDark} onThemeToggle={() => setIsDark(value => !value)} onInviteTeamMember={() => openWorkflow("team")} user={user} onUpdateProfile={handleUpdateProfile} integrationCredentials={integrationCredentials} onSaveIntegrationCredentials={handleSaveIntegrationCredentials} />;
       default:
         return (
           <DashboardPage

@@ -961,6 +961,85 @@ textarea::placeholder {
   font-weight: 800;
 }
 
+.integration-credentials-panel {
+  grid-column: 1 / -1;
+}
+
+.integration-credential-list {
+  display: grid;
+  gap: 12px;
+}
+
+.integration-credential-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.integration-credential-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.integration-credential-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.integration-credential-head strong {
+  color: var(--text);
+}
+
+.integration-credential-head small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.integration-credential-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.api-secret-field {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.api-secret-field > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.api-secret-field > div {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 0 6px 0 10px;
+}
+
+.api-secret-field input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+}
+
 .script-board {
   display: grid;
   grid-template-columns: repeat(4, minmax(190px, 1fr));
@@ -3194,6 +3273,10 @@ textarea::placeholder {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .integration-credential-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .lead-lookup-controls {
     grid-template-columns: minmax(260px, 1fr) minmax(220px, 1fr) auto;
   }
@@ -3321,6 +3404,14 @@ textarea::placeholder {
   .two-col,
   .marketing-footer {
     grid-template-columns: 1fr;
+  }
+
+  .integration-credential-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .integration-credential-head {
+    flex-direction: column;
   }
 
   .marketing-nav {

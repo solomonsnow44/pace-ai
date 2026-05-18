@@ -846,10 +846,10 @@ function hydrateLeadWithContactDatabase(lead, contactDatabase = []) {
 
   return {
     ...lead,
-    manualEmail: match.manualEmail || lead.manualEmail || "",
-    manualMobile: match.manualMobile || lead.manualMobile || "",
-    manualDirectDial: match.manualDirectDial || lead.manualDirectDial || "",
-    linkedinProfileUrl: match.linkedinProfileUrl || lead.linkedinProfileUrl || "",
+    manualEmail: lead.manualEmail || match.manualEmail || "",
+    manualMobile: lead.manualMobile || match.manualMobile || "",
+    manualDirectDial: lead.manualDirectDial || match.manualDirectDial || "",
+    linkedinProfileUrl: lead.linkedinProfileUrl || match.linkedinProfileUrl || "",
     sourceNote: match.sourceNote || lead.sourceNote || "Added manually by PaceOps user",
     dataSource: match.dataSource || lead.dataSource || "manual",
     dbContactId: match.id,
@@ -941,10 +941,85 @@ function leadHasPaceOpsData(lead = {}) {
   );
 }
 
-function leadHasSavedMobileData(lead = {}, contactDatabase = []) {
-  if (normalizeLookupValue(lead.manualMobile) || normalizeLookupValue(lead.manualDirectDial)) return true;
+function getLeadSavedPhoneData(lead = {}, contactDatabase = []) {
+  const leadMobile = normalizeLookupValue(lead.manualMobile);
+  const leadDirectDial = normalizeLookupValue(lead.manualDirectDial);
   const match = findLeadDatabaseMatch(lead, contactDatabase);
-  return Boolean(normalizeLookupValue(match?.manualMobile) || normalizeLookupValue(match?.manualDirectDial));
+  return {
+    mobile: leadMobile || normalizeLookupValue(match?.manualMobile),
+    directDial: leadDirectDial || normalizeLookupValue(match?.manualDirectDial),
+  };
+}
+
+function leadNeedsSavedPhoneData(lead = {}, contactDatabase = []) {
+  const phoneData = getLeadSavedPhoneData(lead, contactDatabase);
+  return !phoneData.mobile || !phoneData.directDial;
+}
+
+function summarizeMissingPhoneData(leads = [], contactDatabase = []) {
+  return leads.reduce((summary, lead) => {
+    const phoneData = getLeadSavedPhoneData(lead, contactDatabase);
+    const missingMobile = !phoneData.mobile;
+    const missingDirectDial = !phoneData.directDial;
+    if (missingMobile && missingDirectDial) summary.missingBoth += 1;
+    else if (missingMobile) summary.missingMobile += 1;
+    else if (missingDirectDial) summary.missingDirectDial += 1;
+    return summary;
+  }, { missingBoth: 0, missingMobile: 0, missingDirectDial: 0 });
+}
+
+function rawCognismPhoneValue(phone) {
+  if (!phone) return "";
+  if (typeof phone === "string") return normalizeLookupValue(phone);
+  return normalizeLookupValue(phone.number || phone.phoneNumber || phone.value || phone.rawNumber);
+}
+
+function rawCognismCallablePhone(phone) {
+  const value = rawCognismPhoneValue(phone);
+  if (!value || value.toLowerCase() === "dnc" || phone?.dnc === true) return "";
+  return value;
+}
+
+function firstRawCognismPhone(list) {
+  if (!Array.isArray(list)) return "";
+  for (const phone of list) {
+    const value = rawCognismCallablePhone(phone);
+    if (value) return value;
+  }
+  return "";
+}
+
+function rawCognismRedeemId(record = {}) {
+  return normalizeLookupValue(record.redeemId || record.redeemID || record.redeem_id || record.id || record.contactId);
+}
+
+function normalizePhoneForCompare(value) {
+  return normalizeLookupValue(value).replace(/[^\d+]/g, "");
+}
+
+function correctRedeemedRowsFromRawRecords(redeemedRows = [], rawRecords = []) {
+  const rawByKey = new Map();
+  rawRecords.forEach(record => {
+    [rawCognismRedeemId(record), record.id, record.contactId].map(normalizeLookupValue).filter(Boolean).forEach(key => rawByKey.set(key, record));
+  });
+
+  return redeemedRows.map(row => {
+    const rawRecord = rawByKey.get(normalizeLookupValue(row.cognismRedeemId || row.redeemId))
+      || rawByKey.get(normalizeLookupValue(row.cognismContactId));
+    if (!rawRecord) return row;
+
+    const rawMobile = firstRawCognismPhone(rawRecord.mobilePhoneNumbers || rawRecord.mobilePhones || rawRecord.mobileNumbers || rawRecord.mobiles);
+    const rawDirectDial = firstRawCognismPhone(rawRecord.directPhoneNumbers || rawRecord.directPhones || rawRecord.directNumbers || rawRecord.directDials);
+    const nextRow = { ...row };
+
+    if (rawMobile) nextRow.manualMobile = rawMobile;
+    if (rawDirectDial) nextRow.manualDirectDial = rawDirectDial;
+    else if (rawMobile && normalizePhoneForCompare(nextRow.manualDirectDial) === normalizePhoneForCompare(rawMobile)) {
+      nextRow.manualDirectDial = "";
+    }
+
+    return nextRow;
+  });
 }
 
 function leadHasManualData(lead = {}) {
@@ -1046,9 +1121,9 @@ function buildPreviewContactDatabasePayload(lead, organizationId, userId, existi
     job_title: existingContact?.jobTitle || normalizeLookupValue(lead.jobTitle),
     location: existingContact?.location || normalizeLookupValue(lead.location),
     linkedin_profile_url: existingContact?.linkedinProfileUrl || normalizeLinkedinUrl(lead.linkedinProfileUrl) || null,
-    manual_email: existingContact?.manualEmail || null,
-    manual_mobile: existingContact?.manualMobile || null,
-    manual_direct_dial: existingContact?.manualDirectDial || null,
+    manual_email: normalizeEmail(lead.manualEmail) || existingContact?.manualEmail || null,
+    manual_mobile: normalizeLookupValue(lead.manualMobile) || existingContact?.manualMobile || null,
+    manual_direct_dial: normalizeLookupValue(lead.manualDirectDial) || existingContact?.manualDirectDial || null,
     notes: existingContact?.notes || null,
     source_note: existingContact?.sourceNote || "Cognism preview search result",
     data_source: existingContact?.dataSource || "cognism_preview",
@@ -3943,10 +4018,6 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                 </div>
               ) : null}
               <div className="result-selection-actions">
-                <div>
-                  <span className="eyebrow">Lead rows</span>
-                  <strong>{selectedLeads.length} of {displayedLeads.length} selected</strong>
-                </div>
                 <div className="role-actions">
                   <button className="secondary-button" type="button" onClick={() => setSelectedLeadIds(displayedLeadEntries.map(({ leadId }) => leadId))} disabled={!displayedLeadEntries.length || selectedLeads.length === displayedLeads.length}>
                     <CheckCircle2 size={16} />
@@ -3956,6 +4027,10 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                     <Circle size={16} />
                     Deselect all
                   </button>
+                </div>
+                <div className="result-selection-summary">
+                  <span className="eyebrow">Lead rows</span>
+                  <strong>{selectedLeads.length} of {displayedLeads.length} selected</strong>
                 </div>
               </div>
               <div className="table-wrap saved-lead-list-table-wrap">
@@ -4234,6 +4309,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const { workspaceUsers = [] } = useCrmData();
   const savedSearchState = loadLeadFinderSearchState();
   const companyImportInputRef = useRef(null);
+  const redeemedPhoneRepairSaveKeysRef = useRef(new Set());
   const defaultAssignedUserId = currentUserId || workspaceUsers[0]?.id || "";
   const defaultAssignedUserIds = defaultAssignedUserId ? [defaultAssignedUserId] : [];
   const [companiesText, setCompaniesText] = useState(savedSearchState?.companiesText || "");
@@ -4243,6 +4319,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const [selectedUserIds, setSelectedUserIds] = useState(Array.isArray(savedSearchState?.selectedUserIds) && savedSearchState.selectedUserIds.length ? savedSearchState.selectedUserIds : defaultAssignedUserIds);
   const [maxPerCompany, setMaxPerCompany] = useState(String(savedSearchState?.maxPerCompany || DEFAULT_MAX_CONTACTS_PER_COMPANY));
   const [requireMobileAvailable, setRequireMobileAvailable] = useState(savedSearchState?.requireMobileAvailable === false ? false : true);
+  const [requireDirectDialAvailable, setRequireDirectDialAvailable] = useState(savedSearchState?.requireDirectDialAvailable === true);
   const [redeemReviewActive, setRedeemReviewActive] = useState(savedSearchState?.redeemReviewActive === true);
   const [countryQuery, setCountryQuery] = useState("");
   const [selectedCountries, setSelectedCountries] = useState(Array.isArray(savedSearchState?.selectedCountries) ? savedSearchState.selectedCountries : []);
@@ -4251,7 +4328,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const [customRolesText, setCustomRolesText] = useState(savedSearchState?.customRolesText || "");
   const [results, setResults] = useState(hydrateLeadsWithContactDatabase(Array.isArray(savedSearchState?.results) ? savedSearchState.results : [], contactDatabase));
   const [selectedResultIds, setSelectedResultIds] = useState(Array.isArray(savedSearchState?.selectedResultIds) ? savedSearchState.selectedResultIds : []);
-  const [meta, setMeta] = useState(savedSearchState?.meta && typeof savedSearchState.meta === "object" ? savedSearchState.meta : { mode: "preview_only", estimatedCreditsUsed: 0, maxPerCompany: DEFAULT_MAX_CONTACTS_PER_COMPANY, requireMobileAvailable: false, countries: [] });
+  const [meta, setMeta] = useState(savedSearchState?.meta && typeof savedSearchState.meta === "object" ? savedSearchState.meta : { mode: "preview_only", estimatedCreditsUsed: 0, maxPerCompany: DEFAULT_MAX_CONTACTS_PER_COMPANY, requireMobileAvailable: false, requireDirectDialAvailable: false, countries: [] });
   const [status, setStatus] = useState(Array.isArray(savedSearchState?.results) && savedSearchState.results.length ? "done" : "idle");
   const [roleStatus, setRoleStatus] = useState("idle");
   const [roleMode, setRoleMode] = useState("");
@@ -4261,7 +4338,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const [hubspotExportDialog, setHubspotExportDialog] = useState(null);
   const [redeemStatus, setRedeemStatus] = useState("idle");
   const [redeemDiagnostics, setRedeemDiagnostics] = useState(null);
-  const [redeemDiagnosticsCopyStatus, setRedeemDiagnosticsCopyStatus] = useState("");
+  const [, setRedeemDiagnosticsCopyStatus] = useState("");
   const [companyImportOpen, setCompanyImportOpen] = useState(false);
   const [companyImportRows, setCompanyImportRows] = useState([]);
   const [companyImportStatus, setCompanyImportStatus] = useState("idle");
@@ -4288,11 +4365,12 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const existingCompanyKeys = new Set(parseLines(companiesText).map(company => company.toLowerCase()));
   const companyImportFileCount = new Set(companyImportRows.map(row => row.sourceFile).filter(Boolean)).size;
   const companyImportNewCompanyCount = companyImportRows.filter(row => !existingCompanyKeys.has(row.companyName.toLowerCase())).length;
-  const selectedLeadsMissingSavedMobile = selectedResults.filter(lead => !leadHasSavedMobileData(lead, contactDatabase));
+  const selectedLeadsNeedingSavedPhoneData = selectedResults.filter(lead => leadNeedsSavedPhoneData(lead, contactDatabase));
+  const selectedMissingPhoneSummary = summarizeMissingPhoneData(selectedLeadsNeedingSavedPhoneData, contactDatabase);
   const redeemableResultEntries = results
     .map((result, index) => ({ result, index, resultId: leadResultId(result, index) }))
-    .filter(({ result }) => !leadHasSavedMobileData(result, contactDatabase));
-  const displayedRedeemableEntries = displayedResultEntries.filter(({ result }) => !leadHasSavedMobileData(result, contactDatabase));
+    .filter(({ result }) => leadNeedsSavedPhoneData(result, contactDatabase));
+  const displayedRedeemableEntries = displayedResultEntries.filter(({ result }) => leadNeedsSavedPhoneData(result, contactDatabase));
   const canOfferRedeemReview = canUseRedeemMode && status === "done" && results.length > 0;
   const displayModeLabel = redeemReviewActive ? "Redeem" : "Preview";
   const displayCreditsLabel = `Credits: ${meta.estimatedCreditsUsed || 0}`;
@@ -4312,6 +4390,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       selectedUserIds,
       maxPerCompany,
       requireMobileAvailable,
+      requireDirectDialAvailable,
       redeemReviewActive,
       selectedCountries,
       leadListName,
@@ -4320,7 +4399,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       selectedResultIds,
       meta,
     });
-  }, [companiesText, customRolesText, leadListName, maxPerCompany, meta, redeemReviewActive, requireMobileAvailable, results, roleQuery, selectedCountries, selectedResultIds, selectedRoles, selectedUserIds, suggestedRoles]);
+  }, [companiesText, customRolesText, leadListName, maxPerCompany, meta, redeemReviewActive, requireDirectDialAvailable, requireMobileAvailable, results, roleQuery, selectedCountries, selectedResultIds, selectedRoles, selectedUserIds, suggestedRoles]);
 
   useEffect(() => {
     if (!defaultAssignedUserId) return;
@@ -4330,6 +4409,47 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   useEffect(() => {
     if (!canUseRedeemMode && redeemReviewActive) setRedeemReviewActive(false);
   }, [canUseRedeemMode, redeemReviewActive]);
+
+  useEffect(() => {
+    if (!redeemDiagnostics?.mappedRedeemed?.length || !redeemDiagnostics?.rawCognismRecords?.length) return;
+    const correctedRows = correctRedeemedRowsFromRawRecords(redeemDiagnostics.mappedRedeemed, redeemDiagnostics.rawCognismRecords);
+    const correctedByKey = new Map();
+    correctedRows.forEach(lead => {
+      [lead.rowId, lead.cognismRedeemId, lead.cognismContactId].map(normalizeLookupValue).filter(Boolean).forEach(key => correctedByKey.set(key, lead));
+    });
+
+    const repairsToSave = [];
+    let changed = false;
+    const nextResults = results.map((result, index) => {
+      const rowId = leadResultId(result, index);
+      const correctedLead = correctedByKey.get(normalizeLookupValue(rowId))
+        || correctedByKey.get(normalizeLookupValue(result.cognismRedeemId))
+        || correctedByKey.get(normalizeLookupValue(result.cognismContactId));
+      if (!correctedLead) return result;
+      const nextResult = hydrateLeadWithContactDatabase({ ...result, ...correctedLead, rowId }, contactDatabase);
+      if (
+        nextResult.manualMobile !== result.manualMobile
+        || nextResult.manualDirectDial !== result.manualDirectDial
+        || nextResult.manualEmail !== result.manualEmail
+      ) {
+        changed = true;
+        const saveKey = normalizeLookupValue(nextResult.cognismContactId || nextResult.rowId || rowId);
+        if (saveKey && !redeemedPhoneRepairSaveKeysRef.current.has(saveKey)) {
+          redeemedPhoneRepairSaveKeysRef.current.add(saveKey);
+          repairsToSave.push(nextResult);
+        }
+      }
+      return nextResult;
+    });
+    if (!changed) return;
+
+    setResults(nextResults);
+    repairsToSave.forEach(lead => {
+      onSaveLeadContact(lead, { allowPreviewOnly: true, skipConflictPrompt: true }).catch(() => {
+        redeemedPhoneRepairSaveKeysRef.current.delete(normalizeLookupValue(lead.cognismContactId || lead.rowId));
+      });
+    });
+  }, [contactDatabase, onSaveLeadContact, redeemDiagnostics, results]);
 
   useEffect(() => {
     if (!hubspotExportSummary) return undefined;
@@ -4384,7 +4504,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     setCustomRolesText("");
     setResults([]);
     setSelectedResultIds([]);
-    setMeta({ mode: "preview_only", estimatedCreditsUsed: 0, maxPerCompany: DEFAULT_MAX_CONTACTS_PER_COMPANY, requireMobileAvailable: true, countries: [] });
+    setMeta({ mode: "preview_only", estimatedCreditsUsed: 0, maxPerCompany: DEFAULT_MAX_CONTACTS_PER_COMPANY, requireMobileAvailable: true, requireDirectDialAvailable: false, countries: [] });
     setStatus("idle");
     setRoleStatus("idle");
     setRoleMode("");
@@ -4480,24 +4600,24 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       setError("Select at least one preview row before redeeming.");
       return;
     }
-    if (!selectedLeadsMissingSavedMobile.length) {
-      setError("All selected leads already have saved mobile or direct dial data in the PaceOps lead database.");
+    if (!selectedLeadsNeedingSavedPhoneData.length) {
+      setError("All selected leads already have saved mobile and direct dial data in the PaceOps lead database.");
       return;
     }
-    if (selectedLeadsMissingSavedMobile.length > 20) {
+    if (selectedLeadsNeedingSavedPhoneData.length > 20) {
       setError("Redeem up to 20 selected leads at a time.");
       return;
     }
-    if (selectedLeadsMissingSavedMobile.some(lead => !normalizeLookupValue(lead.cognismRedeemId))) {
+    if (selectedLeadsNeedingSavedPhoneData.some(lead => !normalizeLookupValue(lead.cognismRedeemId))) {
       setError("Run a fresh preview before redeeming. These saved preview rows do not include Cognism redeem IDs.");
       return;
     }
-    setRedeemConfirmCount(selectedLeadsMissingSavedMobile.length);
+    setRedeemConfirmCount(selectedLeadsNeedingSavedPhoneData.length);
     setRedeemConfirmOpen(true);
   }
 
   async function confirmRedeemSelectedMissingData() {
-    const redeemEntries = selectedResultEntries.filter(({ result }) => !leadHasSavedMobileData(result, contactDatabase));
+    const redeemEntries = selectedResultEntries.filter(({ result }) => leadNeedsSavedPhoneData(result, contactDatabase));
     if (!redeemEntries.length) {
       setRedeemConfirmOpen(false);
       setError("No selected leads need redeem data.");
@@ -4534,7 +4654,8 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Redeem request failed");
 
-      const redeemedRows = Array.isArray(payload.redeemed) ? payload.redeemed : [];
+      const rawCognismRecords = payload.diagnostics?.rawRecords || [];
+      const redeemedRows = correctRedeemedRowsFromRawRecords(Array.isArray(payload.redeemed) ? payload.redeemed : [], rawCognismRecords);
       const redeemedByKey = new Map();
       redeemedRows.forEach(lead => {
         [lead.rowId, lead.cognismRedeemId, lead.cognismContactId].map(normalizeLookupValue).filter(Boolean).forEach(key => redeemedByKey.set(key, lead));
@@ -4581,7 +4702,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           currentManualDirectDial: result.manualDirectDial || "",
         })),
         mappedRedeemed: redeemedRows,
-        rawCognismRecords: payload.diagnostics?.rawRecords || [],
+        rawCognismRecords,
       };
       setRedeemDiagnostics(nextRedeemDiagnostics);
       try {
@@ -4599,6 +4720,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         estimatedCreditsUsed: payload.estimatedCreditsUsed ?? redeemedRows.length,
         maxPerCompany: Math.max(Number(maxPerCompany) || DEFAULT_MAX_CONTACTS_PER_COMPANY, 1),
         requireMobileAvailable,
+        requireDirectDialAvailable,
         countries: selectedCountries,
         warning: [
           payload.warning,
@@ -4797,7 +4919,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       const response = await fetch("/api/cognism/preview", {
         method: "POST",
         headers: await buildApiHeaders(),
-        body: JSON.stringify({ companies, targetTitles, maxPerCompany: requestedMax, requireMobileAvailable, countries: selectedCountries }),
+        body: JSON.stringify({ companies, targetTitles, maxPerCompany: requestedMax, requireMobileAvailable, requireDirectDialAvailable, countries: selectedCountries }),
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Preview request failed");
@@ -4806,6 +4928,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         estimatedCreditsUsed: payload.estimatedCreditsUsed,
         maxPerCompany: payload.maxPerCompany,
         requireMobileAvailable: Boolean(payload.requireMobileAvailable),
+        requireDirectDialAvailable: Boolean(payload.requireDirectDialAvailable),
         countries: Array.isArray(payload.countries) ? payload.countries : [],
         warning: payload.warning || "",
       });
@@ -4814,7 +4937,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       setResults(mergedResults);
       setSelectedResultIds(mergedResults
         .map((result, index) => ({ result, index }))
-        .filter(({ result }) => !leadHasSavedMobileData(result, contactDatabase))
+        .filter(({ result }) => leadNeedsSavedPhoneData(result, contactDatabase))
         .map(({ result, index }) => leadResultId(result, index)));
       try {
         const savedContacts = await onPersistSearchResults(mergedResults);
@@ -4822,7 +4945,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         setResults(hydratedResults);
         setSelectedResultIds(hydratedResults
           .map((result, index) => ({ result, index }))
-          .filter(({ result }) => !leadHasSavedMobileData(result, [...contactDatabase, ...savedContacts]))
+          .filter(({ result }) => leadNeedsSavedPhoneData(result, [...contactDatabase, ...savedContacts]))
           .map(({ result, index }) => leadResultId(result, index)));
       } catch (persistError) {
         setMeta(current => ({
@@ -4886,6 +5009,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           customRoles: parseLines(customRolesText),
           maxPerCompany: meta.maxPerCompany,
           requireMobileAvailable,
+          requireDirectDialAvailable,
           countries: selectedCountries,
         },
       });
@@ -4925,6 +5049,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           customRoles: parseLines(customRolesText),
           maxPerCompany: meta.maxPerCompany,
           requireMobileAvailable,
+          requireDirectDialAvailable,
           countries: selectedCountries,
           source: "lead_finder_company_filter",
         },
@@ -5066,6 +5191,13 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
                   <span>
                     <strong>Must include mobile</strong>
                     <small>Only return leads with mobile numbers.</small>
+                  </span>
+                </label>
+                <label className={`role-choice mobile-filter-choice ${requireDirectDialAvailable ? "selected" : ""}`}>
+                  <input type="checkbox" checked={requireDirectDialAvailable} onChange={event => setRequireDirectDialAvailable(event.target.checked)} />
+                  <span>
+                    <strong>Must include direct dial</strong>
+                    <small>Only return leads with direct numbers.</small>
                   </span>
                 </label>
               </div>
@@ -5280,9 +5412,9 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           {status === "loading" ? "Retrieving" : "Retrieve preview"}
         </button>
         {canOfferRedeemReview ? (
-          <button className="secondary-button success-button" type="button" onClick={requestRedeemSelectedMissingData} disabled={redeemStatus === "loading" || !selectedLeadsMissingSavedMobile.length}>
+          <button className="secondary-button success-button" type="button" onClick={requestRedeemSelectedMissingData} disabled={redeemStatus === "loading" || !selectedLeadsNeedingSavedPhoneData.length}>
             {redeemStatus === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <LockKeyhole size={16} />}
-            {redeemStatus === "loading" ? "Redeeming" : selectedLeadsMissingSavedMobile.length ? `Redeem ${selectedLeadsMissingSavedMobile.length} missing` : "Redeem missing data"}
+            {redeemStatus === "loading" ? "Redeeming" : selectedLeadsNeedingSavedPhoneData.length ? `Redeem ${selectedLeadsNeedingSavedPhoneData.length} missing` : "Redeem missing data"}
           </button>
         ) : null}
         <button className="secondary-button danger-button" type="button" onClick={clearSearch}>
@@ -5312,6 +5444,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
             <StatusBadge>{displayCreditsLabel}</StatusBadge>
             <StatusBadge>Max: {displayMaxPerCompany}</StatusBadge>
             {requireMobileAvailable ? <StatusBadge>Mobile required</StatusBadge> : null}
+            {requireDirectDialAvailable ? <StatusBadge>Direct required</StatusBadge> : null}
             {selectedCountries.length ? <StatusBadge>{selectedCountries.join(", ")}</StatusBadge> : null}
           </div>
         </div>
@@ -5399,27 +5532,28 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         ) : null}
         {error ? <div className="form-error">{error}</div> : null}
         <div className="result-selection-actions">
-          <div>
-            <span className="eyebrow">Generated rows</span>
-            <strong>{selectedDisplayedResults.length} of {displayedResults.length} visible selected, {selectedResults.length} total selected</strong>
-            {canOfferRedeemReview ? <small>{selectedLeadsMissingSavedMobile.length} selected need redeem. Saved phone rows are skipped automatically.</small> : null}
-          </div>
           <div className="role-actions">
             <button className="secondary-button success-button" type="button" onClick={() => selectRedeemableRows(displayedRedeemableEntries)} disabled={!displayedRedeemableEntries.length}>
               <LockKeyhole size={16} />
               Select missing visible
             </button>
-            <button className="secondary-button" type="button" onClick={() => setSelectedResultIds(current => [...new Set([...current, ...displayedResultEntries.map(({ result, index }) => leadResultId(result, index))])])} disabled={!displayedResultEntries.length || selectedDisplayedResults.length === displayedResults.length}>
-              <CheckCircle2 size={16} />
-              Select visible
-            </button>
             <button className="secondary-button" type="button" onClick={() => {
-              const visibleIds = new Set(displayedResultEntries.map(({ result, index }) => leadResultId(result, index)));
-              setSelectedResultIds(current => current.filter(resultId => !visibleIds.has(resultId)));
-            }} disabled={!selectedDisplayedResults.length}>
-              <Circle size={16} />
-              Deselect visible
+              const visibleIds = displayedResultEntries.map(({ result, index }) => leadResultId(result, index));
+              if (selectedDisplayedResults.length === displayedResults.length) {
+                const visibleIdSet = new Set(visibleIds);
+                setSelectedResultIds(current => current.filter(resultId => !visibleIdSet.has(resultId)));
+                return;
+              }
+              setSelectedResultIds(current => [...new Set([...current, ...visibleIds])]);
+            }} disabled={!displayedResultEntries.length}>
+              {selectedDisplayedResults.length === displayedResults.length ? <Circle size={16} /> : <CheckCircle2 size={16} />}
+              {selectedDisplayedResults.length === displayedResults.length ? "Deselect visible" : "Select visible"}
             </button>
+          </div>
+          <div className="result-selection-summary">
+            <span className="eyebrow">Generated rows</span>
+            <strong>{selectedDisplayedResults.length} of {displayedResults.length} visible selected, {selectedResults.length} total selected</strong>
+            {canOfferRedeemReview ? <small>{selectedLeadsNeedingSavedPhoneData.length} selected need redeem. Complete phone rows are skipped automatically.</small> : null}
           </div>
         </div>
         <div className="table-wrap">
@@ -5544,15 +5678,47 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
             <div className="modal-header">
               <div>
                 <span className="eyebrow">Lead Finder</span>
-                <h2 id="redeem-confirm-title">Confirm redeem retrieval</h2>
+                <h2 id="redeem-confirm-title">Missing phone details</h2>
               </div>
               <button className="icon-action" type="button" onClick={() => setRedeemConfirmOpen(false)} aria-label="Close">
                 <X size={16} />
               </button>
             </div>
-            <p className="modal-helper-text">This will redeem {redeemConfirmCount} selected lead{redeemConfirmCount === 1 ? "" : "s"} missing saved mobile or direct dial data.</p>
+            <div className="redeem-choice-summary">
+              <strong>{redeemConfirmCount} selected lead{redeemConfirmCount === 1 ? " needs" : "s need"} phone data</strong>
+              <div className="redeem-missing-grid">
+                {selectedMissingPhoneSummary.missingMobile ? (
+                  <div>
+                    <span>{selectedMissingPhoneSummary.missingMobile}</span>
+                    <small>missing mobile</small>
+                  </div>
+                ) : null}
+                {selectedMissingPhoneSummary.missingDirectDial ? (
+                  <div>
+                    <span>{selectedMissingPhoneSummary.missingDirectDial}</span>
+                    <small>missing direct dial</small>
+                  </div>
+                ) : null}
+                {selectedMissingPhoneSummary.missingBoth ? (
+                  <div>
+                    <span>{selectedMissingPhoneSummary.missingBoth}</span>
+                    <small>missing both</small>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="redeem-choice-options">
+              <div>
+                <Pencil size={16} />
+                <span><strong>Review manually</strong><small>Stay on the results table and add the missing number yourself.</small></span>
+              </div>
+              <div>
+                <LockKeyhole size={16} />
+                <span><strong>Redeem from Cognism</strong><small>Use Cognism redeem to fetch missing phone data for these selected leads.</small></span>
+              </div>
+            </div>
             <div className="modal-actions">
-              <button className="secondary-button" type="button" onClick={() => setRedeemConfirmOpen(false)} disabled={redeemStatus === "loading"}>Cancel</button>
+              <button className="secondary-button" type="button" onClick={() => setRedeemConfirmOpen(false)} disabled={redeemStatus === "loading"}>Review manually</button>
               <button className="primary-button success-button" type="button" onClick={confirmRedeemSelectedMissingData} disabled={redeemStatus === "loading"}>
                 {redeemStatus === "loading" ? "Redeeming" : "Redeem missing data"}
               </button>
@@ -5560,30 +5726,10 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           </section>
         </div>
       ) : null}
-      {redeemDiagnostics ? (
-        <div className="modal-backdrop" role="presentation" onMouseDown={event => {
-          if (event.target === event.currentTarget) setRedeemDiagnostics(null);
-        }}>
-          <section className="workflow-modal redeem-diagnostics-modal" role="dialog" aria-modal="true" aria-labelledby="redeem-diagnostics-title">
-            <div className="modal-header">
-              <div>
-                <span className="eyebrow">Lead Finder</span>
-                <h2 id="redeem-diagnostics-title">Redeem diagnostics</h2>
-              </div>
-              <button className="icon-action" type="button" onClick={() => setRedeemDiagnostics(null)} aria-label="Close">
-                <X size={16} />
-              </button>
-            </div>
-            <p className="modal-helper-text">
-              {redeemDiagnosticsCopyStatus || "Send this JSON back so the returned phone labels and mapped fields can be checked."}
-            </p>
-            <pre className="redeem-diagnostics-json">{JSON.stringify(redeemDiagnostics, null, 2)}</pre>
-            <div className="modal-actions">
-              <button className="secondary-button" type="button" onClick={() => setRedeemDiagnostics(null)}>Close</button>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      {/*
+        Redeem diagnostics modal intentionally disabled after phone-mapping validation.
+        Keep redeemDiagnostics state available for the raw-record repair path.
+      */}
       {companyImportOpen ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={event => {
           if (event.target === event.currentTarget) closeCompanyImport();

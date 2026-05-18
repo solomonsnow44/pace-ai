@@ -177,6 +177,7 @@ export function normalizePreviewInput(input = {}) {
   const requireEmail = Boolean(input.requireEmail);
   const requireMobile = Boolean(input.requireMobile);
   const requireMobileAvailable = Boolean(input.requireMobileAvailable ?? input.requireEmailOrMobile);
+  const requireDirectDialAvailable = Boolean(input.requireDirectDialAvailable);
   const countries = uniqueValues(Array.isArray(input.countries) ? input.countries.map(normalizeCountry) : []);
 
   return {
@@ -186,6 +187,7 @@ export function normalizePreviewInput(input = {}) {
     requireEmail,
     requireMobile,
     requireMobileAvailable,
+    requireDirectDialAvailable,
     countries,
   };
 }
@@ -253,7 +255,7 @@ export function mapCognismPreviewContact(company, contact, targetTitles) {
   };
 }
 
-function createLocalPreviewResults(companies, targetTitles, maxPerCompany, requireMobileAvailable) {
+function createLocalPreviewResults(companies, targetTitles, maxPerCompany, requireMobileAvailable, requireDirectDialAvailable) {
   return companies.flatMap(company => {
     const safeCompany = compactString(company) || "Target account";
     return Array.from({ length: maxPerCompany }, (_, index) => {
@@ -265,7 +267,7 @@ function createLocalPreviewResults(companies, targetTitles, maxPerCompany, requi
         location: "",
         emailAvailable: true,
         mobileAvailable: requireMobileAvailable ? true : index % 2 === 0,
-        directDialAvailable: false,
+        directDialAvailable: requireDirectDialAvailable ? true : index % 3 === 0,
         confidence: 0.5,
         matchScore: 0.5,
         cognismContactId: `local-preview:${safeCompany.toLowerCase()}:${index + 1}`,
@@ -364,7 +366,7 @@ function phoneNumberValue(phone) {
 
 function phoneLabelValue(phone) {
   if (!phone || typeof phone === "string") return "";
-  return compactLower([phone.label, phone.type, phone.phoneType, phone.category].filter(Boolean).join(" "));
+  return compactLower([phone.label, phone.type, phone.phoneType, phone.numberType, phone.category].filter(Boolean).join(" "));
 }
 
 function phoneEntries(record = {}) {
@@ -382,7 +384,7 @@ function phoneEntries(record = {}) {
   ];
 
   return sourceLists.flatMap(([source, list]) => Array.isArray(list)
-    ? list.map(phone => ({ phone, source, label: phoneLabelValue(phone), number: phoneNumberValue(phone) })).filter(entry => entry.number)
+    ? list.map(phone => ({ phone, source, label: phoneLabelValue(phone), number: phoneNumberValue(phone) })).filter(entry => entry.number && entry.number.toLowerCase() !== "dnc" && entry.phone?.dnc !== true)
     : []);
 }
 
@@ -394,14 +396,17 @@ function labelledPhoneKind(entry) {
 
 function extractPhoneNumbers(record = {}) {
   const entries = phoneEntries(record);
-  const labelledMobile = entries.find(entry => labelledPhoneKind(entry) === "mobile")?.number || "";
-  const labelledDirect = entries.find(entry => labelledPhoneKind(entry) === "direct")?.number || "";
-  const sourceMobile = entries.find(entry => entry.source === "mobile" && !labelledPhoneKind(entry))?.number || "";
-  const sourceDirect = entries.find(entry => entry.source === "direct" && !labelledPhoneKind(entry))?.number || "";
+  const mobileEntries = entries.filter(entry => entry.source === "mobile");
+  const directEntries = entries.filter(entry => entry.source === "direct");
+  const genericEntries = entries.filter(entry => entry.source === "generic");
+  const sourceMobile = mobileEntries.find(entry => labelledPhoneKind(entry) === "mobile")?.number || mobileEntries[0]?.number || "";
+  const sourceDirect = directEntries.find(entry => labelledPhoneKind(entry) === "direct")?.number || directEntries[0]?.number || "";
+  const genericMobile = genericEntries.find(entry => labelledPhoneKind(entry) === "mobile")?.number || "";
+  const genericDirect = genericEntries.find(entry => labelledPhoneKind(entry) === "direct")?.number || "";
 
   return {
-    mobile: labelledMobile || sourceMobile,
-    directDial: labelledDirect || sourceDirect,
+    mobile: sourceMobile || genericMobile,
+    directDial: sourceDirect || genericDirect,
   };
 }
 
@@ -409,11 +414,17 @@ function recordRedeemId(record = {}) {
   return compactString(record.redeemId || record.redeemID || record.redeem_id || record.id || record.contactId);
 }
 
+function normalizePhoneValue(value) {
+  return compactString(value).replace(/[^\d+]/g, "");
+}
+
 function mapCognismRedeemedContact(record = {}, requestedLead = {}) {
   const account = record.account || {};
   const firstName = compactString(record.firstName);
   const lastName = compactString(record.lastName);
   const { mobile, directDial } = extractPhoneNumbers(record);
+  const requestedDirectDial = compactString(requestedLead.manualDirectDial);
+  const shouldKeepRequestedDirectDial = requestedDirectDial && normalizePhoneValue(requestedDirectDial) !== normalizePhoneValue(mobile);
 
   return {
     ...requestedLead,
@@ -427,7 +438,7 @@ function mapCognismRedeemedContact(record = {}, requestedLead = {}) {
     linkedinProfileUrl: compactString(record.linkedinUrl || record.linkedInUrl || record.linkedinURL || record.linkedInURL || record.linkedinProfileUrl) || requestedLead.linkedinProfileUrl || "",
     manualEmail: extractEmail(record) || requestedLead.manualEmail || "",
     manualMobile: mobile || requestedLead.manualMobile || "",
-    manualDirectDial: directDial || requestedLead.manualDirectDial || "",
+    manualDirectDial: directDial || (shouldKeepRequestedDirectDial ? requestedDirectDial : ""),
     emailAvailable: Boolean(extractEmail(record) || requestedLead.emailAvailable),
     mobileAvailable: Boolean(mobile || requestedLead.mobileAvailable),
     directDialAvailable: Boolean(directDial || requestedLead.directDialAvailable),
@@ -517,7 +528,7 @@ export async function redeemCognismContacts(input, options = {}) {
 }
 
 export async function createCognismPreview(input, options = {}) {
-  const { companies, targetTitles, maxPerCompany, requireEmail, requireMobile, requireMobileAvailable, countries } = normalizePreviewInput(input);
+  const { companies, targetTitles, maxPerCompany, requireEmail, requireMobile, requireMobileAvailable, requireDirectDialAvailable, countries } = normalizePreviewInput(input);
   const expandedTargetTitles = expandTargetTitles(targetTitles);
   const apiKey = options.apiKey ?? process.env.COGNISM_API_KEY;
   const fetcher = options.fetcher ?? fetch;
@@ -534,8 +545,9 @@ export async function createCognismPreview(input, options = {}) {
         requireEmail,
         requireMobile,
         requireMobileAvailable,
+        requireDirectDialAvailable,
         countries,
-        results: createLocalPreviewResults(companies, expandedTargetTitles, maxPerCompany, requireMobileAvailable),
+        results: createLocalPreviewResults(companies, expandedTargetTitles, maxPerCompany, requireMobileAvailable, requireDirectDialAvailable),
         warning: "Using local preview data because COGNISM_API_KEY is not available in this local server.",
       };
     }
@@ -591,6 +603,7 @@ export async function createCognismPreview(input, options = {}) {
       .filter(contact => accountMatchesCompany(company, contact.account || {}))
       .map(contact => mapCognismPreviewContact(company, contact, expandedTargetTitles))
       .filter(contact => !requireMobileAvailable || contact.mobileAvailable)
+      .filter(contact => !requireDirectDialAvailable || contact.directDialAvailable)
       .filter(contact => !requireEmail || contact.emailAvailable)
       .filter(contact => !requireMobile || contact.mobileAvailable)
       .filter(contact => !countries.length || countries.some(country => contact.location.toLowerCase().includes(country.toLowerCase())))
@@ -607,6 +620,7 @@ export async function createCognismPreview(input, options = {}) {
     requireEmail,
     requireMobile,
     requireMobileAvailable,
+    requireDirectDialAvailable,
     countries,
     results,
   };

@@ -22,7 +22,7 @@ function loadEnvFile(path) {
 loadEnvFile('.env');
 loadEnvFile('.env.local');
 
-const port = Number(process.env.PORT || 3000);
+const port = Number(process.env.PORT || 5173);
 const distDir = resolve('dist');
 
 const mimeTypes = {

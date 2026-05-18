@@ -178,8 +178,10 @@ test("redeem helper posts redeem IDs and maps returned contact data", async () =
                   jobTitle: "Head Of Procurement",
                   email: { address: "megan@example.com" },
                   mobilePhoneNumbers: [
-                    { number: "+1 508-434-4950", label: "DIRECT_DIAL" },
                     { number: "+1 630-542-1120", label: "MOBILE" },
+                  ],
+                  directPhoneNumbers: [
+                    { number: "+1 508-434-4950", label: "DIRECT_DIAL" },
                   ],
                   account: { name: "Stripe" },
                 },
@@ -215,7 +217,7 @@ test("redeem helper reads Cognism result arrays and surfaces response errors", a
               {
                 redeemId: "redeem-1",
                 email: { address: "result@example.com" },
-                mobilePhoneNumbers: [{ number: "+1 508-434-4950", label: "DIRECT_DIAL" }],
+                mobilePhoneNumbers: [{ number: "+1 508-434-4950", label: "DIRECT_DIAL", numberType: "MOBILE" }],
               },
             ],
           };
@@ -226,8 +228,8 @@ test("redeem helper reads Cognism result arrays and surfaces response errors", a
 
   assert.equal(payload.redeemed.length, 1);
   assert.equal(payload.redeemed[0].manualEmail, "result@example.com");
-  assert.equal(payload.redeemed[0].manualMobile, "");
-  assert.equal(payload.redeemed[0].manualDirectDial, "+1 508-434-4950");
+  assert.equal(payload.redeemed[0].manualMobile, "+1 508-434-4950");
+  assert.equal(payload.redeemed[0].manualDirectDial, "");
 
   await assert.rejects(
     () => redeemCognismContacts(
@@ -251,6 +253,75 @@ test("redeem helper reads Cognism result arrays and surfaces response errors", a
     ),
     /Invalid redeemId/,
   );
+});
+
+test("redeem helper keeps mobilePhoneNumbers out of direct dial when Cognism labels them direct dial", async () => {
+  const payload = await redeemCognismContacts(
+    { redeemIds: ["redeem-1"] },
+    {
+      apiKey: "test-key",
+      fetcher: async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            results: [
+              {
+                redeemId: "redeem-1",
+                email: { address: "result@example.com" },
+                mobilePhoneNumbers: [
+                  { number: "+18475081752", label: "DIRECT_DIAL", numberType: "MOBILE", dnc: false },
+                  { number: "DNC", label: "DIRECT_DIAL", numberType: "MOBILE", dnc: true },
+                ],
+                directPhoneNumbers: [
+                  { number: "+12122604201", label: "DIRECT_DIAL", numberType: "FIXED_LINE_OR_MOBILE", dnc: false },
+                ],
+              },
+            ],
+          };
+        },
+      }),
+    },
+  );
+
+  assert.equal(payload.redeemed[0].manualMobile, "+18475081752");
+  assert.equal(payload.redeemed[0].manualDirectDial, "+12122604201");
+});
+
+test("redeem helper does not preserve a stale direct dial when Cognism returns the same number as mobile", async () => {
+  const payload = await redeemCognismContacts(
+    {
+      leads: [
+        {
+          rowId: "row-1",
+          redeemId: "redeem-1",
+          manualDirectDial: "+18475081752",
+        },
+      ],
+    },
+    {
+      apiKey: "test-key",
+      fetcher: async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            results: [
+              {
+                redeemId: "redeem-1",
+                mobilePhoneNumbers: [
+                  { number: "+18475081752", label: "DIRECT_DIAL", numberType: "MOBILE", dnc: false },
+                ],
+              },
+            ],
+          };
+        },
+      }),
+    },
+  );
+
+  assert.equal(payload.redeemed[0].manualMobile, "+18475081752");
+  assert.equal(payload.redeemed[0].manualDirectDial, "");
 });
 
 test("redeem helper limits each request to twenty contacts", async () => {
@@ -329,6 +400,50 @@ test("preview route helper filters contacts by required mobile", async () => {
   assert.equal(payload.requireMobileAvailable, true);
   assert.equal(payload.results.length, 1);
   assert.equal(payload.results[0].contactName, "Has Mobile");
+});
+
+test("preview route helper filters contacts by required direct dial", async () => {
+  const payload = await createCognismPreview(
+    {
+      companies: ["Santander"],
+      targetTitles: ["Head of User Experience"],
+      maxPerCompany: 10,
+      requireDirectDialAvailable: true,
+    },
+    {
+      apiKey: "test-key",
+      fetcher: async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            results: [
+              {
+                id: "direct",
+                fullName: "Has Direct",
+                jobTitle: "Head of User Experience",
+                hasDirectPhoneNumbers: true,
+                account: { name: "Santander" },
+              },
+              {
+                id: "mobile-only",
+                fullName: "Mobile Only",
+                jobTitle: "Head of User Experience",
+                hasMobilePhoneNumbers: true,
+                hasDirectPhoneNumbers: false,
+                account: { name: "Santander" },
+              },
+            ],
+          };
+        },
+      }),
+      searchUrl: "https://app.cognism.com/api/search/contact/search?lastReturnedKey=&indexSize=20",
+    },
+  );
+
+  assert.equal(payload.requireDirectDialAvailable, true);
+  assert.equal(payload.results.length, 1);
+  assert.equal(payload.results[0].contactName, "Has Direct");
 });
 
 test("preview route helper only keeps exact company name matches", async () => {

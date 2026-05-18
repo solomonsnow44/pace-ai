@@ -381,6 +381,7 @@ const baseIntegrations = [
   { name: "HubSpot", icon: Database, status: "Connected", note: "Lead Finder contacts can be exported to HubSpot contacts. Company association depends on HubSpot app scopes.", action: "Open Lead Finder", view: "cognism" },
 ];
 const connectedIntegrationStatuses = new Set(["Available", "Connected", "Partial"]);
+const SHOW_INTEGRATION_KEY_CONTROLS = false;
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -4767,7 +4768,7 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, onUpdateIntegration, int
                   </button>
                 </div>
               ) : null}
-              {credentialForm ? (
+              {SHOW_INTEGRATION_KEY_CONTROLS && credentialForm ? (
                 <div className="integration-setting">
                   <div>
                     <span>API key</span>

@@ -17,6 +17,18 @@ const integrationSecretFields = {
   hubspot: ['privateAppToken'],
 };
 
+function getSupabaseUrl() {
+  return process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+}
+
+function getSupabaseAnonKey() {
+  return process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+}
+
+function getSupabaseServiceKey() {
+  return process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+}
+
 export async function readJsonBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -33,8 +45,11 @@ async function getAuthenticatedCrmUser(req) {
     throw error;
   }
 
-  if (!supabaseServer && process.env.VITE_SUPABASE_URL && process.env.VITE_SUPABASE_ANON_KEY) {
-    supabaseServer = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY);
+  const supabaseUrl = getSupabaseUrl();
+  const supabaseAnonKey = getSupabaseAnonKey();
+
+  if (!supabaseServer && supabaseUrl && supabaseAnonKey) {
+    supabaseServer = createClient(supabaseUrl, supabaseAnonKey);
   }
 
   if (!supabaseServer) {
@@ -57,15 +72,16 @@ async function getAuthenticatedCrmUser(req) {
 }
 
 function getServiceClient() {
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
-  if (!process.env.VITE_SUPABASE_URL || !serviceRoleKey) {
+  const supabaseUrl = getSupabaseUrl();
+  const serviceRoleKey = getSupabaseServiceKey();
+  if (!supabaseUrl || !serviceRoleKey) {
     const error = new Error('Supabase service credentials are not configured on the server');
     error.statusCode = 500;
     throw error;
   }
 
   if (!supabaseService) {
-    supabaseService = createClient(process.env.VITE_SUPABASE_URL, serviceRoleKey);
+    supabaseService = createClient(supabaseUrl, serviceRoleKey);
   }
 
   return supabaseService;
@@ -299,6 +315,8 @@ export async function handleApiRequest(req, res) {
       env: configuredEnv([
         'VITE_SUPABASE_URL',
         'VITE_SUPABASE_ANON_KEY',
+        'SUPABASE_URL',
+        'SUPABASE_ANON_KEY',
         'SUPABASE_SERVICE_ROLE_KEY',
         'SUPABASE_SERVICE_KEY',
         'OPENAI_API_KEY',

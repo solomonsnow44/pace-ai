@@ -669,10 +669,13 @@ function mapAuthUserToWorkspaceUser(user) {
 }
 
 function mergeWorkspaceUsers(users, fallbackUser) {
-  const merged = fallbackUser ? [fallbackUser] : [];
+  const merged = [];
   for (const user of users || []) {
     if (!user?.id || merged.some(item => item.id === user.id)) continue;
     merged.push(user);
+  }
+  if (fallbackUser?.id && !merged.some(item => item.id === fallbackUser.id)) {
+    merged.push(fallbackUser);
   }
   return merged;
 }
@@ -6108,6 +6111,26 @@ function SettingsPage({
   const adminSettings = normalizeAdminSettings(adminSettingsState?.settings);
   const currentRole = adminSettingsState?.role || "member";
   const currentUserIsAdmin = Boolean(adminSettingsState?.isAdmin);
+  const adminAccessMembers = visibleTeamMembers.map(member => {
+    const roleKey = member.roleKey || String(member.role || "member").toLowerCase().replaceAll(" ", "_");
+    const isProtectedRole = ["platform_admin", "org_owner"].includes(roleKey);
+    const isSelf = member.id === user?.id;
+    const isMemberAdmin = ADMIN_ROLES.has(roleKey);
+    const canChangeRole = currentUserIsAdmin && member.id && !isProtectedRole && !isSelf;
+    const busy = roleUpdateStatus.userId === member.id && roleUpdateStatus.state === "saving";
+    return {
+      member,
+      roleKey,
+      isProtectedRole,
+      isSelf,
+      isMemberAdmin,
+      canChangeRole,
+      busy,
+      actionLabel: isProtectedRole ? "Protected" : isSelf ? "Your access" : isMemberAdmin ? "Remove admin" : "Make admin",
+    };
+  });
+  const adminAccessCount = adminAccessMembers.filter(({ isMemberAdmin }) => isMemberAdmin).length;
+  const standardMemberCount = adminAccessMembers.length - adminAccessCount;
 
   async function submitProfile(event) {
     event.preventDefault();
@@ -6291,43 +6314,52 @@ function SettingsPage({
           <div className="panel-header">
             <div>
               <span className="eyebrow">Access Control</span>
-              <h2>Admin access</h2>
+              <h2>Member permissions</h2>
             </div>
             <StatusBadge>{visibleTeamMembers.length} member{visibleTeamMembers.length === 1 ? "" : "s"}</StatusBadge>
           </div>
-          <p className="admin-panel-intro">Promote trusted PaceOps members to admins or remove admin access. Admins can use redeem mode when it is enabled and can use enabled admin controls such as contact deletion.</p>
+          <div className="admin-access-summary">
+            <div>
+              <ShieldCheck size={18} />
+              <span>Admins</span>
+              <strong>{adminAccessCount}</strong>
+            </div>
+            <div>
+              <Users size={18} />
+              <span>Members</span>
+              <strong>{standardMemberCount}</strong>
+            </div>
+          </div>
+          <p className="admin-panel-intro">Manage who can use admin controls. Account membership and campaign assignment stay separate: adding someone to an account does not automatically put them in every campaign.</p>
           {currentUserIsAdmin ? (
             <>
-              <div className="admin-access-table" role="table" aria-label="Workspace admin access">
-                <div className="admin-access-head" role="row">
-                  <span>Member</span>
-                  <span>Current access</span>
-                  <span>Action</span>
-                </div>
-                {visibleTeamMembers.map(member => {
-                  const roleKey = member.roleKey || String(member.role || "member").toLowerCase().replaceAll(" ", "_");
-                  const isProtectedRole = ["platform_admin", "org_owner"].includes(roleKey);
-                  const isSelf = member.id === user?.id;
-                  const isMemberAdmin = roleKey === "org_admin";
-                  const canChangeRole = currentUserIsAdmin && member.id && !isProtectedRole && !isSelf;
-                  const busy = roleUpdateStatus.userId === member.id && roleUpdateStatus.state === "saving";
-                  const actionLabel = isProtectedRole ? "Protected" : isSelf ? "You" : isMemberAdmin ? "Remove admin" : "Make admin";
+              <div className="admin-access-grid" aria-label="Workspace admin access">
+                {adminAccessMembers.map(({ member, roleKey, isProtectedRole, isSelf, isMemberAdmin, canChangeRole, busy, actionLabel }) => {
                   return (
-                    <div key={member.id || member.email || member.name} className="admin-access-row" role="row">
+                    <article key={member.id || member.email || member.name} className={`admin-access-card ${isMemberAdmin ? "admin" : ""} ${isSelf ? "self" : ""}`}>
                       <div className="admin-access-person">
-                        <strong>{member.name}</strong>
-                        <small>{member.email || "No email"}</small>
+                        <span>{member.initials || accountInitial(member.name || member.email || "Member")}</span>
+                        <div>
+                          <strong>{member.name}</strong>
+                          <small>{member.email || "No email"}</small>
+                        </div>
                       </div>
-                      <StatusBadge tone={isMemberAdmin || isProtectedRole ? "warning" : "neutral"}>{formatRole(roleKey)}</StatusBadge>
-                      <button
-                        className="secondary-button"
-                        type="button"
-                        onClick={() => updateMemberAdminRole(member, isMemberAdmin ? "member" : "org_admin")}
-                        disabled={!canChangeRole || busy}
-                      >
-                        {busy ? "Saving" : actionLabel}
-                      </button>
-                    </div>
+                      <div className="admin-access-card-meta">
+                        <StatusBadge tone={isMemberAdmin || isProtectedRole ? "warning" : "neutral"}>{formatRole(roleKey)}</StatusBadge>
+                        {isSelf ? <StatusBadge tone="success">You</StatusBadge> : null}
+                      </div>
+                      <div className="admin-access-card-actions">
+                        <small>{isMemberAdmin ? "Can use enabled admin controls." : "Standard workspace member."}</small>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => updateMemberAdminRole(member, isMemberAdmin ? "member" : "org_admin")}
+                          disabled={!canChangeRole || busy}
+                        >
+                          {busy ? "Saving" : actionLabel}
+                        </button>
+                      </div>
+                    </article>
                   );
                 })}
               </div>

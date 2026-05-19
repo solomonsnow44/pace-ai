@@ -1,4 +1,4 @@
--- PaceOps is one internal company workspace, not one organization per user.
+-- PaceOps users always belong to one company organization.
 -- Account and campaign participation remain separate assignment layers in the app.
 create or replace function public.bootstrap_current_user(user_email text, user_display_name text default null)
 returns uuid
@@ -124,5 +124,53 @@ begin
     updated_at = now();
 
   return company_organization_id;
+end;
+$$;
+
+do $$
+declare
+  company_organization_id uuid;
+begin
+  select o.id
+  into company_organization_id
+  from public.organizations o
+  where o.slug = 'paceops'
+     or o.metadata ->> 'company_workspace' = 'paceops'
+  order by
+    case when o.metadata ->> 'company_workspace' = 'paceops' then 0 else 1 end,
+    o.created_at asc
+  limit 1;
+
+  if company_organization_id is null then
+    select o.id
+    into company_organization_id
+    from public.organizations o
+    where exists (
+      select 1
+      from public.users u
+      where u.organization_id = o.id
+        and lower(u.email) like '%@paceops.com'
+    )
+    order by
+      case when o.metadata ? 'crm_data' then 0 else 1 end,
+      o.created_at asc
+    limit 1;
+  end if;
+
+  if company_organization_id is not null then
+    update public.organizations
+    set
+      name = coalesce(nullif(name, ''), 'PaceOps'),
+      metadata = metadata || jsonb_build_object('company_workspace', 'paceops'),
+      updated_at = now()
+    where id = company_organization_id;
+
+    update public.users
+    set
+      organization_id = company_organization_id,
+      status = 'active',
+      updated_at = now()
+    where lower(email) like '%@paceops.com';
+  end if;
 end;
 $$;

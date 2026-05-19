@@ -508,6 +508,9 @@ export async function redeemCognismContacts(input, options = {}) {
     const detail = await responseErrorDetail(response);
     const error = new Error(detail ? `Lead redeem request failed: ${detail}` : `Lead redeem request failed with status ${response.status}`);
     error.statusCode = response.status;
+    error.provider = "cognism";
+    error.providerStatus = response.status;
+    error.providerUrl = redeemUrl;
     throw error;
   }
 

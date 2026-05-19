@@ -4733,7 +4733,12 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         }),
       });
       const payload = await readJsonResponse(response);
-      if (!response.ok) throw new Error(payload.error || "Redeem request failed");
+      if (!response.ok) {
+        const providerHint = payload.provider === "cognism" && payload.providerStatus
+          ? ` Cognism returned ${payload.providerStatus}.`
+          : "";
+        throw new Error(`${payload.error || "Redeem request failed"}${providerHint}`);
+      }
 
       const rawCognismRecords = payload.diagnostics?.rawRecords || [];
       const redeemedRows = correctRedeemedRowsFromRawRecords(Array.isArray(payload.redeemed) ? payload.redeemed : [], rawCognismRecords);

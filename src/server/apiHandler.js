@@ -623,16 +623,24 @@ async function handlePostRoute(req, res, handler, fallbackMessage) {
     console.error(fallbackMessage, {
       message: error?.message || String(error),
       statusCode: error?.statusCode,
+      provider: error?.provider,
+      providerStatus: error?.providerStatus,
+      providerUrl: error?.providerUrl,
       path: req.url,
     });
-    sendJson(res, error.statusCode || 500, { error: error.message || fallbackMessage });
+    sendJson(res, error.statusCode || 500, {
+      error: error.message || fallbackMessage,
+      provider: error?.provider,
+      providerStatus: error?.providerStatus,
+    });
   }
 
   return true;
 }
 
 export async function handleApiRequest(req, res) {
-  const pathname = new URL(req.url, 'http://localhost').pathname;
+  const rawPathname = new URL(req.url, 'http://localhost').pathname;
+  const pathname = rawPathname.length > 1 ? rawPathname.replace(/\/+$/, '') : rawPathname;
 
   if (pathname === '/api/health') {
     sendJson(res, 200, {

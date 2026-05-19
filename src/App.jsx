@@ -59,7 +59,8 @@ const DEFAULT_ADMIN_SETTINGS = {
   cognism_preview_enabled: true,
   contact_deletion_enabled: false,
 };
-const ADMIN_ROLES = new Set(["platform_admin", "org_owner", "org_admin"]);
+const ORG_ADMIN_ROLES = new Set(["platform_admin", "org_owner", "org_admin"]);
+const ADMIN_ROLES = new Set(["platform_admin", "org_owner", "org_admin", "admin"]);
 
 const demoClients = [
   {
@@ -690,7 +691,17 @@ function normalizeAdminSettings(settings = {}) {
 }
 
 function formatRole(role) {
-  return titleCase(String(role || "member").replaceAll("_", " "));
+  const normalizedRole = String(role || "member").toLowerCase().replaceAll(" ", "_");
+  if (normalizedRole === "org_admin") return "Org Admin";
+  if (normalizedRole === "org_owner") return "Owner";
+  return titleCase(normalizedRole.replaceAll("_", " "));
+}
+
+function roleAccessState(role) {
+  return {
+    isAdmin: ADMIN_ROLES.has(role),
+    isOrgAdmin: ORG_ADMIN_ROLES.has(role),
+  };
 }
 
 function mapLeadListRecord(record) {
@@ -6105,32 +6116,65 @@ function SettingsPage({
   const [adminSettingsError, setAdminSettingsError] = useState("");
   const [roleUpdateStatus, setRoleUpdateStatus] = useState({ userId: "", state: "idle" });
   const [roleUpdateError, setRoleUpdateError] = useState("");
+  const [roleOverrides, setRoleOverrides] = useState({});
+  const [adminAccessFilter, setAdminAccessFilter] = useState("all");
   const [cognismRedeemCode, setCognismRedeemCode] = useState("");
   const [cognismRedeemError, setCognismRedeemError] = useState("");
   const [cognismRedeemModalOpen, setCognismRedeemModalOpen] = useState(false);
   const adminSettings = normalizeAdminSettings(adminSettingsState?.settings);
   const currentRole = adminSettingsState?.role || "member";
   const currentUserIsAdmin = Boolean(adminSettingsState?.isAdmin);
-  const adminAccessMembers = visibleTeamMembers.map(member => {
+  const currentUserIsOrgAdmin = Boolean(adminSettingsState?.isOrgAdmin);
+  const teamMembersWithEffectiveRoles = visibleTeamMembers.map(member => {
+    const roleKey = roleOverrides[member.id] || member.roleKey || String(member.role || "member").toLowerCase().replaceAll(" ", "_");
+    return {
+      ...member,
+      role: formatRole(roleKey),
+      roleKey,
+    };
+  });
+  const sortedVisibleTeamMembers = [...teamMembersWithEffectiveRoles].sort((first, second) => {
+    const firstRole = first.roleKey || String(first.role || "member").toLowerCase().replaceAll(" ", "_");
+    const secondRole = second.roleKey || String(second.role || "member").toLowerCase().replaceAll(" ", "_");
+    const roleRank = role => ORG_ADMIN_ROLES.has(role) ? 0 : role === "admin" ? 1 : 2;
+    const firstRank = roleRank(firstRole);
+    const secondRank = roleRank(secondRole);
+    if (firstRank !== secondRank) return firstRank - secondRank;
+    return String(first.name || first.email || "").localeCompare(String(second.name || second.email || ""), undefined, { sensitivity: "base" });
+  });
+  const adminAccessMembers = sortedVisibleTeamMembers.map(member => {
     const roleKey = member.roleKey || String(member.role || "member").toLowerCase().replaceAll(" ", "_");
     const isProtectedRole = ["platform_admin", "org_owner"].includes(roleKey);
     const isSelf = member.id === user?.id;
-    const isMemberAdmin = ADMIN_ROLES.has(roleKey);
-    const canChangeRole = currentUserIsAdmin && member.id && !isProtectedRole && !isSelf;
+    const isOrgAdmin = ORG_ADMIN_ROLES.has(roleKey);
+    const isMemberAdmin = roleKey === "admin";
+    const canChangeRole = currentUserIsOrgAdmin
+      ? Boolean(member.id && !isProtectedRole && !isSelf)
+      : Boolean(currentUserIsAdmin && member.id && !isProtectedRole && !isSelf && !isOrgAdmin);
+    const canSelectOrgAdmin = currentUserIsOrgAdmin;
     const busy = roleUpdateStatus.userId === member.id && roleUpdateStatus.state === "saving";
     return {
       member,
       roleKey,
       isProtectedRole,
       isSelf,
+      isOrgAdmin,
       isMemberAdmin,
       canChangeRole,
+      canSelectOrgAdmin,
       busy,
-      actionLabel: isProtectedRole ? "Protected" : isSelf ? "Your access" : isMemberAdmin ? "Remove admin" : "Make admin",
+      actionLabel: isProtectedRole ? "Protected" : isSelf ? "Your access" : "Update access",
     };
   });
+  const orgAdminAccessCount = adminAccessMembers.filter(({ isOrgAdmin }) => isOrgAdmin).length;
   const adminAccessCount = adminAccessMembers.filter(({ isMemberAdmin }) => isMemberAdmin).length;
-  const standardMemberCount = adminAccessMembers.length - adminAccessCount;
+  const standardMemberCount = adminAccessMembers.length - orgAdminAccessCount - adminAccessCount;
+  const filteredAdminAccessMembers = adminAccessMembers.filter(({ isOrgAdmin, isMemberAdmin }) => {
+    if (adminAccessFilter === "org_admin") return isOrgAdmin;
+    if (adminAccessFilter === "admin") return isMemberAdmin;
+    if (adminAccessFilter === "member") return !isOrgAdmin && !isMemberAdmin;
+    return true;
+  });
 
   async function submitProfile(event) {
     event.preventDefault();
@@ -6161,12 +6205,21 @@ function SettingsPage({
   }
 
   async function updateMemberAdminRole(member, role) {
+    const previousRole = member.roleKey || String(member.role || "member").toLowerCase().replaceAll(" ", "_");
     setRoleUpdateStatus({ userId: member.id, state: "saving" });
     setRoleUpdateError("");
     try {
       await onUpdateWorkspaceUserRole?.(member.id, role);
+      setRoleOverrides(current => ({
+        ...current,
+        [member.id]: role,
+      }));
       setRoleUpdateStatus({ userId: member.id, state: "saved" });
     } catch (error) {
+      setRoleOverrides(current => ({
+        ...current,
+        [member.id]: previousRole,
+      }));
       setRoleUpdateStatus({ userId: "", state: "idle" });
       setRoleUpdateError(error?.message || "Could not update member admin access.");
     }
@@ -6232,7 +6285,7 @@ function SettingsPage({
         <section className="panel">
           <div className="panel-header"><h2>Team members</h2></div>
           {visibleTeamMembers.length ? <div className="team-list">
-            {visibleTeamMembers.map(member => (
+            {sortedVisibleTeamMembers.map(member => (
               <div key={member.id || member.name} className="team-row">
                 <span>{member.initials}</span>
                 <div>
@@ -6275,7 +6328,7 @@ function SettingsPage({
             </div>
             <StatusBadge>{formatRole(currentRole)}</StatusBadge>
           </div>
-          {currentUserIsAdmin ? (
+          {currentUserIsOrgAdmin ? (
             <div className="settings-list admin-settings-list">
               <AdminSettingToggle
                 title="Cognism preview mode"
@@ -6321,6 +6374,11 @@ function SettingsPage({
           <div className="admin-access-summary">
             <div>
               <ShieldCheck size={18} />
+              <span>Org Admins</span>
+              <strong>{orgAdminAccessCount}</strong>
+            </div>
+            <div>
+              <ShieldCheck size={18} />
               <span>Admins</span>
               <strong>{adminAccessCount}</strong>
             </div>
@@ -6331,46 +6389,65 @@ function SettingsPage({
             </div>
           </div>
           <p className="admin-panel-intro">Manage who can use admin controls. Account membership and campaign assignment stay separate: adding someone to an account does not automatically put them in every campaign.</p>
-          {currentUserIsAdmin ? (
-            <>
-              <div className="admin-access-grid" aria-label="Workspace admin access">
-                {adminAccessMembers.map(({ member, roleKey, isProtectedRole, isSelf, isMemberAdmin, canChangeRole, busy, actionLabel }) => {
-                  return (
-                    <article key={member.id || member.email || member.name} className={`admin-access-card ${isMemberAdmin ? "admin" : ""} ${isSelf ? "self" : ""}`}>
-                      <div className="admin-access-person">
-                        <span>{member.initials || accountInitial(member.name || member.email || "Member")}</span>
-                        <div>
-                          <strong>{member.name}</strong>
-                          <small>{member.email || "No email"}</small>
-                        </div>
-                      </div>
-                      <div className="admin-access-card-meta">
-                        <StatusBadge tone={isMemberAdmin || isProtectedRole ? "warning" : "neutral"}>{formatRole(roleKey)}</StatusBadge>
-                        {isSelf ? <StatusBadge tone="success">You</StatusBadge> : null}
-                      </div>
-                      <div className="admin-access-card-actions">
-                        <small>{isMemberAdmin ? "Can use enabled admin controls." : "Standard workspace member."}</small>
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          onClick={() => updateMemberAdminRole(member, isMemberAdmin ? "member" : "org_admin")}
+          <div className="admin-access-tabs" role="tablist" aria-label="Filter member permissions">
+            {[
+              ["all", "All"],
+              ["org_admin", "Org Admins"],
+              ["admin", "Admins"],
+              ["member", "Members"],
+            ].map(([filterKey, label]) => (
+              <button
+                key={filterKey}
+                className={adminAccessFilter === filterKey ? "active" : ""}
+                type="button"
+                role="tab"
+                aria-selected={adminAccessFilter === filterKey}
+                onClick={() => setAdminAccessFilter(filterKey)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="admin-access-grid" aria-label="Workspace admin access">
+            {filteredAdminAccessMembers.map(({ member, roleKey, isProtectedRole, isSelf, isOrgAdmin, isMemberAdmin, canChangeRole, canSelectOrgAdmin, busy, actionLabel }) => {
+              return (
+                <article key={member.id || member.email || member.name} className={`admin-access-card ${isOrgAdmin || isMemberAdmin ? "admin" : ""}`}>
+                  <div className="admin-access-person">
+                    <span>{member.initials || accountInitial(member.name || member.email || "Member")}</span>
+                    <div>
+                      <strong>{member.name}</strong>
+                      <small>{member.email || "No email"}</small>
+                    </div>
+                  </div>
+                  <div className="admin-access-card-meta">
+                    <StatusBadge tone={isOrgAdmin || isMemberAdmin || isProtectedRole ? "warning" : "neutral"}>{formatRole(roleKey)}</StatusBadge>
+                    {isSelf ? <StatusBadge tone="success">You</StatusBadge> : null}
+                  </div>
+                  <div className="admin-access-card-actions">
+                    <small>{isOrgAdmin ? "Can manage admin settings and member access." : isMemberAdmin ? "Can use redeem mode and delete contacts when enabled." : "Can edit workspace data, but cannot redeem or delete contacts."}</small>
+                    {currentUserIsAdmin ? (
+                      <label className="admin-access-select">
+                        <span>{busy ? "Saving access" : actionLabel}</span>
+                        <select
+                          value={roleKey}
+                          onChange={event => updateMemberAdminRole(member, event.target.value)}
                           disabled={!canChangeRole || busy}
                         >
-                          {busy ? "Saving" : actionLabel}
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-              <div className="admin-member-feedback">
-                {roleUpdateStatus.state === "saved" ? <div className="form-success">Member admin access updated.</div> : null}
-                {roleUpdateError ? <div className="form-error">{roleUpdateError}</div> : null}
-              </div>
-            </>
-          ) : (
-            <p className="modal-helper-text">Only organization admins can change member admin access.</p>
-          )}
+                          <option value="member">Member</option>
+                          <option value="admin">Admin</option>
+                          {canSelectOrgAdmin || roleKey === "org_admin" ? <option value="org_admin">Org Admin</option> : null}
+                        </select>
+                      </label>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          <div className="admin-member-feedback">
+            {roleUpdateStatus.state === "saved" ? <div className="form-success">Member admin access updated.</div> : null}
+            {roleUpdateError ? <div className="form-error">{roleUpdateError}</div> : null}
+          </div>
         </section>
       </div>
       {cognismRedeemModalOpen ? (
@@ -7499,6 +7576,7 @@ export default function App() {
     settings: DEFAULT_ADMIN_SETTINGS,
     role: "member",
     isAdmin: false,
+    isOrgAdmin: false,
   });
   const [activeView, setActiveView] = useState("dashboard");
   const [showHomePage, setShowHomePage] = useState(false);
@@ -7540,7 +7618,7 @@ export default function App() {
       setLeadContactDatabase([]);
       setPrivateContactNotes({});
       setIntegrationCredentials({ providers: {} });
-      setAdminSettingsState({ settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false });
+      setAdminSettingsState({ settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false, isOrgAdmin: false });
       setUser(null);
       setShowHomePage(false);
       setAuthReady(true);
@@ -7678,7 +7756,7 @@ export default function App() {
         }),
         loadAdminSettings(organizationId, nextUser.id).catch(error => {
           console.error("Could not load admin settings", error);
-          return { settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false };
+          return { settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false, isOrgAdmin: false };
         }),
       ]);
       const nextCrmData = {
@@ -7694,6 +7772,7 @@ export default function App() {
         settings: normalizeAdminSettings(nextAdminSettings.settings),
         role: nextAdminSettings.role || "member",
         isAdmin: Boolean(nextAdminSettings.isAdmin),
+        isOrgAdmin: Boolean(nextAdminSettings.isOrgAdmin),
       });
       loadIntegrationCredentialsStatus().catch(error => {
         console.error("Could not load integration credential status", error);
@@ -7727,7 +7806,7 @@ export default function App() {
       setLeadContactDatabase([]);
       setPrivateContactNotes({});
       setIntegrationCredentials({ providers: {} });
-      setAdminSettingsState({ settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false });
+      setAdminSettingsState({ settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false, isOrgAdmin: false });
       setDataUserId(nextUser.id);
       setUser(nextUser);
     } finally {
@@ -7778,7 +7857,7 @@ export default function App() {
         return {
           settings: normalizeAdminSettings(rpcSettings),
           role: userRecord?.role || "member",
-          isAdmin: ADMIN_ROLES.has(userRecord?.role),
+          ...roleAccessState(userRecord?.role),
         };
       }
 
@@ -7792,7 +7871,7 @@ export default function App() {
       return {
         settings: normalizeAdminSettings(organization?.metadata?.admin_settings),
         role: userRecord?.role || "member",
-        isAdmin: ADMIN_ROLES.has(userRecord?.role),
+        ...roleAccessState(userRecord?.role),
       };
     }
 
@@ -7816,7 +7895,7 @@ export default function App() {
         const nextState = {
           settings: normalizeAdminSettings(data),
           role: adminSettingsState.role,
-          isAdmin: ADMIN_ROLES.has(adminSettingsState.role),
+          ...roleAccessState(adminSettingsState.role),
         };
         setAdminSettingsState(nextState);
         return nextState;
@@ -7834,18 +7913,49 @@ export default function App() {
       settings: normalizeAdminSettings(payload.settings),
       role: payload.role || adminSettingsState.role,
       isAdmin: Boolean(payload.isAdmin),
+      isOrgAdmin: Boolean(payload.isOrgAdmin),
     });
     return payload;
   }
 
   async function handleUpdateWorkspaceUserRole(userId, role) {
-    const response = await fetch("/api/workspace-users/role", {
-      method: "POST",
-      headers: await buildApiHeaders(),
-      body: JSON.stringify({ userId, role }),
-    });
-    const payload = await readJsonResponse(response);
-    if (!response.ok) throw new Error(payload.error || "Could not update member admin access.");
+    let payload;
+    try {
+      const response = await fetch("/api/workspace-users/role", {
+        method: "POST",
+        headers: await buildApiHeaders(),
+        body: JSON.stringify({ userId, role }),
+      });
+      payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || "Could not update member admin access.");
+    } catch (apiError) {
+      if (!supabase || !dataOrgId) throw apiError;
+      if (userId === user?.id) throw new Error("You cannot change your own admin access.");
+      if (!["member", "admin", "org_admin"].includes(role)) throw new Error("Workspace role must be member, admin, or org admin.");
+      if (!adminSettingsState.isOrgAdmin && role === "org_admin") throw new Error("Only org admins can assign org admin access.");
+
+      const { data: updatedUser, error } = await supabase
+        .from("users")
+        .update({ role, updated_at: new Date().toISOString() })
+        .eq("id", userId)
+        .eq("organization_id", dataOrgId)
+        .select("id,email,display_name,full_name,role,status")
+        .single();
+
+      if (error) throw new Error(error.message || "Could not update member admin access.");
+      payload = {
+        user: {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          displayName: updatedUser.display_name,
+          fullName: updatedUser.full_name,
+          role: updatedUser.role || "member",
+          status: updatedUser.status || "active",
+        },
+        role: adminSettingsState.role,
+        ...roleAccessState(adminSettingsState.role),
+      };
+    }
 
     const updatedUser = payload.user || {};
     setCrmData(current => ({
@@ -7869,7 +7979,7 @@ export default function App() {
       setAdminSettingsState(current => ({
         ...current,
         role: updatedUser.role || "member",
-        isAdmin: ADMIN_ROLES.has(updatedUser.role),
+        ...roleAccessState(updatedUser.role),
       }));
     }
 

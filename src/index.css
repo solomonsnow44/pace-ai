@@ -1416,9 +1416,36 @@ textarea::placeholder {
   line-height: 1.5;
 }
 
+.admin-access-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 4px 0 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-access-tabs button {
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 7px 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.admin-access-tabs button.active {
+  border-color: rgba(12, 105, 200, 0.4);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .admin-access-summary {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -1473,10 +1500,6 @@ textarea::placeholder {
 .admin-access-card.admin {
   border-color: rgba(12, 105, 200, 0.35);
   background: var(--accent-soft);
-}
-
-.admin-access-card.self {
-  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .admin-access-person {
@@ -1541,6 +1564,34 @@ textarea::placeholder {
 
 .admin-access-card-actions .secondary-button {
   min-width: 132px;
+}
+
+.admin-access-select {
+  display: grid;
+  gap: 5px;
+}
+
+.admin-access-select span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.admin-access-select select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  padding: 8px 10px;
+  font-weight: 750;
+}
+
+.admin-access-select select:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .admin-member-feedback {

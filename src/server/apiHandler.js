@@ -115,6 +115,10 @@ async function getAuthenticatedCrmUserWithOrganization(req) {
 }
 
 function isAdminRole(role) {
+  return ['platform_admin', 'org_owner', 'org_admin', 'admin'].includes(role);
+}
+
+function isOrgAdminRole(role) {
   return ['platform_admin', 'org_owner', 'org_admin'].includes(role);
 }
 
@@ -123,8 +127,15 @@ function isProtectedAdminRole(role) {
 }
 
 function assertOrgAdmin(user) {
-  if (isAdminRole(user?.role)) return;
+  if (isOrgAdminRole(user?.role)) return;
   const error = new Error('Admin controls are available to organization admins only.');
+  error.statusCode = 403;
+  throw error;
+}
+
+function assertAdmin(user) {
+  if (isAdminRole(user?.role)) return;
+  const error = new Error('Admin access is required.');
   error.statusCode = 403;
   throw error;
 }
@@ -168,7 +179,7 @@ async function writeAuditLog(serviceClient, user, action, objectType, objectId, 
 
 async function getAdminSettings(req) {
   if (canUseLocalCognismPreviewFallback() && !hasSupabaseServiceCredentials()) {
-    return { settings: DEFAULT_ADMIN_SETTINGS, role: 'org_admin', isAdmin: true };
+    return { settings: DEFAULT_ADMIN_SETTINGS, role: 'org_admin', isAdmin: true, isOrgAdmin: true };
   }
 
   const user = await getAuthenticatedCrmUserWithOrganization(req);
@@ -179,6 +190,7 @@ async function getAdminSettings(req) {
     settings,
     role: user.role,
     isAdmin: isAdminRole(user.role),
+    isOrgAdmin: isOrgAdminRole(user.role),
   };
 }
 
@@ -213,12 +225,13 @@ async function updateAdminSettings(req, input = {}) {
     settings: nextSettings,
     role: user.role,
     isAdmin: true,
+    isOrgAdmin: true,
   };
 }
 
 async function updateWorkspaceUserRole(req, input = {}) {
   const user = await getAuthenticatedCrmUserWithOrganization(req);
-  assertOrgAdmin(user);
+  assertAdmin(user);
 
   const targetUserId = String(input.userId || '').trim();
   const nextRole = String(input.role || '').trim();
@@ -227,14 +240,19 @@ async function updateWorkspaceUserRole(req, input = {}) {
     error.statusCode = 400;
     throw error;
   }
-  if (!['member', 'org_admin'].includes(nextRole)) {
-    const error = new Error('Workspace role must be member or org_admin.');
+  if (!['member', 'admin', 'org_admin'].includes(nextRole)) {
+    const error = new Error('Workspace role must be member, admin, or org_admin.');
     error.statusCode = 400;
     throw error;
   }
   if (targetUserId === user.id) {
     const error = new Error('You cannot change your own admin access.');
     error.statusCode = 400;
+    throw error;
+  }
+  if (!isOrgAdminRole(user.role) && nextRole === 'org_admin') {
+    const error = new Error('Only org admins can assign org admin access.');
+    error.statusCode = 403;
     throw error;
   }
 
@@ -253,6 +271,11 @@ async function updateWorkspaceUserRole(req, input = {}) {
   }
   if (isProtectedAdminRole(targetUser.role)) {
     const error = new Error('Workspace owners and platform admins cannot be changed here.');
+    error.statusCode = 403;
+    throw error;
+  }
+  if (!isOrgAdminRole(user.role) && targetUser.role === 'org_admin') {
+    const error = new Error('Only org admins can change org admin access.');
     error.statusCode = 403;
     throw error;
   }
@@ -289,7 +312,8 @@ async function updateWorkspaceUserRole(req, input = {}) {
       status: updatedUser.status || 'active',
     },
     role: user.role,
-    isAdmin: true,
+    isAdmin: isAdminRole(user.role),
+    isOrgAdmin: isOrgAdminRole(user.role),
   };
 }
 
@@ -350,7 +374,7 @@ async function archiveContact(req, input = {}) {
   }
 
   const user = await getAuthenticatedCrmUserWithOrganization(req);
-  assertOrgAdmin(user);
+  assertAdmin(user);
   const serviceClient = getServiceClient();
   const metadata = await loadOrganizationMetadata(serviceClient, user.organizationId);
   const settings = normalizeAdminSettings(metadata[ADMIN_SETTINGS_METADATA_KEY]);
@@ -721,7 +745,7 @@ export async function handleApiRequest(req, res) {
       await assertCognismPreviewEnabled(req);
       if (!(canUseLocalCognismPreviewFallback() && !hasSupabaseServiceCredentials())) {
         const user = await getAuthenticatedCrmUserWithOrganization(req);
-        assertOrgAdmin(user);
+        assertAdmin(user);
       }
       const payload = await redeemCognismContacts(body, {
         apiKey: await getCredentialValue(req, 'cognism', 'apiKey', 'COGNISM_API_KEY'),

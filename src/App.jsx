@@ -6388,7 +6388,7 @@ function SettingsPage({
               <strong>{standardMemberCount}</strong>
             </div>
           </div>
-          <p className="admin-panel-intro">Manage who can use admin controls. Account membership and campaign assignment stay separate: adding someone to an account does not automatically put them in every campaign.</p>
+          <p className="admin-panel-intro">Manage who can use admin controls. Account membership and campaign assignment stay separate, so adding someone to an account does not automatically put them in every campaign.</p>
           <div className="admin-access-tabs" role="tablist" aria-label="Filter member permissions">
             {[
               ["all", "All"],

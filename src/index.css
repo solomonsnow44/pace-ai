@@ -3109,6 +3109,10 @@ textarea::placeholder {
   margin-bottom: 0;
 }
 
+.confirmation-filename-field {
+  margin-bottom: 16px;
+}
+
 .redeem-choice-summary {
   display: grid;
   gap: 10px;

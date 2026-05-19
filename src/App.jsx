@@ -2979,8 +2979,32 @@ function downloadTextFile(filename, mimeType, contents) {
   URL.revokeObjectURL(url);
 }
 
-function exportCognismResults(results, format, assignedUsers = []) {
+function exportFileExtension(format) {
+  return format === "json" ? "json" : format === "xls" ? "xls" : "csv";
+}
+
+function sanitizeExportFilename(filename, fallbackBase, extension) {
+  const strippedExtensionPattern = /\.(csv|xls|xlsx|json)$/i;
+  const cleanedBase = String(filename || "")
+    .trim()
+    .replace(strippedExtensionPattern, "")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/^\.+/, "")
+    .trim();
+  const fallback = String(fallbackBase || "lead-finder-export").replace(strippedExtensionPattern, "");
+  return `${cleanedBase || fallback}.${extension}`;
+}
+
+function defaultLeadExportFilename(base, format) {
   const timestamp = new Date().toISOString().slice(0, 10);
+  return sanitizeExportFilename(`${base || "lead-finder-export"}-${timestamp}`, "lead-finder-export", exportFileExtension(format));
+}
+
+function exportCognismResults(results, format, assignedUsers = [], requestedFilename = "") {
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const extension = exportFileExtension(format);
+  const filename = sanitizeExportFilename(requestedFilename, `lead-finder-preview-${timestamp}`, extension);
   const exportColumns = cognismExportColumnsForFormat(format);
   const assignedUserText = assignedUsers.map(user => `${user.name} <${user.email}>`).join("; ");
   const exportResults = results.map(result => ({
@@ -2990,7 +3014,7 @@ function exportCognismResults(results, format, assignedUsers = []) {
 
   if (format === "json") {
     downloadTextFile(
-      `lead-finder-preview-${timestamp}.json`,
+      filename,
       "application/json;charset=utf-8",
       JSON.stringify({ mode: "preview_only", estimatedCreditsUsed: 0, assignedUsers, results: exportResults }, null, 2),
     );
@@ -3004,7 +3028,7 @@ function exportCognismResults(results, format, assignedUsers = []) {
     )).join("");
 
     downloadTextFile(
-      `lead-finder-preview-${timestamp}.xls`,
+      filename,
       "application/vnd.ms-excel;charset=utf-8",
       `<table><thead><tr>${headerCells}</tr></thead><tbody>${rows}</tbody></table>`,
     );
@@ -3014,7 +3038,7 @@ function exportCognismResults(results, format, assignedUsers = []) {
   const header = exportColumns.map(([, label]) => csvEscape(label)).join(",");
   const rows = exportResults.map(result => exportColumns.map(([key]) => csvEscape(result[key])).join(","));
   downloadTextFile(
-    `lead-finder-preview-${timestamp}.csv`,
+    filename,
     "text/csv;charset=utf-8",
     [header, ...rows].join("\n"),
   );
@@ -3540,8 +3564,10 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
     confirmListAction({
       title: "Export lead list",
       message: `Export ${exportableListLeads.length} ${selectedLeads.length ? "selected" : "visible"} lead${exportableListLeads.length === 1 ? "" : "s"} from "${selectedList?.name || "this list"}" as ${format.toUpperCase()}?`,
+      filenameLabel: "Export file name",
+      defaultFilename: defaultLeadExportFilename(selectedList?.name || "lead-list", format),
       confirmLabel: "Export",
-      onConfirm: () => exportCognismResults(exportableListLeads, format, assignedUsers),
+      onConfirm: filename => exportCognismResults(exportableListLeads, format, assignedUsers, filename),
     });
   }
 
@@ -4302,12 +4328,14 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
           eyebrow="Lead Lists"
           title={pendingConfirmation.title}
           message={pendingConfirmation.message}
+          filenameLabel={pendingConfirmation.filenameLabel}
+          defaultFilename={pendingConfirmation.defaultFilename}
           confirmLabel={pendingConfirmation.confirmLabel}
           onCancel={closeConfirmation}
-          onConfirm={() => {
+          onConfirm={filename => {
             const action = pendingConfirmation.onConfirm;
             closeConfirmation();
-            action?.();
+            action?.(filename);
           }}
         />
       ) : null}
@@ -4884,8 +4912,10 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     confirmLeadFinderAction({
       title: "Export selected leads",
       message: `Export ${selectedResults.length} selected lead${selectedResults.length === 1 ? "" : "s"} as ${format.toUpperCase()}?`,
+      filenameLabel: "Export file name",
+      defaultFilename: defaultLeadExportFilename("lead-finder-selected", format),
       confirmLabel: "Export",
-      onConfirm: () => exportCognismResults(selectedResults, format, selectedUsers),
+      onConfirm: filename => exportCognismResults(selectedResults, format, selectedUsers, filename),
     });
   }
 
@@ -5856,12 +5886,14 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           eyebrow="Lead Finder"
           title={pendingConfirmation.title}
           message={pendingConfirmation.message}
+          filenameLabel={pendingConfirmation.filenameLabel}
+          defaultFilename={pendingConfirmation.defaultFilename}
           confirmLabel={pendingConfirmation.confirmLabel}
           onCancel={closeConfirmation}
-          onConfirm={() => {
+          onConfirm={filename => {
             const action = pendingConfirmation.onConfirm;
             closeConfirmation();
-            action?.();
+            action?.(filename);
           }}
         />
       ) : null}
@@ -6470,7 +6502,13 @@ function EmptyState({ icon, title, text }) {
   );
 }
 
-function ConfirmationModal({ title, eyebrow = "Confirm", message, confirmLabel = "Confirm", onConfirm, onCancel }) {
+function ConfirmationModal({ title, eyebrow = "Confirm", message, filenameLabel = "", defaultFilename = "", confirmLabel = "Confirm", onConfirm, onCancel }) {
+  const [filenameDraft, setFilenameDraft] = useState(defaultFilename);
+
+  useEffect(() => {
+    setFilenameDraft(defaultFilename);
+  }, [defaultFilename]);
+
   return (
     <section className="modal-backdrop" role="presentation" onMouseDown={event => {
       if (event.target === event.currentTarget) onCancel?.();
@@ -6486,9 +6524,21 @@ function ConfirmationModal({ title, eyebrow = "Confirm", message, confirmLabel =
           </button>
         </div>
         <p className="modal-helper-text">{message}</p>
+        {filenameLabel ? (
+          <label className="form-field confirmation-filename-field">
+            <span>{filenameLabel}</span>
+            <input
+              type="text"
+              value={filenameDraft}
+              onChange={event => setFilenameDraft(event.target.value)}
+              placeholder={defaultFilename || "lead-finder-export.csv"}
+              autoFocus
+            />
+          </label>
+        ) : null}
         <div className="modal-actions">
           <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button>
-          <button className="primary-button" type="button" onClick={onConfirm}>{confirmLabel}</button>
+          <button className="primary-button" type="button" onClick={() => onConfirm?.(filenameDraft)}>{confirmLabel}</button>
         </div>
       </div>
     </section>

@@ -685,6 +685,10 @@ textarea::placeholder {
   grid-column: 1 / -1;
 }
 
+.content-grid.two .admin-members-panel {
+  grid-column: 1 / -1;
+}
+
 .content-grid.calls-layout {
   grid-template-columns: minmax(0, 1fr) 320px;
 }
@@ -1451,14 +1455,15 @@ textarea::placeholder {
 
 .admin-access-grid {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 10px;
 }
 
 .admin-access-card {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(180px, auto);
+  grid-template-columns: 1fr;
   gap: 12px;
-  align-items: center;
+  align-items: stretch;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -1516,14 +1521,14 @@ textarea::placeholder {
 
 .admin-access-card-meta {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 6px;
   flex-wrap: wrap;
 }
 
 .admin-access-card-actions {
   display: grid;
-  justify-items: end;
+  justify-items: stretch;
   gap: 8px;
 }
 
@@ -1531,7 +1536,7 @@ textarea::placeholder {
   color: var(--muted);
   font-size: 12px;
   font-weight: 650;
-  text-align: right;
+  text-align: left;
 }
 
 .admin-access-card-actions .secondary-button {

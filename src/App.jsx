@@ -1306,10 +1306,22 @@ async function readJsonResponse(response) {
   try {
     return JSON.parse(text);
   } catch {
-    const error = new Error(`Server returned ${response.status || "an"} invalid response`);
+    const isHtml = /^\s*</.test(text);
+    const error = new Error(isHtml
+      ? `API route returned ${response.status || "an"} HTML response. The deployment is not routing /api requests to the app server.`
+      : `Server returned ${response.status || "an"} invalid response`);
     error.statusCode = response.status;
     throw error;
   }
+}
+
+async function assertApiServerAvailable() {
+  const response = await fetch("/api/health", { headers: await buildApiHeaders() });
+  const payload = await readJsonResponse(response);
+  if (!response.ok || payload.ok !== true) {
+    throw new Error(payload.error || "API server is not available.");
+  }
+  return payload;
 }
 
 function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", source = "crm_contact", label = "Call", compact = false }) {
@@ -4720,6 +4732,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     setError("");
 
     try {
+      await assertApiServerAvailable();
       const response = await fetch("/api/cognism/redeem", {
         method: "POST",
         headers: await buildApiHeaders(),

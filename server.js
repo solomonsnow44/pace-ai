@@ -68,7 +68,13 @@ function resolveStaticPath(pathname) {
 }
 
 createServer(async (req, res) => {
-  if (req.url?.startsWith('/api') && await handleApiRequest(req, res)) return;
+  if (req.url?.startsWith('/api')) {
+    if (await handleApiRequest(req, res)) return;
+    res.statusCode = 404;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ error: 'API route not found' }));
+    return;
+  }
 
   if (!existsSync(distDir)) {
     res.statusCode = 500;

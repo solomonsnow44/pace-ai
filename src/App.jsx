@@ -4351,6 +4351,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const [, setRedeemDiagnosticsCopyStatus] = useState("");
   const [companyImportOpen, setCompanyImportOpen] = useState(false);
   const [companyImportRows, setCompanyImportRows] = useState([]);
+  const [selectedCompanyImportKeys, setSelectedCompanyImportKeys] = useState([]);
   const [companyImportStatus, setCompanyImportStatus] = useState("idle");
   const [companyImportError, setCompanyImportError] = useState("");
   const [resultCompanyFilter, setResultCompanyFilter] = useState("");
@@ -4373,8 +4374,10 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const selectedDisplayedResults = displayedResultEntries.filter(({ result, index }) => selectedResultIds.includes(leadResultId(result, index)));
   const targetCompanyCount = parseLines(companiesText).length;
   const existingCompanyKeys = new Set(parseLines(companiesText).map(company => company.toLowerCase()));
+  const companyImportKeySet = new Set(selectedCompanyImportKeys);
+  const selectedCompanyImportRows = companyImportRows.filter(row => companyImportKeySet.has(companyImportRowKey(row)));
   const companyImportFileCount = new Set(companyImportRows.map(row => row.sourceFile).filter(Boolean)).size;
-  const companyImportNewCompanyCount = companyImportRows.filter(row => !existingCompanyKeys.has(row.companyName.toLowerCase())).length;
+  const selectedCompanyImportNewCompanyCount = selectedCompanyImportRows.filter(row => !existingCompanyKeys.has(row.companyName.toLowerCase())).length;
   const selectedLeadsNeedingSavedPhoneData = selectedResults.filter(lead => leadNeedsSavedPhoneData(lead, contactDatabase));
   const selectedMissingPhoneSummary = summarizeMissingPhoneData(selectedLeadsNeedingSavedPhoneData, contactDatabase);
   const redeemableResultEntries = results
@@ -4471,6 +4474,10 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     return result.cognismContactId || `${result.company || "company"}-${result.contactName || "contact"}-${result.jobTitle || "title"}-${index}`;
   }
 
+  function companyImportRowKey(row) {
+    return `${row.sourceFile || "file"}|${row.sourceSheet || "csv"}|${row.companyName}`;
+  }
+
   function toggleRole(role) {
     setSelectedRoles(current => current.includes(role)
       ? current.filter(item => item !== role)
@@ -4526,6 +4533,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
 
   function openCompanyImport() {
     setCompanyImportRows([]);
+    setSelectedCompanyImportKeys([]);
     setCompanyImportError("");
     setCompanyImportStatus("idle");
     setCompanyImportOpen(true);
@@ -4561,7 +4569,13 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     }
 
     if (parsedRows.length) {
-      setCompanyImportRows(current => dedupeCompanyImportRows([...current, ...parsedRows]));
+      const nextRows = dedupeCompanyImportRows([...companyImportRows, ...parsedRows]);
+      setCompanyImportRows(nextRows);
+      setSelectedCompanyImportKeys(current => {
+        const currentKeys = new Set(current);
+        nextRows.forEach(row => currentKeys.add(companyImportRowKey(row)));
+        return nextRows.map(companyImportRowKey).filter(key => currentKeys.has(key));
+      });
       setCompanyImportStatus("done");
     } else {
       setCompanyImportStatus("idle");
@@ -4575,7 +4589,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   function confirmCompanyImport() {
     const existingCompanies = parseLines(companiesText);
     const existingKeys = new Set(existingCompanies.map(company => company.toLowerCase()));
-    const importedCompanies = companyImportRows
+    const importedCompanies = selectedCompanyImportRows
       .map(row => row.companyName)
       .filter(company => {
         const companyKey = company.toLowerCase();
@@ -4586,6 +4600,21 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
 
     setCompaniesText([...existingCompanies, ...importedCompanies].join("\n"));
     closeCompanyImport();
+  }
+
+  function toggleCompanyImportRow(row) {
+    const key = companyImportRowKey(row);
+    setSelectedCompanyImportKeys(current => current.includes(key)
+      ? current.filter(item => item !== key)
+      : [...current, key]);
+  }
+
+  function selectAllCompanyImportRows() {
+    setSelectedCompanyImportKeys(companyImportRows.map(companyImportRowKey));
+  }
+
+  function deselectAllCompanyImportRows() {
+    setSelectedCompanyImportKeys([]);
   }
 
   function updateMaxPerCompany(value) {
@@ -5759,13 +5788,30 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
               </button>
               <StatusBadge>{companyImportFileCount ? `${companyImportFileCount} files` : "No files selected"}</StatusBadge>
               <StatusBadge>{companyImportRows.length ? `${companyImportRows.length} unique companies` : "0 companies"}</StatusBadge>
-              <StatusBadge tone="success">{companyImportNewCompanyCount} new targets</StatusBadge>
+              <StatusBadge tone="success">{selectedCompanyImportNewCompanyCount} selected new targets</StatusBadge>
             </div>
             {companyImportError ? <div className="form-error">{companyImportError}</div> : null}
+            <div className="company-import-selection-actions">
+              <div>
+                <span className="eyebrow">Import selection</span>
+                <strong>{selectedCompanyImportKeys.length} of {companyImportRows.length} selected</strong>
+              </div>
+              <div className="role-actions">
+                <button className="secondary-button" type="button" onClick={selectAllCompanyImportRows} disabled={!companyImportRows.length || selectedCompanyImportKeys.length === companyImportRows.length}>
+                  <CheckCircle2 size={16} />
+                  Select all
+                </button>
+                <button className="secondary-button" type="button" onClick={deselectAllCompanyImportRows} disabled={!selectedCompanyImportKeys.length}>
+                  <Circle size={16} />
+                  Deselect all
+                </button>
+              </div>
+            </div>
             <div className="table-wrap company-import-preview">
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th>Select</th>
                     <th>Company name</th>
                     <th>Source file</th>
                     <th>Source sheet</th>
@@ -5773,14 +5819,22 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
                 </thead>
                 <tbody>
                   {companyImportRows.length ? companyImportRows.map(row => (
-                    <tr key={`${row.sourceFile}-${row.sourceSheet}-${row.companyName}`}>
+                    <tr key={companyImportRowKey(row)}>
+                      <td className="table-select-cell">
+                        <input
+                          type="checkbox"
+                          checked={selectedCompanyImportKeys.includes(companyImportRowKey(row))}
+                          onChange={() => toggleCompanyImportRow(row)}
+                          aria-label={`Select ${row.companyName}`}
+                        />
+                      </td>
                       <td>{row.companyName}</td>
                       <td>{row.sourceFile}</td>
                       <td>{row.sourceSheet || "CSV"}</td>
                     </tr>
                   )) : (
                     <tr>
-                      <td colSpan="3" className="empty-table-cell">Choose one or more CSV or Excel files with a company column.</td>
+                      <td colSpan="4" className="empty-table-cell">Choose one or more CSV or Excel files with a company column.</td>
                     </tr>
                   )}
                 </tbody>
@@ -5788,9 +5842,9 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
             </div>
             <div className="modal-actions">
               <button className="secondary-button" type="button" onClick={closeCompanyImport}>Cancel</button>
-              <button className="primary-button" type="button" onClick={confirmCompanyImport} disabled={!companyImportRows.length}>
+              <button className="primary-button" type="button" onClick={confirmCompanyImport} disabled={!selectedCompanyImportNewCompanyCount}>
                 <CheckCircle2 size={16} />
-                Confirm import ({companyImportNewCompanyCount})
+                Confirm import ({selectedCompanyImportNewCompanyCount})
               </button>
             </div>
           </section>

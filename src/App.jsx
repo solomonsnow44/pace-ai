@@ -54,6 +54,10 @@ const CRM_DATA_METADATA_KEY = "crm_data";
 const ALLOWED_EMAIL_DOMAIN = "paceops.com";
 const LEAD_FINDER_SEARCH_STATE_KEY = "paceops-lead-finder-search-state";
 const LEAD_FINDER_SEARCH_STATE_VERSION = 4;
+const LEAD_FINDER_DEBUG_CACHE_KEY = "paceops-lead-finder-debug-cache";
+const LEAD_FINDER_DEBUG_CACHE_VERSION = 1;
+const LEAD_FINDER_DEBUG_CACHE_MAX_RECORDS = 250;
+const LEAD_FINDER_DEBUG_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_CONTACTS_PER_COMPANY = 1;
 const DEFAULT_ADMIN_SETTINGS = {
   cognism_preview_enabled: true,
@@ -1036,6 +1040,56 @@ function findLeadDebugRecord(recordsByKey = {}, lead = {}) {
     if (recordsByKey[key]) return recordsByKey[key];
   }
   return null;
+}
+
+function pruneDebugRecordsByKey(recordsByKey = {}, now = Date.now()) {
+  const entriesByRecord = new Map();
+  Object.entries(recordsByKey).forEach(([key, record]) => {
+    if (!record || typeof record !== "object") return;
+    const updatedAt = Number(record.cachedAt || record.requestedAt || now);
+    if (now - updatedAt > LEAD_FINDER_DEBUG_CACHE_TTL_MS) return;
+    const identity = leadDebugKeys(record.mappedLead || record).join("|") || key;
+    const entry = entriesByRecord.get(identity) || { record: { ...record, cachedAt: updatedAt }, keys: new Set(), updatedAt };
+    entry.keys.add(key);
+    entry.updatedAt = Math.max(entry.updatedAt, updatedAt);
+    entriesByRecord.set(identity, entry);
+  });
+
+  const pruned = {};
+  [...entriesByRecord.values()]
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, LEAD_FINDER_DEBUG_CACHE_MAX_RECORDS)
+    .forEach(entry => {
+      entry.keys.forEach(key => {
+        pruned[key] = entry.record;
+      });
+    });
+  return pruned;
+}
+
+function loadLeadFinderDebugCache() {
+  if (typeof window === "undefined") return { preview: {}, redeem: {} };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(LEAD_FINDER_DEBUG_CACHE_KEY) || "null");
+    if (!parsed || parsed.version !== LEAD_FINDER_DEBUG_CACHE_VERSION) return { preview: {}, redeem: {} };
+    return {
+      preview: pruneDebugRecordsByKey(parsed.preview || {}),
+      redeem: pruneDebugRecordsByKey(parsed.redeem || {}),
+    };
+  } catch {
+    return { preview: {}, redeem: {} };
+  }
+}
+
+function saveLeadFinderDebugCache(preview = {}, redeem = {}) {
+  if (typeof window === "undefined") return;
+  const payload = {
+    version: LEAD_FINDER_DEBUG_CACHE_VERSION,
+    savedAt: new Date().toISOString(),
+    preview: pruneDebugRecordsByKey(preview),
+    redeem: pruneDebugRecordsByKey(redeem),
+  };
+  window.localStorage.setItem(LEAD_FINDER_DEBUG_CACHE_KEY, JSON.stringify(payload));
 }
 
 function formatDebugValue(value) {
@@ -4453,7 +4507,10 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
 function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLeadContact, onPersistSearchResults, cognismPreviewEnabled = true, canUseRedeemMode = false, currentUserId = "" }) {
   const { workspaceUsers = [] } = useCrmData();
   const savedSearchState = loadLeadFinderSearchState();
+  const savedDebugCache = loadLeadFinderDebugCache();
   const companyImportInputRef = useRef(null);
+  const previewDebugByKeyRef = useRef(savedDebugCache.preview || {});
+  const redeemDebugByKeyRef = useRef(savedDebugCache.redeem || {});
   const redeemedPhoneRepairSaveKeysRef = useRef(new Set());
   const defaultAssignedUserId = currentUserId || workspaceUsers[0]?.id || "";
   const defaultAssignedUserIds = defaultAssignedUserId ? [defaultAssignedUserId] : [];
@@ -4484,8 +4541,8 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const [redeemStatus, setRedeemStatus] = useState("idle");
   const [redeemDiagnostics, setRedeemDiagnostics] = useState(null);
   const [, setRedeemDiagnosticsCopyStatus] = useState("");
-  const [previewDebugByKey, setPreviewDebugByKey] = useState({});
-  const [redeemDebugByKey, setRedeemDebugByKey] = useState({});
+  const [previewDebugByKey, setPreviewDebugByKeyState] = useState(savedDebugCache.preview || {});
+  const [redeemDebugByKey, setRedeemDebugByKeyState] = useState(savedDebugCache.redeem || {});
   const [leadDebugModal, setLeadDebugModal] = useState({ open: false, resultId: "", tab: "summary" });
   const [companyImportOpen, setCompanyImportOpen] = useState(false);
   const [companyImportRows, setCompanyImportRows] = useState([]);
@@ -4536,6 +4593,32 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const debugPreviewRecord = debugLeadEntry ? findLeadDebugRecord(previewDebugByKey, debugLeadEntry.result) : null;
   const debugRedeemRecord = debugLeadEntry ? findLeadDebugRecord(redeemDebugByKey, debugLeadEntry.result) : null;
   const debugDifferences = buildLeadDebugDiff(debugPreviewRecord?.mappedLead || debugLeadEntry?.result || {}, debugRedeemRecord?.mappedLead || {});
+
+  function updateLeadDebugCache(updater) {
+    const nextCache = updater({
+      preview: previewDebugByKeyRef.current,
+      redeem: redeemDebugByKeyRef.current,
+    });
+    const nextPreview = pruneDebugRecordsByKey(nextCache.preview || {});
+    const nextRedeem = pruneDebugRecordsByKey(nextCache.redeem || {});
+    previewDebugByKeyRef.current = nextPreview;
+    redeemDebugByKeyRef.current = nextRedeem;
+    setPreviewDebugByKeyState(nextPreview);
+    setRedeemDebugByKeyState(nextRedeem);
+    saveLeadFinderDebugCache(nextPreview, nextRedeem);
+  }
+
+  function replacePreviewDebugRecords(recordsByKey) {
+    updateLeadDebugCache(current => ({ ...current, preview: recordsByKey }));
+  }
+
+  function clearRedeemDebugRecords() {
+    updateLeadDebugCache(current => ({ ...current, redeem: {} }));
+  }
+
+  function mergeRedeemDebugRecords(recordsByKey) {
+    updateLeadDebugCache(current => ({ ...current, redeem: { ...current.redeem, ...recordsByKey } }));
+  }
 
   useEffect(() => {
     saveLeadFinderSearchState({
@@ -4666,8 +4749,8 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     setRedeemStatus("idle");
     setRedeemDiagnostics(null);
     setRedeemDiagnosticsCopyStatus("");
-    setPreviewDebugByKey({});
-    setRedeemDebugByKey({});
+    replacePreviewDebugRecords({});
+    clearRedeemDebugRecords();
     setLeadDebugModal({ open: false, resultId: "", tab: "summary" });
     setCustomRolesText("");
     setResults([]);
@@ -4901,7 +4984,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         rawCognismRecords,
       };
       setRedeemDiagnostics(nextRedeemDiagnostics);
-      setRedeemDebugByKey(current => redeemedRows.reduce((next, redeemedLead) => {
+      mergeRedeemDebugRecords(redeemedRows.reduce((next, redeemedLead) => {
         const rawRecord = rawCognismRecords.find(record => leadDebugKeys({
           rowId: redeemedLead.rowId,
           cognismRedeemId: redeemedLead.cognismRedeemId,
@@ -4912,8 +4995,8 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           record?.contactId,
           record?.redeemId,
         ].map(normalizeLookupValue).includes(key)));
-        return addLeadDebugRecord(next, redeemedLead, { mappedLead: redeemedLead, rawRecord });
-      }, current));
+        return addLeadDebugRecord(next, redeemedLead, { mappedLead: redeemedLead, rawRecord, cachedAt: Date.now() });
+      }, {}));
       try {
         await navigator.clipboard.writeText(JSON.stringify(nextRedeemDiagnostics, null, 2));
         setRedeemDiagnosticsCopyStatus("Copied to clipboard");
@@ -5001,15 +5084,15 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         // Keep redeemed values visible even if local persistence is unavailable.
       }
 
-      setRedeemDebugByKey(current => redeemedRows.reduce((next, lead) => {
+      mergeRedeemDebugRecords(redeemedRows.reduce((next, lead) => {
         const rawRecord = rawCognismRecords.find(record => leadDebugKeys(lead).some(key => [
           rawCognismRedeemId(record),
           record?.id,
           record?.contactId,
           record?.redeemId,
         ].map(normalizeLookupValue).includes(key)));
-        return addLeadDebugRecord(next, lead, { mappedLead: lead, rawRecord });
-      }, current));
+        return addLeadDebugRecord(next, lead, { mappedLead: lead, rawRecord, cachedAt: Date.now() });
+      }, {}));
       setRedeemReviewActive(true);
       setMeta(current => ({
         ...current,
@@ -5201,7 +5284,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     setRedeemStatus("idle");
     setRedeemDiagnostics(null);
     setRedeemDiagnosticsCopyStatus("");
-    setRedeemDebugByKey({});
+    clearRedeemDebugRecords();
     setLeadDebugModal({ open: false, resultId: "", tab: "summary" });
     setRedeemReviewActive(false);
     setStatus("loading");
@@ -5229,12 +5312,13 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       const incomingResults = hydrateLeadsWithContactDatabase(Array.isArray(payload.results) ? payload.results : [], contactDatabase);
       const mergedResults = mergeLeadResults(results, incomingResults);
       const rawPreviewRecords = Array.isArray(payload.diagnostics?.rawPreviewRecords) ? payload.diagnostics.rawPreviewRecords : [];
-      setPreviewDebugByKey(rawPreviewRecords.reduce((current, record) => {
+      replacePreviewDebugRecords(rawPreviewRecords.reduce((current, record) => {
         const mappedLead = incomingResults.find(lead => leadDebugKeys(lead).some(key => key === normalizeLookupValue(record.cognismRedeemId) || key === normalizeLookupValue(record.cognismContactId))) || {};
         return addLeadDebugRecord(current, { ...mappedLead, cognismRedeemId: record.cognismRedeemId, cognismContactId: record.cognismContactId }, {
           mappedLead,
           rawRecord: record.rawRecord,
           requestedCompany: record.company,
+          cachedAt: Date.now(),
         });
       }, {}));
       setResults(mergedResults);

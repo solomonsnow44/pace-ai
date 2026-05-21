@@ -984,6 +984,76 @@ function summarizeMissingPhoneData(leads = [], contactDatabase = []) {
   }, { missingBoth: 0, missingMobile: 0, missingDirectDial: 0 });
 }
 
+const leadDebugFields = [
+  ["contactName", "Name"],
+  ["company", "Company"],
+  ["jobTitle", "Job title"],
+  ["seniority", "Seniority"],
+  ["department", "Department"],
+  ["location", "Location"],
+  ["linkedinProfileUrl", "LinkedIn"],
+  ["manualEmail", "Email"],
+  ["manualMobile", "Mobile"],
+  ["manualDirectDial", "Direct dial"],
+  ["emailAvailable", "Email available"],
+  ["mobileAvailable", "Mobile available"],
+  ["directDialAvailable", "Direct available"],
+  ["matchScore", "Match score"],
+  ["cognismContactId", "Contact ID"],
+  ["cognismRedeemId", "Redeem ID"],
+  ["dataSource", "Data source"],
+];
+
+function leadDebugKeys(lead = {}) {
+  return [
+    lead.rowId,
+    lead.cognismRedeemId,
+    lead.cognismContactId,
+    lead.redeemId,
+    lead.id,
+  ].map(normalizeLookupValue).filter(Boolean);
+}
+
+function addLeadDebugRecord(current, lead, record) {
+  const keys = leadDebugKeys(lead);
+  if (!keys.length) return current;
+  return keys.reduce((next, key) => ({ ...next, [key]: record }), current);
+}
+
+function findLeadDebugRecord(recordsByKey = {}, lead = {}) {
+  for (const key of leadDebugKeys(lead)) {
+    if (recordsByKey[key]) return recordsByKey[key];
+  }
+  return null;
+}
+
+function formatDebugValue(value) {
+  if (value === true) return "Yes";
+  if (value === false) return "No";
+  if (value === null || value === undefined || value === "") return "Not available";
+  if (Array.isArray(value)) return value.length ? value.map(item => typeof item === "object" ? JSON.stringify(item) : String(item)).join(", ") : "Not available";
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value);
+}
+
+function normalizeDebugValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value).trim();
+}
+
+function buildLeadDebugDiff(previewLead = {}, redeemedLead = {}) {
+  return leadDebugFields
+    .map(([key, label]) => ({
+      key,
+      label,
+      previewValue: previewLead?.[key],
+      redeemedValue: redeemedLead?.[key],
+    }))
+    .filter(item => normalizeDebugValue(item.previewValue) !== normalizeDebugValue(item.redeemedValue));
+}
+
 function rawCognismPhoneValue(phone) {
   if (!phone) return "";
   if (typeof phone === "string") return normalizeLookupValue(phone);
@@ -4403,6 +4473,9 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   const [redeemStatus, setRedeemStatus] = useState("idle");
   const [redeemDiagnostics, setRedeemDiagnostics] = useState(null);
   const [, setRedeemDiagnosticsCopyStatus] = useState("");
+  const [previewDebugByKey, setPreviewDebugByKey] = useState({});
+  const [redeemDebugByKey, setRedeemDebugByKey] = useState({});
+  const [leadDebugModal, setLeadDebugModal] = useState({ open: false, resultId: "", tab: "summary" });
   const [companyImportOpen, setCompanyImportOpen] = useState(false);
   const [companyImportRows, setCompanyImportRows] = useState([]);
   const [selectedCompanyImportKeys, setSelectedCompanyImportKeys] = useState([]);
@@ -4446,6 +4519,12 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     .filter(country => country.toLowerCase().includes(countryQuery.trim().toLowerCase()))
     .filter(country => !selectedCountries.includes(country))
     .slice(0, 8);
+  const debugLeadEntry = leadDebugModal.open
+    ? results.map((result, index) => ({ result, index, resultId: leadResultId(result, index) })).find(({ resultId }) => resultId === leadDebugModal.resultId)
+    : null;
+  const debugPreviewRecord = debugLeadEntry ? findLeadDebugRecord(previewDebugByKey, debugLeadEntry.result) : null;
+  const debugRedeemRecord = debugLeadEntry ? findLeadDebugRecord(redeemDebugByKey, debugLeadEntry.result) : null;
+  const debugDifferences = buildLeadDebugDiff(debugPreviewRecord?.mappedLead || debugLeadEntry?.result || {}, debugRedeemRecord?.mappedLead || {});
 
   useEffect(() => {
     saveLeadFinderSearchState({
@@ -4551,6 +4630,10 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       : [...current, resultId]);
   }
 
+  function openLeadDebugModal(resultId, tab = "summary") {
+    setLeadDebugModal({ open: true, resultId, tab });
+  }
+
   function selectRedeemableRows(entries = redeemableResultEntries) {
     setSelectedResultIds(entries.map(({ resultId, result, index }) => resultId || leadResultId(result, index)));
   }
@@ -4572,6 +4655,9 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     setRedeemStatus("idle");
     setRedeemDiagnostics(null);
     setRedeemDiagnosticsCopyStatus("");
+    setPreviewDebugByKey({});
+    setRedeemDebugByKey({});
+    setLeadDebugModal({ open: false, resultId: "", tab: "summary" });
     setCustomRolesText("");
     setResults([]);
     setSelectedResultIds([]);
@@ -4804,6 +4890,19 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         rawCognismRecords,
       };
       setRedeemDiagnostics(nextRedeemDiagnostics);
+      setRedeemDebugByKey(current => redeemedRows.reduce((next, redeemedLead) => {
+        const rawRecord = rawCognismRecords.find(record => leadDebugKeys({
+          rowId: redeemedLead.rowId,
+          cognismRedeemId: redeemedLead.cognismRedeemId,
+          cognismContactId: redeemedLead.cognismContactId,
+        }).some(key => [
+          rawCognismRedeemId(record),
+          record?.id,
+          record?.contactId,
+          record?.redeemId,
+        ].map(normalizeLookupValue).includes(key)));
+        return addLeadDebugRecord(next, redeemedLead, { mappedLead: redeemedLead, rawRecord });
+      }, current));
       try {
         await navigator.clipboard.writeText(JSON.stringify(nextRedeemDiagnostics, null, 2));
         setRedeemDiagnosticsCopyStatus("Copied to clipboard");
@@ -4827,6 +4926,87 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         ].filter(Boolean).join(" "),
       }));
       setRedeemConfirmOpen(false);
+      if (nextSelectedIds.length) {
+        setLeadDebugModal({ open: true, resultId: nextSelectedIds[0], tab: "diff" });
+      }
+      setRedeemStatus("done");
+    } catch (redeemError) {
+      setError(redeemError.message || "Redeem request failed");
+      setRedeemStatus("error");
+    }
+  }
+
+  async function redeemDebugLead(resultId) {
+    const entry = results
+      .map((result, index) => ({ result, index, resultId: leadResultId(result, index) }))
+      .find(item => item.resultId === resultId);
+    if (!entry) return;
+    if (!canUseRedeemMode) {
+      setError("Redeem access is not enabled for this workspace.");
+      return;
+    }
+    if (!normalizeLookupValue(entry.result.cognismRedeemId)) {
+      setError("Run a fresh preview before redeeming. This row does not include a Cognism redeem ID.");
+      return;
+    }
+
+    setRedeemStatus("loading");
+    setError("");
+
+    try {
+      await assertApiServerAvailable();
+      const response = await fetch("/api/cognism/redeem", {
+        method: "POST",
+        headers: await buildApiHeaders(),
+        body: JSON.stringify({
+          leads: [{
+            ...entry.result,
+            rowId: resultId,
+            redeemId: entry.result.cognismRedeemId,
+          }],
+          debug: true,
+        }),
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) {
+        const providerHint = payload.provider === "cognism" && payload.providerStatus
+          ? ` Cognism returned ${payload.providerStatus}.`
+          : "";
+        throw new Error(`${payload.error || "Redeem request failed"}${providerHint}`);
+      }
+
+      const rawCognismRecords = payload.diagnostics?.rawRecords || [];
+      const redeemedRows = correctRedeemedRowsFromRawRecords(Array.isArray(payload.redeemed) ? payload.redeemed : [], rawCognismRecords);
+      const redeemedLead = redeemedRows[0];
+      if (!redeemedLead) throw new Error("Redeem returned no contact data for this row.");
+
+      const nextLead = hydrateLeadWithContactDatabase({ ...entry.result, ...redeemedLead, rowId: resultId }, contactDatabase);
+      setResults(current => current.map((result, index) => leadResultId(result, index) === resultId ? nextLead : result));
+
+      try {
+        const savedContact = await onSaveLeadContact(nextLead, { allowPreviewOnly: true, skipConflictPrompt: true });
+        setResults(current => hydrateLeadsWithContactDatabase(current, [savedContact]));
+      } catch {
+        // Keep redeemed values visible even if local persistence is unavailable.
+      }
+
+      setRedeemDebugByKey(current => redeemedRows.reduce((next, lead) => {
+        const rawRecord = rawCognismRecords.find(record => leadDebugKeys(lead).some(key => [
+          rawCognismRedeemId(record),
+          record?.id,
+          record?.contactId,
+          record?.redeemId,
+        ].map(normalizeLookupValue).includes(key)));
+        return addLeadDebugRecord(next, lead, { mappedLead: lead, rawRecord });
+      }, current));
+      setRedeemReviewActive(true);
+      setMeta(current => ({
+        ...current,
+        mode: payload.mode || "redeem",
+        estimatedCreditsUsed: (current.estimatedCreditsUsed || 0) + (payload.estimatedCreditsUsed ?? redeemedRows.length),
+        warning: [current.warning, payload.warning].filter(Boolean).join(" "),
+      }));
+      setLeadDebugModal({ open: true, resultId, tab: "diff" });
       setRedeemStatus("done");
     } catch (redeemError) {
       setError(redeemError.message || "Redeem request failed");
@@ -5010,6 +5190,8 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     setRedeemStatus("idle");
     setRedeemDiagnostics(null);
     setRedeemDiagnosticsCopyStatus("");
+    setRedeemDebugByKey({});
+    setLeadDebugModal({ open: false, resultId: "", tab: "summary" });
     setRedeemReviewActive(false);
     setStatus("loading");
     setSelectedUserIds(defaultAssignedUserIds);
@@ -5020,7 +5202,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       const response = await fetch("/api/cognism/preview", {
         method: "POST",
         headers: await buildApiHeaders(),
-        body: JSON.stringify({ companies, targetTitles, maxPerCompany: requestedMax, requireMobileAvailable, requireDirectDialAvailable, countries: selectedCountries }),
+        body: JSON.stringify({ companies, targetTitles, maxPerCompany: requestedMax, requireMobileAvailable, requireDirectDialAvailable, countries: selectedCountries, debug: true }),
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Preview request failed");
@@ -5035,6 +5217,15 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       });
       const incomingResults = hydrateLeadsWithContactDatabase(Array.isArray(payload.results) ? payload.results : [], contactDatabase);
       const mergedResults = mergeLeadResults(results, incomingResults);
+      const rawPreviewRecords = Array.isArray(payload.diagnostics?.rawPreviewRecords) ? payload.diagnostics.rawPreviewRecords : [];
+      setPreviewDebugByKey(rawPreviewRecords.reduce((current, record) => {
+        const mappedLead = incomingResults.find(lead => leadDebugKeys(lead).some(key => key === normalizeLookupValue(record.cognismRedeemId) || key === normalizeLookupValue(record.cognismContactId))) || {};
+        return addLeadDebugRecord(current, { ...mappedLead, cognismRedeemId: record.cognismRedeemId, cognismContactId: record.cognismContactId }, {
+          mappedLead,
+          rawRecord: record.rawRecord,
+          requestedCompany: record.company,
+        });
+      }, {}));
       setResults(mergedResults);
       setSelectedResultIds(mergedResults
         .map((result, index) => ({ result, index }))
@@ -5048,7 +5239,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           .map((result, index) => ({ result, index }))
           .filter(({ result }) => leadNeedsSavedPhoneData(result, [...contactDatabase, ...savedContacts]))
           .map(({ result, index }) => leadResultId(result, index)));
-      } catch (persistError) {
+      } catch {
         setMeta(current => ({
           ...current,
           warning: [current.warning, "Preview results are shown, but they were not saved to the PaceOps lead database in this local session."].filter(Boolean).join(" "),
@@ -5752,6 +5943,10 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
                   </td>
                   <td>
                     <div className="row-actions">
+                      <button className="secondary-button" type="button" onClick={() => openLeadDebugModal(resultId)}>
+                        <Eye size={16} />
+                        Inspect
+                      </button>
                       <button className="secondary-button" type="button" onClick={() => saveContactResult(resultId)} disabled={!leadHasPaceOpsData(result)}>
                         <Database size={16} />
                         Save
@@ -5771,6 +5966,118 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           </table>
         </div>
       </section>
+      {leadDebugModal.open && debugLeadEntry ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) setLeadDebugModal({ open: false, resultId: "", tab: "summary" });
+        }}>
+          <section className="workflow-modal lead-debug-modal" role="dialog" aria-modal="true" aria-labelledby="lead-debug-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Lead debug</span>
+                <h2 id="lead-debug-title">{debugLeadEntry.result.contactName || "Preview row"}</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setLeadDebugModal({ open: false, resultId: "", tab: "summary" })} aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="lead-debug-toolbar">
+              <div className="segmented-control" role="tablist" aria-label="Lead debug view">
+                {[
+                  ["summary", "Fields"],
+                  ["diff", "Differences"],
+                  ["raw", "Raw JSON"],
+                ].map(([tab, label]) => (
+                  <button
+                    key={tab}
+                    className={leadDebugModal.tab === tab ? "active" : ""}
+                    type="button"
+                    onClick={() => setLeadDebugModal(current => ({ ...current, tab }))}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {canUseRedeemMode ? (
+                <button className="primary-button success-button" type="button" onClick={() => redeemDebugLead(leadDebugModal.resultId)} disabled={redeemStatus === "loading" || !normalizeLookupValue(debugLeadEntry.result.cognismRedeemId)}>
+                  {redeemStatus === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <LockKeyhole size={16} />}
+                  {debugRedeemRecord ? "Redeem again" : "Redeem this lead"}
+                </button>
+              ) : null}
+            </div>
+            {leadDebugModal.tab === "summary" ? (
+              <div className="lead-debug-grid">
+                <div className="lead-debug-panel">
+                  <h3>Preview data</h3>
+                  <dl>
+                    {leadDebugFields.map(([key, label]) => (
+                      <div key={key}>
+                        <dt>{label}</dt>
+                        <dd>{formatDebugValue((debugPreviewRecord?.mappedLead || debugLeadEntry.result)?.[key])}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+                <div className="lead-debug-panel">
+                  <h3>Redeem data</h3>
+                  {debugRedeemRecord ? (
+                    <dl>
+                      {leadDebugFields.map(([key, label]) => (
+                        <div key={key}>
+                          <dt>{label}</dt>
+                          <dd>{formatDebugValue(debugRedeemRecord.mappedLead?.[key])}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : (
+                    <EmptyState icon={LockKeyhole} title="Not redeemed in this session" text="Redeem this lead to compare full contact data against preview." />
+                  )}
+                </div>
+              </div>
+            ) : null}
+            {leadDebugModal.tab === "diff" ? (
+              <div className="lead-debug-panel">
+                <h3>Key differences</h3>
+                {debugRedeemRecord ? (
+                  debugDifferences.length ? (
+                    <table className="data-table lead-debug-diff-table">
+                      <thead>
+                        <tr>
+                          <th>Field</th>
+                          <th>Preview</th>
+                          <th>Redeem</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {debugDifferences.map(item => (
+                          <tr key={item.key}>
+                            <td>{item.label}</td>
+                            <td>{formatDebugValue(item.previewValue)}</td>
+                            <td>{formatDebugValue(item.redeemedValue)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : <EmptyState icon={CheckCircle2} title="No mapped differences" text="The tracked preview and redeem fields currently match." />
+                ) : (
+                  <EmptyState icon={LockKeyhole} title="Redeem data needed" text="Redeem this lead to see field-level differences." />
+                )}
+              </div>
+            ) : null}
+            {leadDebugModal.tab === "raw" ? (
+              <div className="lead-debug-grid">
+                <div className="lead-debug-panel">
+                  <h3>Raw preview record</h3>
+                  <pre className="lead-debug-json">{JSON.stringify(debugPreviewRecord?.rawRecord || debugLeadEntry.result, null, 2)}</pre>
+                </div>
+                <div className="lead-debug-panel">
+                  <h3>Raw redeem record</h3>
+                  <pre className="lead-debug-json">{JSON.stringify(debugRedeemRecord?.rawRecord || null, null, 2)}</pre>
+                </div>
+              </div>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
       {redeemConfirmOpen ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={event => {
           if (event.target === event.currentTarget) setRedeemConfirmOpen(false);

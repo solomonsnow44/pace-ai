@@ -3202,6 +3202,119 @@ textarea::placeholder {
   width: min(520px, 100%);
 }
 
+.lead-debug-modal {
+  width: min(1120px, calc(100vw - 32px));
+}
+
+.lead-debug-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+
+.segmented-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 3px;
+}
+
+.segmented-control button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 800;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.segmented-control button.active,
+.segmented-control button:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.lead-debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.lead-debug-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.lead-debug-panel h3 {
+  margin: 0 0 10px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.lead-debug-panel dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.lead-debug-panel dl div {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.lead-debug-panel dl div:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.lead-debug-panel dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.lead-debug-panel dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.lead-debug-json {
+  max-height: 460px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.lead-debug-diff-table td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .hubspot-failure-list {
   display: grid;
   gap: 8px;
@@ -4187,6 +4300,26 @@ textarea::placeholder {
 
   .admin-access-card-actions small {
     text-align: left;
+  }
+
+  .lead-debug-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .lead-debug-panel dl div {
+    grid-template-columns: 1fr;
+  }
+
+  .lead-debug-toolbar {
+    align-items: stretch;
+  }
+
+  .segmented-control {
+    width: 100%;
+  }
+
+  .segmented-control button {
+    flex: 1;
   }
 
   .marketing-nav {

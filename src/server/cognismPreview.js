@@ -541,6 +541,7 @@ export async function createCognismPreview(input, options = {}) {
 
   if (!apiKey) {
     if (options.allowLocalPreviewWithoutApiKey) {
+      const localResults = createLocalPreviewResults(companies, expandedTargetTitles, maxPerCompany, requireMobileAvailable, requireDirectDialAvailable);
       return {
         mode: COGNISM_PREVIEW_MODE,
         estimatedCreditsUsed: 0,
@@ -550,7 +551,15 @@ export async function createCognismPreview(input, options = {}) {
         requireMobileAvailable,
         requireDirectDialAvailable,
         countries,
-        results: createLocalPreviewResults(companies, expandedTargetTitles, maxPerCompany, requireMobileAvailable, requireDirectDialAvailable),
+        results: localResults,
+        diagnostics: input.debug ? {
+          rawPreviewRecords: localResults.map(result => ({
+            company: result.company,
+            cognismContactId: result.cognismContactId,
+            cognismRedeemId: result.cognismRedeemId,
+            rawRecord: result,
+          })),
+        } : null,
         warning: "Using local preview data because COGNISM_API_KEY is not available in this local server.",
       };
     }
@@ -566,6 +575,7 @@ export async function createCognismPreview(input, options = {}) {
   }
 
   const results = [];
+  const rawPreviewRecords = [];
 
   for (const company of companies) {
     const contacts = [];
@@ -604,16 +614,22 @@ export async function createCognismPreview(input, options = {}) {
 
     const bestContacts = contacts
       .filter(contact => accountMatchesCompany(company, contact.account || {}))
-      .map(contact => mapCognismPreviewContact(company, contact, expandedTargetTitles))
-      .filter(contact => !requireMobileAvailable || contact.mobileAvailable)
-      .filter(contact => !requireDirectDialAvailable || contact.directDialAvailable)
-      .filter(contact => !requireEmail || contact.emailAvailable)
-      .filter(contact => !requireMobile || contact.mobileAvailable)
-      .filter(contact => !countries.length || countries.some(country => contact.location.toLowerCase().includes(country.toLowerCase())))
-      .sort((left, right) => right.matchScore - left.matchScore)
+      .map(contact => ({ mapped: mapCognismPreviewContact(company, contact, expandedTargetTitles), rawRecord: contact }))
+      .filter(({ mapped }) => !requireMobileAvailable || mapped.mobileAvailable)
+      .filter(({ mapped }) => !requireDirectDialAvailable || mapped.directDialAvailable)
+      .filter(({ mapped }) => !requireEmail || mapped.emailAvailable)
+      .filter(({ mapped }) => !requireMobile || mapped.mobileAvailable)
+      .filter(({ mapped }) => !countries.length || countries.some(country => mapped.location.toLowerCase().includes(country.toLowerCase())))
+      .sort((left, right) => right.mapped.matchScore - left.mapped.matchScore)
       .slice(0, maxPerCompany);
 
-    results.push(...bestContacts);
+    results.push(...bestContacts.map(({ mapped }) => mapped));
+    rawPreviewRecords.push(...bestContacts.map(({ mapped, rawRecord }) => ({
+      company,
+      cognismContactId: mapped.cognismContactId,
+      cognismRedeemId: mapped.cognismRedeemId,
+      rawRecord,
+    })));
   }
 
   return {
@@ -626,5 +642,6 @@ export async function createCognismPreview(input, options = {}) {
     requireDirectDialAvailable,
     countries,
     results,
+    diagnostics: input.debug ? { rawPreviewRecords } : null,
   };
 }

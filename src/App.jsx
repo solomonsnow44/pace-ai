@@ -1004,6 +1004,17 @@ const leadDebugFields = [
   ["dataSource", "Data source"],
 ];
 
+const appDebugFields = [
+  ["dbContactId", "PaceOps DB contact ID"],
+  ["dataSource", "Data source"],
+  ["sourceNote", "Source note"],
+  ["notes", "Notes"],
+  ["hubspotContactId", "HubSpot contact ID"],
+  ["hubspotExportedAt", "HubSpot exported at"],
+  ["hubspotExportStatus", "HubSpot export status"],
+  ["hubspotExportError", "HubSpot export error"],
+];
+
 function leadDebugKeys(lead = {}) {
   return [
     lead.rowId,
@@ -5983,8 +5994,9 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
             <div className="lead-debug-toolbar">
               <div className="segmented-control" role="tablist" aria-label="Lead debug view">
                 {[
-                  ["summary", "Fields"],
+                  ["summary", "Cognism"],
                   ["diff", "Differences"],
+                  ["app", "App data"],
                   ["raw", "Raw JSON"],
                 ].map(([tab, label]) => (
                   <button
@@ -6007,29 +6019,19 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
             {leadDebugModal.tab === "summary" ? (
               <div className="lead-debug-grid">
                 <div className="lead-debug-panel">
-                  <h3>Preview data</h3>
-                  <dl>
-                    {leadDebugFields.map(([key, label]) => (
-                      <div key={key}>
-                        <dt>{label}</dt>
-                        <dd>{formatDebugValue((debugPreviewRecord?.mappedLead || debugLeadEntry.result)?.[key])}</dd>
-                      </div>
-                    ))}
-                  </dl>
+                  <h3>Cognism preview raw payload</h3>
+                  {debugPreviewRecord?.rawRecord ? (
+                    <pre className="lead-debug-json">{JSON.stringify(debugPreviewRecord.rawRecord, null, 2)}</pre>
+                  ) : (
+                    <EmptyState icon={Search} title="Raw preview unavailable" text="Run a fresh preview, then inspect this row to see the original Cognism preview payload." />
+                  )}
                 </div>
                 <div className="lead-debug-panel">
-                  <h3>Redeem data</h3>
+                  <h3>Cognism redeem raw payload</h3>
                   {debugRedeemRecord ? (
-                    <dl>
-                      {leadDebugFields.map(([key, label]) => (
-                        <div key={key}>
-                          <dt>{label}</dt>
-                          <dd>{formatDebugValue(debugRedeemRecord.mappedLead?.[key])}</dd>
-                        </div>
-                      ))}
-                    </dl>
+                    <pre className="lead-debug-json">{JSON.stringify(debugRedeemRecord.rawRecord || debugRedeemRecord.mappedLead || null, null, 2)}</pre>
                   ) : (
-                    <EmptyState icon={LockKeyhole} title="Not redeemed in this session" text="Redeem this lead to compare full contact data against preview." />
+                    <EmptyState icon={LockKeyhole} title="Not redeemed in this session" text="Redeem this lead to see the original Cognism redeem payload." />
                   )}
                 </div>
               </div>
@@ -6063,11 +6065,37 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
                 )}
               </div>
             ) : null}
+            {leadDebugModal.tab === "app" ? (
+              <div className="lead-debug-grid">
+                <div className="lead-debug-panel">
+                  <h3>Mapped lead fields</h3>
+                  <dl>
+                    {leadDebugFields.map(([key, label]) => (
+                      <div key={key}>
+                        <dt>{label}</dt>
+                        <dd>{formatDebugValue((debugPreviewRecord?.mappedLead || debugLeadEntry.result)?.[key])}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+                <div className="lead-debug-panel">
+                  <h3>PaceOps and HubSpot fields</h3>
+                  <dl>
+                    {appDebugFields.map(([key, label]) => (
+                      <div key={key}>
+                        <dt>{label}</dt>
+                        <dd>{formatDebugValue(debugLeadEntry.result?.[key])}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              </div>
+            ) : null}
             {leadDebugModal.tab === "raw" ? (
               <div className="lead-debug-grid">
                 <div className="lead-debug-panel">
                   <h3>Raw preview record</h3>
-                  <pre className="lead-debug-json">{JSON.stringify(debugPreviewRecord?.rawRecord || debugLeadEntry.result, null, 2)}</pre>
+                  <pre className="lead-debug-json">{JSON.stringify(debugPreviewRecord?.rawRecord || null, null, 2)}</pre>
                 </div>
                 <div className="lead-debug-panel">
                   <h3>Raw redeem record</h3>

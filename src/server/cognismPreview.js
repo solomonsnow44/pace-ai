@@ -542,6 +542,9 @@ export async function createCognismPreview(input, options = {}) {
   if (!apiKey) {
     if (options.allowLocalPreviewWithoutApiKey) {
       const localResults = createLocalPreviewResults(companies, expandedTargetTitles, maxPerCompany, requireMobileAvailable, requireDirectDialAvailable);
+      const debugLocalResults = input.debug
+        ? localResults.map(result => ({ ...result, _debugRawPreviewRecord: result, _debugRequestedCompany: result.company }))
+        : localResults;
       return {
         mode: COGNISM_PREVIEW_MODE,
         estimatedCreditsUsed: 0,
@@ -551,7 +554,7 @@ export async function createCognismPreview(input, options = {}) {
         requireMobileAvailable,
         requireDirectDialAvailable,
         countries,
-        results: localResults,
+        results: debugLocalResults,
         diagnostics: input.debug ? {
           rawPreviewRecords: localResults.map(result => ({
             company: result.company,
@@ -623,7 +626,9 @@ export async function createCognismPreview(input, options = {}) {
       .sort((left, right) => right.mapped.matchScore - left.mapped.matchScore)
       .slice(0, maxPerCompany);
 
-    results.push(...bestContacts.map(({ mapped }) => mapped));
+    results.push(...bestContacts.map(({ mapped, rawRecord }) => input.debug
+      ? ({ ...mapped, _debugRawPreviewRecord: rawRecord, _debugRequestedCompany: company })
+      : mapped));
     rawPreviewRecords.push(...bestContacts.map(({ mapped, rawRecord }) => ({
       company,
       cognismContactId: mapped.cognismContactId,

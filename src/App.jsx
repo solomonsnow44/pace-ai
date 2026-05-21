@@ -1119,6 +1119,11 @@ function buildLeadDebugDiff(previewLead = {}, redeemedLead = {}) {
     .filter(item => normalizeDebugValue(item.previewValue) !== normalizeDebugValue(item.redeemedValue));
 }
 
+function stripLeadDebugPayload(lead = {}) {
+  const { _debugRawPreviewRecord, _debugRequestedCompany, ...cleanLead } = lead;
+  return cleanLead;
+}
+
 function rawCognismPhoneValue(phone) {
   if (!phone) return "";
   if (typeof phone === "string") return normalizeLookupValue(phone);
@@ -5309,9 +5314,19 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         countries: Array.isArray(payload.countries) ? payload.countries : [],
         warning: payload.warning || "",
       });
-      const incomingResults = hydrateLeadsWithContactDatabase(Array.isArray(payload.results) ? payload.results : [], contactDatabase);
+      const payloadResults = Array.isArray(payload.results) ? payload.results : [];
+      const incomingResults = hydrateLeadsWithContactDatabase(payloadResults.map(stripLeadDebugPayload), contactDatabase);
       const mergedResults = mergeLeadResults(results, incomingResults);
-      const rawPreviewRecords = Array.isArray(payload.diagnostics?.rawPreviewRecords) ? payload.diagnostics.rawPreviewRecords : [];
+      const diagnosticPreviewRecords = Array.isArray(payload.diagnostics?.rawPreviewRecords) ? payload.diagnostics.rawPreviewRecords : [];
+      const embeddedPreviewRecords = payloadResults
+        .filter(result => result?._debugRawPreviewRecord)
+        .map(result => ({
+          company: result._debugRequestedCompany || result.company,
+          cognismContactId: result.cognismContactId,
+          cognismRedeemId: result.cognismRedeemId,
+          rawRecord: result._debugRawPreviewRecord,
+        }));
+      const rawPreviewRecords = diagnosticPreviewRecords.length ? diagnosticPreviewRecords : embeddedPreviewRecords;
       replacePreviewDebugRecords(rawPreviewRecords.reduce((current, record) => {
         const mappedLead = incomingResults.find(lead => leadDebugKeys(lead).some(key => key === normalizeLookupValue(record.cognismRedeemId) || key === normalizeLookupValue(record.cognismContactId))) || {};
         return addLeadDebugRecord(current, { ...mappedLead, cognismRedeemId: record.cognismRedeemId, cognismContactId: record.cognismContactId }, {

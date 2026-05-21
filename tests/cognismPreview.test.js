@@ -583,6 +583,44 @@ test("preview route helper paginates search results without redeeming contacts",
   assert.equal(payload.results.some(result => result.contactName === "Claire Whelan"), true);
 });
 
+test("preview debug response keeps raw Cognism records on returned rows", async () => {
+  const payload = await createCognismPreview(
+    {
+      companies: ["Yahoo"],
+      targetTitles: ["Director of Product Management"],
+      maxPerCompany: 1,
+      debug: true,
+    },
+    {
+      apiKey: "test-key",
+      fetcher: async () => ({
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            results: [
+              {
+                id: "contact-1",
+                redeemId: "redeem-1",
+                fullName: "Paarth Sharma",
+                jobTitle: "Director Of Product Management",
+                hasEmail: true,
+                hasMobilePhoneNumbers: true,
+                hasDirectPhoneNumbers: true,
+                account: { name: "Yahoo" },
+                customProviderField: "raw-value",
+              },
+            ],
+          };
+        },
+      }),
+    },
+  );
+
+  assert.equal(payload.results[0]._debugRawPreviewRecord.customProviderField, "raw-value");
+  assert.equal(payload.diagnostics.rawPreviewRecords[0].rawRecord.customProviderField, "raw-value");
+});
+
 test("preview route helper expands UX searches to product support titles", async () => {
   const fetcher = async (_url, options) => {
     const body = JSON.parse(options.body);

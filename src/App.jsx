@@ -409,7 +409,6 @@ const navItems = [
   { id: "contacts", label: "Contacts", icon: Contact, highlight: true },
   { id: "cognism", label: "Lead Finder", icon: Target, highlight: true },
   { id: "lead-lists", label: "Lead Lists", icon: ListFilter, highlight: true },
-  { id: "lead-lookup", label: "Lead Lookup", icon: Search, highlight: true },
   { id: "pipeline", label: "Pipeline", icon: KanbanSquare },
   // Calls workspace disabled: { id: "calls", label: "Calls", icon: Phone },
   { id: "research", label: "Research", icon: FileText },
@@ -422,6 +421,7 @@ const workspaceViewIds = new Set(navItems.map(item => item.id).concat([
   "campaign-detail",
   "account-detail",
   "contact-detail",
+  "lead-lookup",
 ]));
 
 function readWorkspaceViewFromUrl() {
@@ -480,11 +480,15 @@ function hydrateIntegrations(savedIntegrations = []) {
 }
 
 function createInitialCrmData() {
+  const clientAccounts = cloneRecords(initialClients);
+  const companies = cloneRecords(initialAccounts);
   return {
-    clients: cloneRecords(initialClients),
+    clientAccounts,
+    clients: clientAccounts,
     teamMembers: cloneRecords(initialTeamMembers),
     campaigns: cloneRecords(initialCampaigns),
-    accounts: cloneRecords(initialAccounts),
+    companies,
+    accounts: companies,
     contacts: cloneRecords(initialContacts),
     deals: cloneRecords(initialDeals),
     activities: cloneRecords(initialActivities),
@@ -501,13 +505,25 @@ function createInitialCrmData() {
 function normalizeCrmData(data) {
   const initial = createInitialCrmData();
   if (!data || typeof data !== "object") return initial;
+  const clientAccounts = Array.isArray(data.clientAccounts)
+    ? data.clientAccounts
+    : Array.isArray(data.clients)
+      ? data.clients
+      : initial.clientAccounts;
+  const companies = Array.isArray(data.companies)
+    ? data.companies
+    : Array.isArray(data.accounts)
+      ? data.accounts
+      : initial.companies;
   return {
     ...initial,
     ...data,
-    clients: Array.isArray(data.clients) ? data.clients : initial.clients,
+    clientAccounts,
+    clients: clientAccounts,
     teamMembers: Array.isArray(data.teamMembers) ? data.teamMembers : initial.teamMembers,
     campaigns: Array.isArray(data.campaigns) ? data.campaigns : initial.campaigns,
-    accounts: Array.isArray(data.accounts) ? data.accounts : initial.accounts,
+    companies,
+    accounts: companies,
     contacts: Array.isArray(data.contacts) ? data.contacts : initial.contacts,
     deals: Array.isArray(data.deals) ? data.deals : initial.deals,
     activities: Array.isArray(data.activities) ? data.activities : initial.activities,
@@ -527,9 +543,26 @@ function normalizeCrmData(data) {
 }
 
 function serializeCrmData(data) {
-  const { workspaceUsers: _workspaceUsers, ...records } = data;
+  const {
+    workspaceUsers: _workspaceUsers,
+    clients: _legacyClients,
+    accounts: _legacyAccounts,
+    ...records
+  } = data;
+  const clientAccounts = Array.isArray(data.clientAccounts)
+    ? data.clientAccounts
+    : Array.isArray(data.clients)
+      ? data.clients
+      : [];
+  const companies = Array.isArray(data.companies)
+    ? data.companies
+    : Array.isArray(data.accounts)
+      ? data.accounts
+      : [];
   return {
     ...records,
+    clientAccounts,
+    companies,
     integrations: records.integrations.map(integration => ({
       name: integration.name,
       status: integration.status,
@@ -588,8 +621,149 @@ function saveCrmData(userId, data) {
   window.localStorage.setItem(getStorageKey(userId), JSON.stringify(serializeCrmData(data)));
 }
 
+async function loadRelationalCrmData(organizationId) {
+  if (!supabase || !organizationId) return null;
+
+  const [
+    clientsResult,
+    campaignsResult,
+    companiesResult,
+    contactsResult,
+    campaignTargetsResult,
+  ] = await Promise.all([
+    supabase
+      .from("clients")
+      .select("id,name,status,industry,website,metadata")
+      .eq("organization_id", organizationId)
+      .order("name", { ascending: true }),
+    supabase
+      .from("campaigns")
+      .select("id,client_id,name,status,channel,settings")
+      .eq("organization_id", organizationId)
+      .order("name", { ascending: true }),
+    supabase
+      .from("companies")
+      .select("id,client_id,name,domain,website,industry,employee_count,annual_revenue,status,notes,custom_fields")
+      .eq("organization_id", organizationId)
+      .order("name", { ascending: true }),
+    supabase
+      .from("contacts")
+      .select("id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,job_title,linkedin_url,status")
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("campaign_targets")
+      .select("campaign_id,company_id,contact_id")
+      .eq("organization_id", organizationId),
+  ]);
+
+  const results = [clientsResult, campaignsResult, companiesResult, contactsResult, campaignTargetsResult];
+  const failedResult = results.find(result => result.error);
+  if (failedResult?.error) throw failedResult.error;
+
+  const clients = clientsResult.data || [];
+  const campaigns = campaignsResult.data || [];
+  const companies = companiesResult.data || [];
+  const contacts = contactsResult.data || [];
+  const campaignTargets = campaignTargetsResult.data || [];
+
+  if (!clients.length && !campaigns.length && !companies.length && !contacts.length) return null;
+
+  const companyById = new Map(companies.map(company => [company.id, company]));
+
+  return normalizeCrmData({
+    clientAccounts: clients.map(client => {
+      const clientCompanies = companies.filter(company => company.client_id === client.id);
+      const clientContacts = contacts.filter(contact => contact.client_id === client.id);
+      return {
+        id: client.id,
+        name: client.name,
+        workspace: client.name,
+        status: titleCase(client.status || "active"),
+        owner: "Workspace Admin",
+        industry: client.industry || "",
+        website: client.website || "",
+        companies: clientCompanies.length,
+        contacts: clientContacts.length,
+        health: clientCompanies.length || clientContacts.length ? "Active" : "Needs setup",
+      };
+    }),
+    companies: companies.map(company => ({
+      id: company.id,
+      clientId: company.client_id,
+      name: company.name,
+      domain: company.domain || "",
+      website: company.website || "",
+      owner: "Workspace Admin",
+      stage: "Imported",
+      status: titleCase(company.status || "active"),
+      industry: company.industry || "",
+      employees: company.employee_count || "",
+      value: Number(company.annual_revenue) || 0,
+      location: company.custom_fields?.company_hq_location || "",
+      lastActivity: "Imported from CRM database",
+      nextAction: "Review company",
+      insight: company.notes || "",
+    })),
+    campaigns: campaigns.map(campaign => {
+      const campaignCompanies = new Set(campaignTargets
+        .filter(member => member.campaign_id === campaign.id && member.company_id)
+        .map(member => member.company_id));
+      const campaignContacts = new Set(campaignTargets
+        .filter(member => member.campaign_id === campaign.id && member.contact_id)
+        .map(member => member.contact_id));
+      return {
+        id: campaign.id,
+        clientId: campaign.client_id,
+        name: campaign.name,
+        status: titleCase(campaign.status || "draft"),
+        owner: "Workspace Admin",
+        channel: campaign.channel || "Outbound",
+        companies: campaignCompanies.size,
+        accounts: campaignCompanies.size,
+        contacts: campaignContacts.size,
+        companyIds: [...campaignCompanies],
+        contactIds: [...campaignContacts],
+        meetings: 0,
+        nextAction: "Review imported company list",
+      };
+    }),
+    contacts: contacts.map(contact => {
+      const company = companyById.get(contact.company_id);
+      const name = contact.full_name || [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.email || "Unnamed contact";
+      return {
+        id: contact.id,
+        clientId: contact.client_id,
+        companyId: contact.company_id,
+        accountId: contact.company_id,
+        company: company?.name || "",
+        account: company?.name || "",
+        name,
+        firstName: contact.first_name || "",
+        lastName: contact.last_name || "",
+        email: contact.email || "",
+        phone: contact.mobile || contact.phone || "",
+        mobile: contact.mobile || "",
+        directDial: contact.phone || "",
+        title: contact.job_title || "",
+        role: contact.job_title || "",
+        linkedin: contact.linkedin_url || "",
+        status: titleCase(contact.status || "active"),
+        owner: "Workspace Admin",
+        lastTouch: "Imported from CRM database",
+      };
+    }),
+  });
+}
+
 async function loadSyncedCrmData(userId, organizationId) {
   if (!supabase || !organizationId) return loadCrmData(userId);
+  const relationalData = await loadRelationalCrmData(organizationId);
+  if (relationalData) {
+    await saveSyncedCrmData(organizationId, relationalData);
+    return relationalData;
+  }
+
   const { data, error } = await supabase
     .from("organizations")
     .select("metadata")
@@ -770,6 +944,14 @@ function normalizeLinkedinUrl(value) {
     .replace(/^linkedin\.com\/in\//i, "https://www.linkedin.com/in/");
 }
 
+function makeCompanySlug(value) {
+  return normalizeLookupValue(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || "company";
+}
+
 function buildLinkedInTargetUrl(lead = {}) {
   if (lead.linkedinProfileUrl) return normalizeLinkedinUrl(lead.linkedinProfileUrl);
   const keywords = encodeURIComponent([lead.contactName, lead.company].map(normalizeLookupValue).filter(Boolean).join(" "));
@@ -794,16 +976,17 @@ function mapContactDatabaseRecord(record) {
   return {
     id: record.id,
     organizationId: record.organization_id,
-    contactName: record.contact_name || "",
+    companyId: record.company_id || "",
+    contactName: record.contact_name || record.full_name || "",
     firstName: record.first_name || "",
     lastName: record.last_name || "",
     company: record.company || "",
     jobTitle: record.job_title || "",
     location: record.location || "",
-    linkedinProfileUrl: record.linkedin_profile_url || "",
-    manualEmail: record.manual_email || "",
-    manualMobile: record.manual_mobile || "",
-    manualDirectDial: record.manual_direct_dial || "",
+    linkedinProfileUrl: record.linkedin_profile_url || record.linkedin_url || "",
+    manualEmail: record.manual_email || record.email || "",
+    manualMobile: record.manual_mobile || record.mobile || "",
+    manualDirectDial: record.manual_direct_dial || record.direct_dial || record.phone || "",
     notes: record.notes || record.lookup_notes || "",
     sourceNote: record.source_note || "",
     dataSource: record.data_source || "manual",
@@ -826,13 +1009,42 @@ function mapContactDatabaseRecord(record) {
 async function loadLeadContactDatabase(organizationId) {
   if (!supabase || !organizationId) return [];
   const { data, error } = await supabase
-    .from("lead_contact_database")
+    .from("contacts")
     .select("*")
     .eq("organization_id", organizationId)
     .order("updated_at", { ascending: false });
 
   if (error) throw error;
   return (data || []).map(mapContactDatabaseRecord);
+}
+
+async function ensureLeadCompanyRecord(organizationId, companyName) {
+  const cleanName = normalizeLookupValue(companyName);
+  if (!supabase || !organizationId || !cleanName) throw new Error("Add a company before saving this contact.");
+
+  const { data: existing, error: findError } = await supabase
+    .from("companies")
+    .select("id,name")
+    .eq("organization_id", organizationId)
+    .ilike("name", cleanName)
+    .maybeSingle();
+
+  if (findError) throw findError;
+  if (existing?.id) return existing;
+
+  const { data, error } = await supabase
+    .from("companies")
+    .insert({
+      organization_id: organizationId,
+      name: cleanName,
+      slug: makeCompanySlug(cleanName),
+      status: "active",
+    })
+    .select("id,name")
+    .single();
+
+  if (error) throw error;
+  return data;
 }
 
 function findLeadDatabaseMatch(lead, contactDatabase = []) {
@@ -1227,6 +1439,12 @@ function findPotentialContactConflicts(lead = {}, contactDatabase = []) {
 
 function buildLeadContactDatabasePayload(lead, organizationId, userId) {
   const { firstName, lastName } = splitContactName(lead.contactName);
+  const contactName = normalizeLookupValue(lead.contactName);
+  const companyName = normalizeLookupValue(lead.company);
+  const manualEmail = normalizeEmail(lead.manualEmail) || null;
+  const manualMobile = normalizeLookupValue(lead.manualMobile) || null;
+  const manualDirectDial = normalizeLookupValue(lead.manualDirectDial) || null;
+  const linkedinProfileUrl = normalizeLinkedinUrl(lead.linkedinProfileUrl) || null;
   const hasManualData = leadHasManualData(lead) || lead.dataSource === "manual";
   const isCognismPreviewLead = Boolean(normalizeLookupValue(lead.cognismContactId));
   const sourceNote = hasManualData
@@ -1236,16 +1454,23 @@ function buildLeadContactDatabasePayload(lead, organizationId, userId) {
 
   const payload = {
     organization_id: organizationId,
-    contact_name: normalizeLookupValue(lead.contactName),
+    company_id: lead.companyId,
+    contact_name: contactName,
     first_name: firstName,
     last_name: lastName,
-    company: normalizeLookupValue(lead.company),
+    full_name: contactName,
+    company: companyName,
     job_title: normalizeLookupValue(lead.jobTitle),
     location: normalizeLookupValue(lead.location),
-    linkedin_profile_url: normalizeLinkedinUrl(lead.linkedinProfileUrl) || null,
-    manual_email: normalizeEmail(lead.manualEmail) || null,
-    manual_mobile: normalizeLookupValue(lead.manualMobile) || null,
-    manual_direct_dial: normalizeLookupValue(lead.manualDirectDial) || null,
+    linkedin_url: linkedinProfileUrl,
+    linkedin_profile_url: linkedinProfileUrl,
+    email: manualEmail,
+    manual_email: manualEmail,
+    mobile: manualMobile,
+    manual_mobile: manualMobile,
+    phone: manualDirectDial || manualMobile,
+    direct_dial: manualDirectDial,
+    manual_direct_dial: manualDirectDial,
     notes: normalizeLookupValue(lead.notes) || null,
     source_note: sourceNote,
     data_source: dataSource,
@@ -1268,18 +1493,31 @@ function buildLeadContactDatabasePayload(lead, organizationId, userId) {
 
 function buildPreviewContactDatabasePayload(lead, organizationId, userId, existingContact) {
   const { firstName, lastName } = splitContactName(lead.contactName);
+  const contactName = existingContact?.contactName || normalizeLookupValue(lead.contactName);
+  const companyName = existingContact?.company || normalizeLookupValue(lead.company);
+  const manualEmail = normalizeEmail(lead.manualEmail) || existingContact?.manualEmail || null;
+  const manualMobile = normalizeLookupValue(lead.manualMobile) || existingContact?.manualMobile || null;
+  const manualDirectDial = normalizeLookupValue(lead.manualDirectDial) || existingContact?.manualDirectDial || null;
+  const linkedinProfileUrl = existingContact?.linkedinProfileUrl || normalizeLinkedinUrl(lead.linkedinProfileUrl) || null;
   const payload = {
     organization_id: organizationId,
-    contact_name: existingContact?.contactName || normalizeLookupValue(lead.contactName),
+    company_id: lead.companyId || existingContact?.companyId,
+    contact_name: contactName,
     first_name: existingContact?.firstName || firstName,
     last_name: existingContact?.lastName || lastName,
-    company: existingContact?.company || normalizeLookupValue(lead.company),
+    full_name: contactName,
+    company: companyName,
     job_title: existingContact?.jobTitle || normalizeLookupValue(lead.jobTitle),
     location: existingContact?.location || normalizeLookupValue(lead.location),
-    linkedin_profile_url: existingContact?.linkedinProfileUrl || normalizeLinkedinUrl(lead.linkedinProfileUrl) || null,
-    manual_email: normalizeEmail(lead.manualEmail) || existingContact?.manualEmail || null,
-    manual_mobile: normalizeLookupValue(lead.manualMobile) || existingContact?.manualMobile || null,
-    manual_direct_dial: normalizeLookupValue(lead.manualDirectDial) || existingContact?.manualDirectDial || null,
+    linkedin_url: linkedinProfileUrl,
+    linkedin_profile_url: linkedinProfileUrl,
+    email: manualEmail,
+    manual_email: manualEmail,
+    mobile: manualMobile,
+    manual_mobile: manualMobile,
+    phone: manualDirectDial || manualMobile,
+    direct_dial: manualDirectDial,
+    manual_direct_dial: manualDirectDial,
     notes: existingContact?.notes || null,
     source_note: existingContact?.sourceNote || "Cognism preview search result",
     data_source: existingContact?.dataSource || "cognism_preview",
@@ -1352,27 +1590,38 @@ function buildWeeklyReport({ calls = [], insights = [], client, campaign, timefr
 
 function refreshCrmData(data) {
   const workspaceUsers = Array.isArray(data.workspaceUsers) ? data.workspaceUsers : [];
+  const sourceCompanies = Array.isArray(data.companies) ? data.companies : data.accounts;
   const clientsWithCounts = data.clients.map(client => {
-    const clientAccounts = data.accounts.filter(account => account.clientId === client.id);
+    const clientCompanies = data.accounts.filter(account => account.clientId === client.id);
     const clientContacts = data.contacts.filter(contact => contact.clientId === client.id);
     return {
       ...client,
-      accounts: clientAccounts.length,
+      accounts: clientCompanies.length,
+      companies: clientCompanies.length,
       contacts: clientContacts.length,
-      health: clientAccounts.length || clientContacts.length ? "Active" : "Needs setup",
+      health: clientCompanies.length || clientContacts.length ? "Active" : "Needs setup",
     };
   });
 
-  const campaignsWithCounts = data.campaigns.map(campaign => ({
-    ...campaign,
-    accounts: data.accounts.filter(account => account.clientId === campaign.clientId).length,
-    contacts: data.contacts.filter(contact => contact.clientId === campaign.clientId).length,
-  }));
+  const campaignsWithCounts = data.campaigns.map(campaign => {
+    const campaignCompanyIds = Array.isArray(campaign.companyIds) ? campaign.companyIds : [];
+    const campaignContactIds = Array.isArray(campaign.contactIds) ? campaign.contactIds : [];
+    const campaignCompanyCount = campaignCompanyIds.length || data.accounts.filter(account => account.clientId === campaign.clientId).length;
+    const campaignContactCount = campaignContactIds.length || data.contacts.filter(contact => contact.clientId === campaign.clientId).length;
+    return {
+      ...campaign,
+      accounts: campaignCompanyCount,
+      companies: campaignCompanyCount,
+      contacts: campaignContactCount,
+    };
+  });
 
   return {
     ...data,
     workspaceUsers,
+    clientAccounts: clientsWithCounts,
     clients: clientsWithCounts,
+    companies: sourceCompanies,
     campaigns: campaignsWithCounts,
   };
 }
@@ -1651,9 +1900,13 @@ function MetricCard({ label, value, detail, icon }) {
 function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount }) {
   const { deals, campaigns, accounts, teamMembers } = useCrmData();
   const { formatCurrency } = useCurrency();
-  const scopedAccounts = activeClient?.id && activeClient.id !== "none"
+  const clientAccounts = activeClient?.id && activeClient.id !== "none"
     ? accounts.filter(account => account.clientId === activeClient.id)
     : accounts;
+  const campaignCompanyIds = new Set(Array.isArray(activeCampaign?.companyIds) ? activeCampaign.companyIds : []);
+  const scopedAccounts = campaignCompanyIds.size
+    ? clientAccounts.filter(account => campaignCompanyIds.has(account.id))
+    : clientAccounts;
   const scopedAccountNames = new Set(scopedAccounts.map(account => account.name));
   const scopedCampaigns = activeClient?.id && activeClient.id !== "none"
     ? campaigns.filter(campaign => campaign.clientId === activeClient.id)
@@ -1684,8 +1937,8 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount
 
       <div className="metrics-grid">
         <MetricCard label="Active campaign" value={scopedCampaigns.length ? activeCampaign.name : "No campaign yet"} detail={activeCampaign.nextAction} icon={Megaphone} />
-        <MetricCard label="Target accounts" value={scopedAccounts.length} detail={scopedAccounts.length ? "Ready for review" : "Add targets inside a client account"} icon={BriefcaseBusiness} />
-        <MetricCard label="Open pipeline" value={formatCurrency(pipelineValue)} detail="Across the active client account" icon={KanbanSquare} />
+        <MetricCard label="Companies" value={scopedAccounts.length} detail={campaignCompanyIds.size ? "In selected campaign" : "Ready for review"} icon={BriefcaseBusiness} />
+        <MetricCard label="Open pipeline" value={formatCurrency(pipelineValue)} detail={campaignCompanyIds.size ? "Across the active campaign" : "Across the active client account"} icon={KanbanSquare} />
         <MetricCard label="Meetings booked" value={bookedMeetings} detail={bookedMeetings ? "From active campaigns" : "No meetings logged yet"} icon={CalendarDays} />
       </div>
 
@@ -1698,9 +1951,9 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount
             </div>
             <StatusBadge tone="accent">Setup</StatusBadge>
           </div>
-          {accounts.length ? (
+          {scopedAccounts.length ? (
             <div className="action-list">
-              {accounts.slice(0, 4).map(account => (
+              {scopedAccounts.slice(0, 4).map(account => (
               <button key={account.id} type="button" onClick={() => onOpenAccount(account.id)}>
                 <span className="record-avatar">{accountInitial(account.name)}</span>
                 <span>
@@ -1712,7 +1965,7 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate, onOpenAccount
               ))}
             </div>
           ) : (
-            <EmptyState icon={Target} title="No target accounts yet" text="Create or import target accounts, then add contacts and deals to start building pipeline." />
+            <EmptyState icon={Target} title="No companies yet" text="Create or import companies, then add contacts and deals to start building pipeline." />
           )}
         </section>
       </div>
@@ -1765,7 +2018,7 @@ function ClientsPage({ onOpenClient, onNewClient, onEditClient, onRemoveClient }
       <PageHeader
         eyebrow="Client accounts"
         title="Client accounts"
-        description="Manage each client account before moving into its campaigns, target accounts, contacts, pipeline, and research."
+        description="Manage each client account before moving into its campaigns, companies, contacts, pipeline, and research."
       >
         <button className="primary-button" type="button" onClick={onNewClient}>
           <Plus size={16} />
@@ -1774,14 +2027,13 @@ function ClientsPage({ onOpenClient, onNewClient, onEditClient, onRemoveClient }
       </PageHeader>
       <section className="panel">
         {clients.length ? <DataTable
-          columns={["Client account", "Workspace", "Owner", "Target accounts", "Contacts", "Health", ""]}
+          columns={["Client account", "Workspace", "Owner", "Companies", "Contacts", ""]}
           rows={clients.map(client => [
             <RecordName key="client" name={client.name} meta={client.status} />,
             client.workspace,
             client.owner,
             client.accounts,
             client.contacts,
-            <StatusBadge key="health" tone="success">{client.health}</StatusBadge>,
             <div key="actions" className="row-actions">
               <button className="icon-action" type="button" onClick={event => {
                 event.stopPropagation();
@@ -1804,7 +2056,7 @@ function ClientsPage({ onOpenClient, onNewClient, onEditClient, onRemoveClient }
             </div>,
           ])}
           rowActions={clients.map(client => () => onOpenClient(client.id))}
-        /> : <EmptyState icon={Building2} title="No client accounts yet" text="Create your first client account to manage campaigns, target accounts, contacts, research, and pipeline." />}
+        /> : <EmptyState icon={Building2} title="No client accounts yet" text="Create your first client account to manage campaigns, companies, contacts, research, and pipeline." />}
       </section>
       {pendingRemoval ? (
         <ClientRemovalDialog
@@ -1835,7 +2087,7 @@ function ClientRemovalDialog({ client, onCancel, onConfirm }) {
             <X size={16} />
           </button>
         </div>
-        <p className="modal-helper-text">This removes the client account and its campaigns, target accounts, contacts, deals, research, scripts, and reports from the CRM.</p>
+        <p className="modal-helper-text">This removes the client account and its campaigns, companies, contacts, deals, research, scripts, and reports from the CRM.</p>
         <div className="modal-actions">
           <button className="secondary-button" type="button" onClick={onCancel}>Cancel</button>
           <button className="secondary-button danger-button" type="button" onClick={onConfirm}>
@@ -1861,7 +2113,7 @@ function ClientDetailPage({ client, onOpenCampaign, onOpenAccount, onEditClient,
       <PageHeader
         eyebrow="Client account"
         title={client.name}
-        description="The parent record for this client account, its campaigns, target accounts, contacts, pipeline, and research."
+        description="The parent record for this client account, its campaigns, companies, contacts, pipeline, and research."
       >
         <button className="secondary-button" type="button" onClick={() => onEditClient(client)}>Edit client account</button>
         <button className="secondary-button danger-button" type="button" onClick={() => setPendingRemoval(client)}>
@@ -1869,12 +2121,12 @@ function ClientDetailPage({ client, onOpenCampaign, onOpenAccount, onEditClient,
           Remove client account
         </button>
         <button className="secondary-button" type="button" onClick={onNewCampaign}>New campaign</button>
-        <button className="primary-button" type="button" onClick={onNewAccount}>Add target account</button>
+        <button className="primary-button" type="button" onClick={onNewAccount}>Add company</button>
       </PageHeader>
       <div className="metrics-grid">
         <MetricCard label="Campaigns" value={clientCampaigns.length} detail={clientCampaigns.length ? "Campaigns in this client account" : "Create the first campaign"} icon={Megaphone} />
-        <MetricCard label="Target accounts" value={clientAccounts.length} detail={clientAccounts.length ? "Target accounts assigned" : "Add target accounts"} icon={BriefcaseBusiness} />
-        <MetricCard label="Contacts" value={clientContacts.length} detail={clientContacts.length ? "Contacts mapped" : "Add contacts after target accounts"} icon={Users} />
+        <MetricCard label="Companies" value={clientAccounts.length} detail={clientAccounts.length ? "Companies assigned" : "Add companies"} icon={BriefcaseBusiness} />
+        <MetricCard label="Contacts" value={clientContacts.length} detail={clientContacts.length ? "Contacts mapped" : "Add contacts after companies"} icon={Users} />
         <MetricCard label="Calls logged" value={clientCalls.length} detail={clientCalls.length ? "Recent call activity" : "No calls logged yet"} icon={Phone} />
       </div>
       <div className="content-grid two">
@@ -1892,12 +2144,12 @@ function ClientDetailPage({ client, onOpenCampaign, onOpenAccount, onEditClient,
         </section>
         <section className="panel">
           <div className="panel-header">
-            <h2>Target accounts</h2>
-            <button className="text-button" type="button" onClick={onNewAccount}>Add target account</button>
+            <h2>Companies</h2>
+            <button className="text-button" type="button" onClick={onNewAccount}>Add company</button>
           </div>
           {clientAccounts.length
             ? <AccountTable accounts={clientAccounts} onOpenAccount={onOpenAccount} onEditAccount={onEditAccount} />
-            : <EmptyState icon={BriefcaseBusiness} title="No target accounts yet" text="Add target accounts inside this client account before building contacts, research, and pipeline." />}
+            : <EmptyState icon={BriefcaseBusiness} title="No companies yet" text="Add companies inside this client account before building contacts, research, and pipeline." />}
         </section>
       </div>
       {pendingRemoval ? (
@@ -1963,7 +2215,7 @@ function CampaignList({ campaigns: providedCampaigns, onOpenCampaign, onEditCamp
               <StatusBadge tone={campaign.status === "Active" ? "success" : "neutral"}>{campaign.status}</StatusBadge>
             </div>
             <div className="mini-stats">
-              <span>{campaign.accounts} accounts</span>
+              <span>{campaign.accounts} companies</span>
               <span>{campaign.contacts} contacts</span>
               <span>{campaign.meetings} meetings</span>
             </div>
@@ -1987,8 +2239,15 @@ function CampaignList({ campaigns: providedCampaigns, onOpenCampaign, onEditCamp
 }
 
 function CampaignDetailPage({ campaign, onNavigate, onOpenAccount, onEditCampaign }) {
-  const { accounts, workspaceUsers } = useCrmData();
-  const campaignAccounts = accounts.filter(account => account.clientId === campaign.clientId);
+  const { accounts, contacts, workspaceUsers } = useCrmData();
+  const campaignCompanyIds = new Set(Array.isArray(campaign.companyIds) ? campaign.companyIds : []);
+  const campaignContactIds = new Set(Array.isArray(campaign.contactIds) ? campaign.contactIds : []);
+  const campaignAccounts = campaignCompanyIds.size
+    ? accounts.filter(account => campaignCompanyIds.has(account.id))
+    : accounts.filter(account => account.clientId === campaign.clientId);
+  const campaignContacts = campaignContactIds.size
+    ? contacts.filter(contact => campaignContactIds.has(contact.id))
+    : contacts.filter(contact => campaignAccounts.some(account => account.id === contact.accountId || account.id === contact.companyId));
   const assignedUserIds = Array.isArray(campaign.memberIds) ? campaign.memberIds : [];
   const assignedUsers = (workspaceUsers || []).filter(workspaceUser => assignedUserIds.includes(workspaceUser.id));
 
@@ -2004,14 +2263,27 @@ function CampaignDetailPage({ campaign, onNavigate, onOpenAccount, onEditCampaig
         {/* Calls workspace disabled: <button className="primary-button" type="button" onClick={() => onNavigate("calls")}>Call queue</button> */}
       </PageHeader>
       <div className="metrics-grid">
-        <MetricCard label="Target accounts" value={campaign.accounts} detail="In campaign scope" icon={BriefcaseBusiness} />
+        <MetricCard label="Companies" value={campaign.accounts} detail="In campaign scope" icon={BriefcaseBusiness} />
         <MetricCard label="Contacts" value={campaign.contacts} detail="Mapped to personas" icon={Users} />
         <MetricCard label="Meetings" value={campaign.meetings} detail="Booked so far" icon={CalendarDays} />
         <MetricCard label="Owner" value={campaign.owner} detail={campaign.channel} icon={UserRound} />
       </div>
       <section className="panel">
-        <div className="panel-header"><h2>Campaign target account focus</h2></div>
-        {campaignAccounts.length ? <AccountTable accounts={campaignAccounts} onOpenAccount={onOpenAccount} /> : <EmptyState icon={BriefcaseBusiness} title="No target accounts yet" text="Add target accounts to this client account to create campaign focus." />}
+        <div className="panel-header"><h2>Campaign company focus</h2></div>
+        {campaignAccounts.length ? <AccountTable accounts={campaignAccounts} onOpenAccount={onOpenAccount} /> : <EmptyState icon={BriefcaseBusiness} title="No companies yet" text="Add companies to this client account to create campaign focus." />}
+      </section>
+      <section className="panel">
+        <div className="panel-header"><h2>Campaign contacts</h2></div>
+        {campaignContacts.length ? <DataTable
+          columns={["Contact", "Company", "Role", "Email", "Phone"]}
+          rows={campaignContacts.map(contact => [
+            <RecordName key="contact" name={contact.name} meta={contact.status} />,
+            contact.company || contact.account || "Not assigned",
+            contact.role || contact.title || "Not available",
+            contact.email || "Not available",
+            contact.mobile || contact.phone || contact.directDial || "Not available",
+          ])}
+        /> : <EmptyState icon={Users} title="No contacts in this campaign" text="Attach contacts to this campaign to see the people and details in scope." />}
       </section>
       <section className="panel">
         <div className="panel-header">
@@ -2047,7 +2319,7 @@ function AccountTable({ accounts: providedAccounts, onOpenAccount, onEditAccount
 
   return (
     <DataTable
-      columns={["Target account", "Owner", "Stage", "Value", "Last activity", "Next action", ""]}
+      columns={["Company", "Owner", "Stage", "Value", "Last activity", "Next action", ""]}
       rows={accounts.map(account => [
         <RecordName key="account" name={account.name} meta={`${account.industry} - ${account.domain}`} />,
         account.owner,
@@ -2077,11 +2349,11 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
   return (
     <>
       <PageHeader
-        eyebrow="Target account"
+        eyebrow="Company"
         title={account.name}
         description={account.insight}
       >
-        <button className="secondary-button" type="button" onClick={() => onEditAccount(account)}>Edit target account</button>
+        <button className="secondary-button" type="button" onClick={() => onEditAccount(account)}>Edit company</button>
         <button className="secondary-button" type="button">
           <ExternalLink size={16} />
           {account.domain}
@@ -2116,7 +2388,7 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
                 <span className="muted-inline">{getContactPhoneNumber(contact) || "Phone number needed"}</span>
               </button>
             ))}
-          </div> : <EmptyState icon={Contact} title="No contacts on this account" text="Add contacts to map stakeholders and build the call queue." />}
+          </div> : <EmptyState icon={Contact} title="No contacts at this company" text="Add contacts to map stakeholders and build the call queue." />}
         </section>
         <section className="panel">
           <div className="panel-header">
@@ -2130,14 +2402,14 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
                 <strong>{formatCurrency(deal.value)} with {deal.contact}</strong>
               </div>
             ))}
-          </div> : <EmptyState icon={KanbanSquare} title="No deals for this account" text="Create a deal when there is a qualified opportunity to track." />}
+          </div> : <EmptyState icon={KanbanSquare} title="No deals for this company" text="Create a deal when there is a qualified opportunity to track." />}
         </section>
       </div>
       {account.scripts && (
         <section className="panel">
           <div className="panel-header">
             <div>
-              <span className="eyebrow">Target account intelligence</span>
+              <span className="eyebrow">Company intelligence</span>
               <h2>Outreach scripts</h2>
             </div>
           </div>
@@ -2204,7 +2476,7 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
     setImportMessage("");
     try {
       const importedRows = (await Promise.all(files.map(parseContactImportFile))).flat();
-      if (!importedRows.length) throw new Error("No contact rows found. Include contact name and company/account columns.");
+      if (!importedRows.length) throw new Error("No contact rows found. Include contact name and company columns.");
       const result = onImportContacts?.(importedRows, files);
       setImportStatus("done");
       setImportMessage(`${result?.addedCount || importedRows.length} contacts imported from ${files.length} file${files.length === 1 ? "" : "s"}.`);
@@ -2219,7 +2491,7 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
       <PageHeader
         eyebrow="Contacts"
         title="Contacts and personas"
-        description="UX, product, design, and research stakeholders linked to the active target account list."
+        description="UX, product, design, and research stakeholders linked to the active company list."
       >
         <input ref={importInputRef} className="visually-hidden" type="file" accept=".csv,.xlsx" multiple onChange={importContacts} />
         <button className="secondary-button" type="button" onClick={() => importInputRef.current?.click()} disabled={importStatus === "loading"}>
@@ -2233,7 +2505,7 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
       </PageHeader>
       <div className="contact-search-bar">
         <Search size={16} />
-        <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search contacts by name, email, phone, role, or account" />
+        <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search contacts by name, email, phone, role, or company" />
         <span>{filteredContacts.length} of {contacts.length}</span>
       </div>
       {importMessage ? <div className={importStatus === "error" ? "form-error" : "form-success"}>{importMessage}</div> : null}
@@ -2241,8 +2513,8 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
         {contacts.length ? (
           filteredContacts.length
             ? <ContactTable contacts={filteredContacts} onOpenContact={onOpenContact} onRemoveContact={onRemoveContact} canDeleteContacts={canDeleteContacts} />
-            : <EmptyState icon={Search} title="No matching contacts" text="Try a different name, email, phone number, role, or account." />
-        ) : <EmptyState icon={Contact} title="No contacts yet" text="Add contacts after creating accounts, or import a contact list." />}
+            : <EmptyState icon={Search} title="No matching contacts" text="Try a different name, email, phone number, role, or company." />
+        ) : <EmptyState icon={Contact} title="No contacts yet" text="Add contacts after creating companies, or import a contact list." />}
       </section>
     </>
   );
@@ -2435,7 +2707,7 @@ function ContactDetailPage({ contact, privateNote = "", onUpdateContact, onSaveP
       <div className="record-hero">
         <span className="record-avatar large">{accountInitial(contact.name)}</span>
         <div className="detail-list inline">
-          <div><span>Account</span><strong>{contact.account}</strong></div>
+          <div><span>Company</span><strong>{contact.account}</strong></div>
           <div><span>Role</span><strong>{contact.role || "Role needed"}</strong></div>
         </div>
       </div>
@@ -2454,7 +2726,7 @@ function ContactDetailPage({ contact, privateNote = "", onUpdateContact, onSaveP
           </div>
           {editing ? (
             <div className="detail-edit-grid">
-              <FormField label="Account">
+              <FormField label="Company">
                 <select value={draft.accountId} onChange={event => updateDraft("accountId", event.target.value)}>
                   {accounts.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
@@ -2701,7 +2973,7 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onMoveDeal,
       </div>
       {!scopedDeals.length && (
         <section className="panel empty-board-panel">
-          <EmptyState icon={KanbanSquare} title="No deals in this pipeline yet" text="Create target accounts and contacts inside the client account, then add deals to track pipeline." />
+          <EmptyState icon={KanbanSquare} title="No deals in this pipeline yet" text="Create companies and contacts inside the client account, then add deals to track pipeline." />
         </section>
       )}
     </>
@@ -2735,7 +3007,7 @@ function CallsPage({ onOpenContact, onLogCall, onStartCallBlock }) {
         <section className="panel">
           <div className="panel-header"><h2>Today call queue</h2></div>
           {contacts.length ? <DataTable
-            columns={["Contact", "Account", "Phone"]}
+            columns={["Contact", "Company", "Phone"]}
             rows={contacts.slice(0, 5).map(contact => [
               <RecordName key="contact" name={contact.name} meta={contact.role} />,
               contact.account,
@@ -2814,7 +3086,7 @@ function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource
     <>
       <PageHeader
         eyebrow="Research"
-        title="Target account intelligence"
+        title="Company intelligence"
         description={`${activeClient?.name || "Client account"} research and scripts${activeCampaign?.name && activeCampaign.id !== "none" ? ` for ${activeCampaign.name}` : ""}.`}
       >
         <button className="secondary-button" type="button" onClick={onAddSource}>
@@ -2866,10 +3138,10 @@ function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource
               <div><span>Suggested angle</span><strong>{account.nextAction}</strong></div>
             </div>
             <button className="text-button" type="button" onClick={() => onOpenAccount(account.id)}>
-              Open target account <ArrowRight size={14} />
+              Open company <ArrowRight size={14} />
             </button>
           </article>
-        )) : <section className="panel"><EmptyState icon={FileText} title="No research records yet" text="Research summaries will appear after accounts are added and research jobs are created." /></section>}
+        )) : <section className="panel"><EmptyState icon={FileText} title="No research records yet" text="Research summaries will appear after companies are added and research jobs are created." /></section>}
       </div>
       <section className="panel">
         <div className="panel-header">
@@ -3455,7 +3727,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       manualDirectDial: normalizeLookupValue(draft.manualDirectDial),
       notes: normalizeLookupValue(draft.notes),
       dbContactId: contact.id,
-      sourceNote: draft.sourceNote || "Edited in Lead Lookup",
+      sourceNote: draft.sourceNote || "Edited in Contacts",
     };
     setLeadLookupSaveStatuses(current => ({ ...current, [contact.id]: "saving" }));
     try {
@@ -3474,9 +3746,9 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
   return (
     <>
       <PageHeader
-        eyebrow="Lead Database"
-        title="Lead lookup"
-        description="Search saved lead records by person, company, position, email, phone, or notes."
+        eyebrow="Contact database"
+        title="Contacts"
+        description="Search saved contacts by person, company, position, email, phone, or notes."
       >
         <button className="secondary-button" type="button" onClick={() => setEditMode(current => !current)}>
           <Database size={16} />
@@ -3487,7 +3759,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
         <div className="panel-header">
           <div>
             <span className="eyebrow">Saved data</span>
-            <h2>Find saved leads</h2>
+            <h2>Find contacts</h2>
           </div>
           <div className="cognism-meta">
             <StatusBadge>{contactDatabase.length} saved</StatusBadge>
@@ -3607,7 +3879,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                           <LeadLookupLinkedInButton contact={contact} />
                           <div className="lookup-person-cell">
                             <div className="lookup-person-heading">
-                              <strong>{contact.contactName || [contact.firstName, contact.lastName].filter(Boolean).join(" ") || "Unknown lead"}</strong>
+                              <strong>{contact.contactName || [contact.firstName, contact.lastName].filter(Boolean).join(" ") || "Unknown contact"}</strong>
                             </div>
                           </div>
                         </div>
@@ -3640,7 +3912,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
               }) : (
                 <tr>
                   <td colSpan={editMode ? 11 : 10} className="empty-table-cell">
-                    {contactDatabase.length ? "No saved leads match those filters." : "Saved Lead Finder records will appear here."}
+                    {contactDatabase.length ? "No saved contacts match those filters." : "Saved contacts will appear here."}
                   </td>
                 </tr>
               )}
@@ -5575,7 +5847,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
           <div className="panel-header">
             <div>
             <span className="eyebrow">Search inputs</span>
-            <h2>Any client account or target account list</h2>
+            <h2>Any client account or company list</h2>
           </div>
           <StatusBadge tone="accent">Configurable max</StatusBadge>
         </div>
@@ -6415,7 +6687,7 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, integrationCredentials, 
       <PageHeader
         eyebrow="Integrations"
         title="Connection centre"
-        description="Active and planned external services for contact search, calling, account intelligence, and imports."
+        description="Active and planned external services for contact search, calling, company intelligence, and imports."
       />
       <div className="integration-grid">
         {integrations.map(integration => {
@@ -6702,7 +6974,7 @@ function SettingsPage({
       </PageHeader>
       <div className="content-grid two">
         <section className="panel">
-          <div className="panel-header"><h2>Account profile</h2></div>
+          <div className="panel-header"><h2>Client account profile</h2></div>
           <form className="profile-settings-form" onSubmit={submitProfile}>
             <FormField label="Email">
               <input value={user?.email || ""} disabled />
@@ -6750,7 +7022,7 @@ function SettingsPage({
                 </div>
               </div>
             ))}
-          </div> : <EmptyState icon={Users} title="No teammates yet" text="Invite a teammate to start assigning accounts, calls, and research." />}
+          </div> : <EmptyState icon={Users} title="No teammates yet" text="Invite a teammate to start assigning companies, calls, and research." />}
         </section>
         <section className="panel">
           <div className="panel-header"><h2>Preferences</h2></div>
@@ -6840,7 +7112,7 @@ function SettingsPage({
               <strong>{standardMemberCount}</strong>
             </div>
           </div>
-          <p className="admin-panel-intro">Manage who can use admin controls. Account membership and campaign assignment stay separate, so adding someone to an account does not automatically put them in every campaign.</p>
+          <p className="admin-panel-intro">Manage who can use admin controls. Client account membership and campaign assignment stay separate, so adding someone to a client account does not automatically put them in every campaign.</p>
           <div className="admin-access-tabs" role="tablist" aria-label="Filter member permissions">
             {[
               ["all", "All"],
@@ -6980,7 +7252,7 @@ function FilesPage({ onUploadFile }) {
         /> : <EmptyState
           icon={FileText}
           title="No files added yet"
-          text="CSV import and file summariser workflows will attach source files to client accounts, target accounts, and campaigns."
+          text="CSV import and file summariser workflows will attach source files to client accounts, companies, and campaigns."
         />}
       </section>
     </>
@@ -7180,7 +7452,7 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
           <div className="auth-copy">
             <span className="eyebrow">Workspace access</span>
             <h1>{mode === "signin" ? "Open your workspace" : "Create a workspace"}</h1>
-            <p>Manage client accounts, campaigns, target accounts, contacts, calls, and research from one PaceOps operating system.</p>
+            <p>Manage client accounts, campaigns, companies, contacts, calls, and research from one PaceOps operating system.</p>
           </div>
 
           <form className="auth-form" onSubmit={submit}>
@@ -7263,7 +7535,7 @@ function HomePage({ isDark, onThemeToggle, onAuthenticate, user, onBackToWorkspa
             <span className="eyebrow">PaceOps Data Analytics</span>
             <h1>Client data analytics for PaceOps teams.</h1>
             <p>PaceOps is a professional services prospecting hub focused on human-personalised outreach, data-driven insight, and sales development operations.</p>
-            <p>PaceOps Data Analytics is the internal workspace for managing client accounts, campaigns, target accounts, contacts, calls, research, and pipeline activity.</p>
+            <p>PaceOps Data Analytics is the internal workspace for managing client accounts, campaigns, companies, contacts, calls, research, and pipeline activity.</p>
 
             <div id="contact" className="contact-card">
               <h2>Contact</h2>
@@ -7365,7 +7637,7 @@ function RightDrawer({ open, activeView, selectedAccount, activeCampaign, isDark
         <span className="eyebrow">Suggested next step</span>
         <div className="drawer-task">
           <CheckCircle2 size={16} />
-          <span>{selectedAccount?.nextAction || "Review campaign accounts before the next call block"}</span>
+          <span>{selectedAccount?.nextAction || "Review campaign companies before the next call block"}</span>
         </div>
       </section>
       <section>
@@ -7434,7 +7706,7 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
     case "client":
       return { name: "", workspace: "Prospecting workspace", owner: "Workspace user", industry: "", website: "" };
     case "campaign":
-      return { clientId, name: "", channel: "Research-led outbound", status: "draft", nextAction: "Define target account focus and first call block", memberIds: [] };
+      return { clientId, name: "", channel: "Research-led outbound", status: "draft", nextAction: "Define company focus and first call block", memberIds: [] };
     case "account":
       return { clientId, name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || "Lead In", status: "New", nextAction: "Map buying committee", insight: "" };
     case "contact":
@@ -7444,7 +7716,7 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
     case "call":
       return { contactId, outcome: "Connected", notes: "" };
     case "research":
-      return { accountId, title: "Account research brief", summary: "", dataGap: "Buying committee validation" };
+      return { accountId, title: "Company research brief", summary: "", dataGap: "Buying committee validation" };
     case "file":
       return { name: "", source: "CSV import", objectType: "accounts", rows: "0" };
     case "team":
@@ -7464,7 +7736,7 @@ function getWorkflowTitle(type) {
   return {
   client: "New client account",
     campaign: "New campaign",
-  account: "Add target account",
+  account: "Add company",
     contact: "Add contact",
     deal: "New deal",
     call: "Log call outcome",
@@ -7477,13 +7749,13 @@ function getWorkflowTitle(type) {
 
 function getWorkflowPrerequisite(type, data) {
   if (["campaign", "account"].includes(type) && !data.clients.length) {
-    return { message: "Create a client account first. Campaigns and target accounts belong inside a client account.", nextType: "client", nextLabel: "Create client account" };
+    return { message: "Create a client account first. Campaigns and companies belong inside a client account.", nextType: "client", nextLabel: "Create client account" };
   }
   if (["contact", "deal", "research"].includes(type) && !data.accounts.length) {
-    return { message: "Add a target account first. Contacts, deals, and research need a target account to attach to.", nextType: data.clients.length ? "account" : "client", nextLabel: data.clients.length ? "Add target account" : "Create client account" };
+    return { message: "Add a company first. Contacts, deals, and research need a company to attach to.", nextType: data.clients.length ? "account" : "client", nextLabel: data.clients.length ? "Add company" : "Create client account" };
   }
   if (type === "call" && !data.contacts.length) {
-    return { message: "Add a contact first. Calls need a contact record.", nextType: data.accounts.length ? "contact" : data.clients.length ? "account" : "client", nextLabel: data.accounts.length ? "Add contact" : data.clients.length ? "Add target account" : "Create client account" };
+    return { message: "Add a contact first. Calls need a contact record.", nextType: data.accounts.length ? "contact" : data.clients.length ? "account" : "client", nextLabel: data.accounts.length ? "Add contact" : data.clients.length ? "Add company" : "Create client account" };
   }
   return null;
 }
@@ -7563,7 +7835,7 @@ function WorkflowModal({
   async function runAccountLookup() {
     if (!accountLookupEnabled || values.name.trim().length < 2 || accountLookupStatus === "loading") return;
     const clientName = data.clients.find(client => client.id === values.clientId)?.name || "";
-    setAccountLookupStatus("loading");
+      setAccountLookupStatus("loading");
     try {
       const response = await fetch("/api/account-suggestions", {
         method: "POST",
@@ -7571,7 +7843,7 @@ function WorkflowModal({
         body: JSON.stringify({ name: values.name, clientName }),
       });
       const suggestions = await readJsonResponse(response);
-      if (!response.ok) throw new Error(suggestions.error || "Account lookup failed");
+      if (!response.ok) throw new Error(suggestions.error || "Company lookup failed");
       setValues(current => ({
         ...current,
         domain: accountTouchedFields.domain ? current.domain : suggestions.domain || current.domain,
@@ -7701,7 +7973,7 @@ function WorkflowModal({
               </select>
             </FormField>
             <FormField label="Next action">
-              <input value={values.nextAction} onChange={event => update("nextAction", event.target.value)} placeholder="Define target account list" />
+              <input value={values.nextAction} onChange={event => update("nextAction", event.target.value)} placeholder="Define company list" />
             </FormField>
             <FormField label="Campaign users">
               <select
@@ -7724,13 +7996,13 @@ function WorkflowModal({
                 {data.clients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
               </select>
             </FormField>
-            <FormField label="Account name">
-              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Account name" />
+            <FormField label="Company name">
+              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Company name" />
             </FormField>
             <label className="company-lookup-toggle">
               <span>
                 <Search size={16} />
-                Account lookup disabled
+                Company lookup disabled
               </span>
               <input
                 type="checkbox"
@@ -7795,7 +8067,7 @@ function WorkflowModal({
               <input value={values.nextAction} onChange={event => update("nextAction", event.target.value, { markTouched: true })} placeholder="Map buying committee" />
             </FormField>
             <FormField label="Research signal">
-              <textarea value={values.insight} onChange={event => update("insight", event.target.value, { markTouched: true })} placeholder="What makes this account relevant?" />
+              <textarea value={values.insight} onChange={event => update("insight", event.target.value, { markTouched: true })} placeholder="What makes this company relevant?" />
             </FormField>
             {values.scripts && (
               <section className="script-preview">
@@ -7826,7 +8098,7 @@ function WorkflowModal({
             <datalist id="contact-account-options">
               {data.accounts.map(account => <option key={account.id} value={account.name} />)}
             </datalist>
-            <FormField label="Account">
+            <FormField label="Company">
               <input list="contact-account-options" required value={values.accountName} onChange={event => {
                 const accountName = event.target.value;
                 const matchedAccount = data.accounts.find(account => normalizeLookupValue(account.name).toLowerCase() === normalizeLookupValue(accountName).toLowerCase());
@@ -7835,7 +8107,7 @@ function WorkflowModal({
                   accountName,
                   accountId: matchedAccount?.id || "",
                 }));
-              }} placeholder="Type or select account" />
+              }} placeholder="Type or select company" />
             </FormField>
             <FormField label="Contact name">
               <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Contact name" />
@@ -7857,7 +8129,7 @@ function WorkflowModal({
       case "deal":
         return (
           <>
-            <FormField label="Account">
+            <FormField label="Company">
               <select value={values.accountId} onChange={event => update("accountId", event.target.value)}>
                 {accountOptions()}
               </select>
@@ -7902,7 +8174,7 @@ function WorkflowModal({
       case "research":
         return (
           <>
-            <FormField label="Account">
+            <FormField label="Company">
               <select value={values.accountId} onChange={event => update("accountId", event.target.value)}>
                 {accountOptions()}
               </select>
@@ -7922,7 +8194,7 @@ function WorkflowModal({
         return (
           <>
             <FormField label="File name">
-              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="target-accounts.csv" />
+              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="companies.csv" />
             </FormField>
             <FormField label="Source">
               <select value={values.source} onChange={event => update("source", event.target.value)}>
@@ -7933,7 +8205,7 @@ function WorkflowModal({
             </FormField>
             <FormField label="Record type">
               <select value={values.objectType} onChange={event => update("objectType", event.target.value)}>
-                <option value="accounts">Target accounts</option>
+                <option value="accounts">Companies</option>
                 <option value="contacts">Contacts</option>
                 <option value="research">Research</option>
               </select>
@@ -7950,7 +8222,7 @@ function WorkflowModal({
               <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Team member name" />
             </FormField>
             <FormField label="Role">
-              <input value={values.role} onChange={event => update("role", event.target.value)} placeholder="Account lead" />
+              <input value={values.role} onChange={event => update("role", event.target.value)} placeholder="Client account lead" />
             </FormField>
             <FormField label="Status">
               <select value={values.status} onChange={event => update("status", event.target.value)}>
@@ -8198,8 +8470,8 @@ export default function App() {
           return [];
         }),
         loadLeadContactDatabase(organizationId).catch(error => {
-          console.error("Could not load Lead Finder contact database", error);
-          setLeadListsError(error.message || "Could not load Lead Finder contact database.");
+          console.error("Could not load contacts", error);
+          setLeadListsError(error.message || "Could not load contacts.");
           return [];
         }),
         loadPrivateContactNotes(organizationId, nextUser.id).catch(error => {
@@ -8494,18 +8766,20 @@ export default function App() {
     }
 
     const { currentUser, organizationId } = await getLeadContactSaveContext();
-    const payload = buildLeadContactDatabasePayload(lead, organizationId, currentUser.id);
+    const company = await ensureLeadCompanyRecord(organizationId, lead.company);
+    const leadWithCompany = { ...lead, companyId: company.id, company: company.name || lead.company };
+    const payload = buildLeadContactDatabasePayload(leadWithCompany, organizationId, currentUser.id);
     const updatePayload = { ...payload };
     delete updatePayload.id;
     delete updatePayload.created_by;
     const query = lead.dbContactId
       ? supabase
-        .from("lead_contact_database")
+        .from("contacts")
         .update(updatePayload)
         .eq("id", lead.dbContactId)
         .eq("organization_id", organizationId)
       : supabase
-        .from("lead_contact_database")
+        .from("contacts")
         .upsert(payload, { onConflict: "organization_id,normalized_identity_key" });
     const { data, error } = await query.select("*").single();
 
@@ -8521,16 +8795,25 @@ export default function App() {
 
     const { currentUser, organizationId } = await getLeadContactSaveContext();
     const payloadsByIdentity = new Map();
+    const companyByName = new Map();
 
     for (const lead of previewLeads) {
       const existingContact = findLeadDatabaseMatch(lead, leadContactDatabase);
-      const payload = buildPreviewContactDatabasePayload(lead, organizationId, currentUser.id, existingContact);
+      const companyName = normalizeLookupValue(existingContact?.company || lead.company);
+      if (!companyName) continue;
+      if (!companyByName.has(companyName.toLowerCase())) {
+        companyByName.set(companyName.toLowerCase(), await ensureLeadCompanyRecord(organizationId, companyName));
+      }
+      const company = companyByName.get(companyName.toLowerCase());
+      const leadWithCompany = { ...lead, companyId: company.id, company: company.name || companyName };
+      const payload = buildPreviewContactDatabasePayload(leadWithCompany, organizationId, currentUser.id, existingContact);
       payloadsByIdentity.set(payload.normalized_identity_key, payload);
     }
 
     const payloads = [...payloadsByIdentity.values()];
+    if (!payloads.length) return [];
     const { data, error } = await supabase
-      .from("lead_contact_database")
+      .from("contacts")
       .upsert(payloads, { onConflict: "organization_id,normalized_identity_key" })
       .select("*");
 
@@ -8716,7 +8999,7 @@ export default function App() {
 
   const searchQuery = search.trim().toLowerCase();
   const searchResults = searchQuery.length < 2 ? [] : [
-    ...accounts.map(account => ({ type: "Account", id: account.id, title: account.name, meta: account.nextAction })),
+    ...accounts.map(account => ({ type: "Company", id: account.id, title: account.name, meta: account.nextAction })),
     ...contacts.map(contact => ({ type: "Contact", id: contact.id, title: contact.name, meta: `${contact.role}, ${contact.account}` })),
     ...campaigns.map(campaign => ({ type: "Campaign", id: campaign.id, title: campaign.name, meta: campaign.nextAction })),
     ...workspaceUsers.map(workspaceUser => ({ type: "User", id: workspaceUser.id, title: workspaceUser.name, meta: workspaceUser.email })),
@@ -9233,9 +9516,9 @@ export default function App() {
         location: normalizeLookupValue(lead.location) || "Unspecified",
         employees: "Unknown",
         value: 0,
-        lastActivity: "Added from Lead Lookup",
+        lastActivity: "Added from Contacts",
         nextAction: "Map buying committee",
-        insight: "Created from a saved Lead Finder contact.",
+        insight: "Created from a saved contact.",
         scripts: null,
       };
       const mobileNumber = normalizeLookupValue(lead.manualMobile);
@@ -9254,7 +9537,7 @@ export default function App() {
         directDial: directDialNumber,
         owner: "Workspace user",
         status: "New",
-        lastTouch: "Added from Lead Lookup",
+        lastTouch: "Added from Contacts",
       };
 
       setActiveClientId(client.id);
@@ -9267,7 +9550,7 @@ export default function App() {
         clients: current.clients.length ? current.clients : [client],
         accounts: existingAccount ? current.accounts : [account, ...current.accounts],
         contacts: [contact, ...current.contacts],
-        activities: [makeActivity("Contact", `Contact added from Lead Lookup: ${contact.name}`, account.name), ...current.activities],
+        activities: [makeActivity("Contact", `Contact added from Contacts: ${contact.name}`, account.name), ...current.activities],
       };
     });
   }
@@ -9338,7 +9621,7 @@ export default function App() {
 
       if (type === "edit-account") {
         const previous = current.accounts.find(account => account.id === values.id);
-        const accountName = values.name.trim() || previous?.name || "Untitled account";
+          const accountName = values.name.trim() || previous?.name || "Untitled company";
         return {
           ...current,
           accounts: current.accounts.map(account => account.id === values.id
@@ -9361,7 +9644,7 @@ export default function App() {
             : account),
           contacts: current.contacts.map(contact => contact.accountId === values.id ? { ...contact, account: accountName, clientId: values.clientId || contact.clientId } : contact),
           deals: current.deals.map(deal => previous && deal.account === previous.name ? { ...deal, account: accountName } : deal),
-          activities: [makeActivity("Account", `Account updated: ${accountName}`, accountName), ...current.activities],
+          activities: [makeActivity("Company", `Company updated: ${accountName}`, accountName), ...current.activities],
         };
       }
 
@@ -9424,7 +9707,7 @@ export default function App() {
             accounts: current.accounts.filter(account => account.clientId === clientId).length,
             contacts: current.contacts.filter(contact => contact.clientId === clientId).length,
             meetings: 0,
-            nextAction: values.nextAction || "Define target account focus and next action",
+            nextAction: values.nextAction || "Define company focus and next action",
             memberIds: Array.isArray(values.memberIds) ? values.memberIds : [],
           };
           setActiveClientId(clientId);
@@ -9441,7 +9724,7 @@ export default function App() {
           const account = {
             id: makeId("account"),
             clientId,
-            name: values.name.trim() || "Untitled account",
+            name: values.name.trim() || "Untitled company",
             domain: values.domain || "No domain",
             owner: "Workspace user",
             stage: values.stage || "Lead In",
@@ -9461,11 +9744,11 @@ export default function App() {
           return {
             ...current,
             accounts: [account, ...current.accounts],
-            activities: [makeActivity("Account", `Account added: ${account.name}`, account.name), ...current.activities],
+            activities: [makeActivity("Company", `Company added: ${account.name}`, account.name), ...current.activities],
           };
         }
         case "contact": {
-          const accountName = normalizeLookupValue(values.accountName) || "Untitled account";
+          const accountName = normalizeLookupValue(values.accountName) || "Untitled company";
           const fallbackClient = current.clients[0] || {
             id: makeId("client"),
             name: "Imported contacts",
@@ -9559,7 +9842,7 @@ export default function App() {
             clientId: account.clientId,
             campaignId: activeCampaignId,
             account: account.name,
-            title: values.title || "Account research brief",
+            title: values.title || "Company research brief",
             summary: values.summary,
             dataGap: values.dataGap,
             status: "Queued",
@@ -9626,7 +9909,7 @@ export default function App() {
 
   function handleSearchSelect(result) {
     setSearch("");
-    if (result.type === "Account") openAccount(result.id);
+    if (result.type === "Company") openAccount(result.id);
     if (result.type === "Contact") openContact(result.id);
     if (result.type === "Campaign") openCampaign(result.id);
     if (result.type === "User") openView("settings");
@@ -9667,17 +9950,16 @@ export default function App() {
           ? <AccountDetailPage account={selectedAccount} onOpenContact={openContact} onEditAccount={editAccount} onQueueResearch={(accountId) => openWorkflow("research", { accountId })} onNewContact={(accountId) => openWorkflow("contact", { accountId })} onNewDeal={(accountId) => openWorkflow("deal", { accountId })} />
           : <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} />;
       case "contacts":
-        return <ContactsPage onOpenContact={openContact} onNewContact={(accountId) => openWorkflow("contact", accountId ? { accountId } : {})} onImportContacts={handleImportContacts} onRemoveContact={handleRemoveContact} canDeleteContacts={canDeleteContacts} />;
+      case "lead-lookup":
+        return <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} />;
       case "contact-detail":
         return selectedContact
           ? <ContactDetailPage key={selectedContact.id} contact={selectedContact} privateNote={privateContactNotes[selectedContact.id] || ""} onUpdateContact={handleUpdateContact} onSavePrivateNote={handleSavePrivateContactNote} onLogCall={handleLogCall} onRemoveContact={handleRemoveContact} canDeleteContacts={canDeleteContacts} />
-          : <ContactsPage onOpenContact={openContact} onNewContact={() => openWorkflow("contact")} onImportContacts={handleImportContacts} onRemoveContact={handleRemoveContact} canDeleteContacts={canDeleteContacts} />;
+          : <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} />;
       case "cognism":
         return <CognismContactFinder contactDatabase={leadContactDatabase} onSaveLeadList={handleSaveLeadList} onSaveLeadContact={handleUpsertLeadContact} onPersistSearchResults={handlePersistSearchResults} cognismPreviewEnabled={normalizeAdminSettings(adminSettingsState.settings).cognism_preview_enabled} canUseRedeemMode={canUseCognismRedeemMode} currentUserId={user?.id || ""} />;
       case "lead-lists":
         return <LeadListsPage leadLists={leadLists} workspaceUsers={workspaceUsers} contactDatabase={leadContactDatabase} error={leadListsError} onSaveLeadList={handleSaveLeadList} onAppendToLeadList={handleAppendToLeadList} onUpdateLeadList={handleUpdateLeadList} onDeleteLeadList={handleDeleteLeadList} onSaveLeadContact={handleUpsertLeadContact} />;
-      case "lead-lookup":
-        return <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} />;
       case "pipeline":
         return <PipelinePage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onMoveDeal={handleMoveDeal} onNewDeal={(accountId) => openWorkflow("deal", accountId ? { accountId } : {})} onUpdateStages={handleUpdatePipelineStages} />;
       case "research":

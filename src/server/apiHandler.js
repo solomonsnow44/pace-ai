@@ -450,8 +450,6 @@ async function findIntegrationConnection(serviceClient, organizationId, provider
     .eq('organization_id', organizationId)
     .eq('provider', provider)
     .eq('name', provider)
-    .is('client_id', null)
-    .is('workspace_id', null)
     .maybeSingle();
 
   if (error) throw error;

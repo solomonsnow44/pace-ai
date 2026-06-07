@@ -1656,9 +1656,10 @@ function StatusBadge({ children, tone = "neutral" }) {
 }
 
 function PhoneLink({ number, label = "Call" }) {
-  if (!number) return <span className="muted-inline">No number</span>;
+  const dialPhoneNumber = normalizePhone(number);
+  if (!dialPhoneNumber) return <span className="muted-inline">No number</span>;
   return (
-    <a className="call-link" href={`tel:${number}`}>
+    <a className="call-link" href={`tel:${dialPhoneNumber}`}>
       <Phone size={14} />
       <span>{label}</span>
     </a>
@@ -1713,49 +1714,31 @@ async function assertApiServerAvailable() {
   return payload;
 }
 
-function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", source = "crm_contact", label = "Call", compact = false }) {
+function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", label = "Call", compact = false }) {
   const phoneNumber = phoneNumberOverride || getContactPhoneNumber(contact);
   const dialPhoneNumber = normalizePhone(phoneNumber);
-  const [status, setStatus] = useState("idle");
-  const [message, setMessage] = useState("");
-  const canDial = Boolean(dialPhoneNumber && contact?.id);
-  const buttonTitle = message || (phoneNumber ? `Call ${phoneNumber}` : "Phone number needed");
+  const canDial = Boolean(dialPhoneNumber);
+  const buttonTitle = phoneNumber ? `Open ${phoneNumber} in Aircall` : "Phone number needed";
 
-  async function dialContact() {
-    setStatus("loading");
-    setMessage("");
-
-    try {
-      const { data } = supabase ? await supabase.auth.getSession() : { data: null };
-      const token = data?.session?.access_token;
-      if (!token) throw new Error("Sign in before sending numbers to Aircall.");
-
-      const response = await fetch("/api/aircall/dial", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ phoneNumber: dialPhoneNumber, contactId: contact.id, source }),
-      });
-      const payload = await readJsonResponse(response);
-      if (!response.ok) throw new Error(payload.error || "Aircall dial failed");
-      setStatus("success");
-      setMessage(payload.message || "Number sent to Aircall.");
-    } catch (dialError) {
-      setStatus("error");
-      setMessage(dialError.message || "Aircall dial failed");
-    }
+  if (!canDial) {
+    return (
+      <div className={`aircall-dial ${compact ? "compact" : ""}`}>
+        {!compact ? <span>Phone number needed</span> : null}
+        <button className="secondary-button" type="button" disabled title={buttonTitle} aria-label={buttonTitle}>
+          <Phone size={16} />
+          {!compact ? label : null}
+        </button>
+      </div>
+    );
   }
 
   return (
     <div className={`aircall-dial ${compact ? "compact" : ""}`}>
       {!compact ? <span>{phoneNumber || "Phone number needed"}</span> : null}
-      <button className={`secondary-button ${status === "error" ? "dial-button-error" : ""}`} type="button" disabled={!canDial || status === "loading"} onClick={dialContact} title={buttonTitle} aria-label={buttonTitle}>
-        {status === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Phone size={16} />}
-        {!compact ? (status === "loading" ? "Dialing" : label) : null}
-      </button>
-      {message && !compact ? <small className={status === "error" ? "dial-error" : "dial-success"}>{message}</small> : null}
+      <a className="secondary-button" href={`tel:${dialPhoneNumber}`} title={buttonTitle} aria-label={buttonTitle}>
+        <Phone size={16} />
+        {!compact ? label : null}
+      </a>
     </div>
   );
 }

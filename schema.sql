@@ -462,7 +462,8 @@ CREATE OR REPLACE FUNCTION "public"."default_admin_settings"() RETURNS "jsonb"
     AS $$
   select jsonb_build_object(
     'cognism_preview_enabled', true,
-    'contact_deletion_enabled', false
+    'contact_deletion_enabled', false,
+    'test_account_enabled', false
   )
 $$;
 
@@ -772,7 +773,7 @@ $$;
 ALTER FUNCTION "public"."set_updated_at"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean DEFAULT NULL::boolean, "contact_deletion_enabled" boolean DEFAULT NULL::boolean) RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean DEFAULT NULL::boolean, "contact_deletion_enabled" boolean DEFAULT NULL::boolean, "test_account_enabled" boolean DEFAULT NULL::boolean) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
     AS $$
@@ -792,6 +793,7 @@ begin
   after_settings := before_settings
     || case when cognism_preview_enabled is null then '{}'::jsonb else jsonb_build_object('cognism_preview_enabled', cognism_preview_enabled) end
     || case when contact_deletion_enabled is null then '{}'::jsonb else jsonb_build_object('contact_deletion_enabled', contact_deletion_enabled) end
+    || case when test_account_enabled is null then '{}'::jsonb else jsonb_build_object('test_account_enabled', test_account_enabled) end
     || jsonb_build_object('updated_at', now(), 'updated_by', auth.uid());
 
   update public.organizations
@@ -806,7 +808,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean) OWNER TO "postgres";
+ALTER FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean) OWNER TO "postgres";
 
 SET default_tablespace = '';
 
@@ -822,6 +824,7 @@ CREATE TABLE IF NOT EXISTS "public"."users" (
     "avatar_url" "text",
     "role" "public"."user_role" DEFAULT 'member'::"public"."user_role" NOT NULL,
     "status" "public"."record_status" DEFAULT 'active'::"public"."record_status" NOT NULL,
+    "currency_code" "text" DEFAULT 'GBP'::"text" NOT NULL,
     "last_seen_at" timestamp with time zone,
     "metadata" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
@@ -1528,6 +1531,10 @@ ALTER TABLE ONLY "public"."users"
     ADD CONSTRAINT "users_id_organization_id_key" UNIQUE ("id", "organization_id");
 
 
+ALTER TABLE ONLY "public"."users"
+    ADD CONSTRAINT "users_currency_code_check" CHECK (("currency_code" = ANY (ARRAY['EUR'::"text", 'GBP'::"text", 'USD'::"text"])));
+
+
 
 ALTER TABLE ONLY "public"."users"
     ADD CONSTRAINT "users_organization_id_email_key" UNIQUE ("organization_id", "email");
@@ -2219,9 +2226,9 @@ GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "service_role";
 
 
 
-GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean) TO "anon";
-GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean) TO "authenticated";
-GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean) TO "service_role";
+GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean) TO "anon";
+GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean) TO "service_role";
 
 
 
@@ -2375,7 +2382,3 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";
-
-
-
-

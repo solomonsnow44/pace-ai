@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { dialAircall } from './aircallDial.js'
+import { createTemporaryAircallRecordingLink, syncAircallData } from './aircallSync.js'
 import { createCognismPreview, redeemCognismContacts } from './cognismPreview.js'
 import { exportContactsToHubSpot } from './hubspotContacts.js'
 import { getRedeemedContactById } from './redeemedContactStore.js'
@@ -10,16 +11,17 @@ let supabaseService = null;
 
 const integrationSecretFields = {
   cognism: ['apiKey'],
-  aircall: ['apiId', 'apiToken', 'userId'],
+  aircall: ['apiId', 'apiToken'],
   hubspot: ['privateAppToken'],
 };
 
-const CRM_DATA_METADATA_KEY = 'crm_data';
 const ADMIN_SETTINGS_METADATA_KEY = 'admin_settings';
 const DEFAULT_ADMIN_SETTINGS = {
   cognism_preview_enabled: true,
   contact_deletion_enabled: false,
+  test_account_enabled: false,
 };
+const SUPPORTED_CURRENCY_CODES = new Set(['EUR', 'GBP', 'USD']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function getSupabaseUrl() {
@@ -101,7 +103,7 @@ async function getAuthenticatedCrmUserWithOrganization(req) {
   const serviceClient = getServiceClient();
   const { data, error } = await serviceClient
     .from('users')
-    .select('organization_id, role')
+    .select('organization_id, role, aircall_user_id')
     .eq('id', user.id)
     .single();
 
@@ -111,7 +113,12 @@ async function getAuthenticatedCrmUserWithOrganization(req) {
     throw orgError;
   }
 
-  return { ...user, organizationId: data.organization_id, role: data.role || 'member' };
+  return {
+    ...user,
+    organizationId: data.organization_id,
+    role: data.role || 'member',
+    aircallUserId: data.aircall_user_id || user.aircallUserId,
+  };
 }
 
 function isAdminRole(role) {
@@ -128,7 +135,7 @@ function isProtectedAdminRole(role) {
 
 function assertOrgAdmin(user) {
   if (isOrgAdminRole(user?.role)) return;
-  const error = new Error('Admin controls are available to organization admins only.');
+  const error = new Error('Admin controls are available to org admins only.');
   error.statusCode = 403;
   throw error;
 }
@@ -146,8 +153,19 @@ function normalizeAdminSettings(settings = {}) {
     ...(settings && typeof settings === 'object' ? settings : {}),
     cognism_preview_enabled: settings?.cognism_preview_enabled !== false,
     contact_deletion_enabled: settings?.contact_deletion_enabled === true,
+    test_account_enabled: settings?.test_account_enabled === true,
   };
 }
+
+function normalizeCurrencyCode(code) {
+  const value = String(code || '').trim().toUpperCase();
+  return SUPPORTED_CURRENCY_CODES.has(value) ? value : '';
+}
+
+function hasOwnValue(input, key) {
+  return Object.prototype.hasOwnProperty.call(input || {}, key);
+}
+
 
 async function loadOrganizationMetadata(serviceClient, organizationId) {
   const { data, error } = await serviceClient
@@ -205,6 +223,7 @@ async function updateAdminSettings(req, input = {}) {
     ...beforeSettings,
     ...(typeof input.cognism_preview_enabled === 'boolean' ? { cognism_preview_enabled: input.cognism_preview_enabled } : {}),
     ...(typeof input.contact_deletion_enabled === 'boolean' ? { contact_deletion_enabled: input.contact_deletion_enabled } : {}),
+    ...(typeof input.test_account_enabled === 'boolean' ? { test_account_enabled: input.test_account_enabled } : {}),
     updated_at: new Date().toISOString(),
     updated_by: user.id,
   });
@@ -226,6 +245,80 @@ async function updateAdminSettings(req, input = {}) {
     role: user.role,
     isAdmin: true,
     isOrgAdmin: true,
+  };
+}
+
+async function updateCurrentUserProfile(req, input = {}) {
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  const serviceClient = getServiceClient();
+  const { data: beforeProfile, error: beforeError } = await serviceClient
+    .from('users')
+    .select('id,email,first_name,last_name,display_name,aircall_user_id,currency_code')
+    .eq('id', user.id)
+    .eq('organization_id', user.organizationId)
+    .single();
+
+  if (beforeError) throw beforeError;
+
+  const firstName = hasOwnValue(input, 'firstName') ? String(input.firstName || '').trim() : beforeProfile.first_name || '';
+  const lastName = hasOwnValue(input, 'lastName') ? String(input.lastName || '').trim() : beforeProfile.last_name || '';
+  const defaultDisplayName = [firstName, lastName].filter(Boolean).join(' ');
+  const displayName = hasOwnValue(input, 'displayName')
+    ? String(input.displayName || '').trim() || defaultDisplayName
+    : beforeProfile.display_name || defaultDisplayName;
+  const aircallUserId = hasOwnValue(input, 'aircallUserId')
+    ? String(input.aircallUserId || '').trim() || null
+    : beforeProfile.aircall_user_id || null;
+  const currencyCode = normalizeCurrencyCode(input.currencyCode) || normalizeCurrencyCode(beforeProfile.currency_code) || 'GBP';
+
+  const profilePayload = {
+    first_name: firstName || null,
+    last_name: lastName || null,
+    display_name: displayName || beforeProfile.email?.split('@')[0] || null,
+    aircall_user_id: aircallUserId,
+    currency_code: currencyCode,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data: updatedProfile, error: updateError } = await serviceClient
+    .from('users')
+    .update(profilePayload)
+    .eq('id', user.id)
+    .eq('organization_id', user.organizationId)
+    .select('id,email,first_name,last_name,display_name,aircall_user_id,currency_code')
+    .single();
+
+  if (updateError) throw updateError;
+
+  const { error: authUpdateError } = await serviceClient.auth.admin.updateUserById(user.id, {
+    user_metadata: {
+      first_name: firstName,
+      last_name: lastName,
+      display_name: displayName,
+    },
+  });
+  if (authUpdateError) console.warn('Could not sync profile display metadata', authUpdateError);
+
+  await writeAuditLog(
+    serviceClient,
+    user,
+    'workspace_user.profile_updated',
+    'user',
+    user.id,
+    { firstName: beforeProfile.first_name, lastName: beforeProfile.last_name, displayName: beforeProfile.display_name, aircallUserId: beforeProfile.aircall_user_id, currencyCode: normalizeCurrencyCode(beforeProfile.currency_code) || '' },
+    { firstName: updatedProfile.first_name, lastName: updatedProfile.last_name, displayName: updatedProfile.display_name, aircallUserId: updatedProfile.aircall_user_id, currencyCode: normalizeCurrencyCode(updatedProfile.currency_code) || '' },
+  );
+
+  return {
+    profile: {
+      id: updatedProfile.id,
+      email: updatedProfile.email,
+      firstName: updatedProfile.first_name || '',
+      lastName: updatedProfile.last_name || '',
+      displayName: updatedProfile.display_name || '',
+      aircallUserId: updatedProfile.aircall_user_id || '',
+      currencyCode: normalizeCurrencyCode(updatedProfile.currency_code) || 'GBP',
+    },
   };
 }
 
@@ -259,7 +352,7 @@ async function updateWorkspaceUserRole(req, input = {}) {
   const serviceClient = getServiceClient();
   const { data: targetUser, error: targetError } = await serviceClient
     .from('users')
-    .select('id,email,display_name,full_name,role,status,organization_id')
+    .select('id,email,first_name,last_name,display_name,role,status,organization_id')
     .eq('id', targetUserId)
     .eq('organization_id', user.organizationId)
     .single();
@@ -286,7 +379,7 @@ async function updateWorkspaceUserRole(req, input = {}) {
     .update({ role: nextRole })
     .eq('id', targetUserId)
     .eq('organization_id', user.organizationId)
-    .select('id,email,display_name,full_name,role,status')
+    .select('id,email,first_name,last_name,display_name,role,status')
     .single();
 
   if (updateError) throw updateError;
@@ -306,8 +399,9 @@ async function updateWorkspaceUserRole(req, input = {}) {
     user: {
       id: updatedUser.id,
       email: updatedUser.email,
+      firstName: updatedUser.first_name,
+      lastName: updatedUser.last_name,
       displayName: updatedUser.display_name,
-      fullName: updatedUser.full_name,
       role: updatedUser.role || 'member',
       status: updatedUser.status || 'active',
     },
@@ -331,40 +425,6 @@ async function assertCognismPreviewEnabled(req) {
   throw error;
 }
 
-function archiveContactInCrmData(crmData, contactId) {
-  const data = crmData && typeof crmData === 'object' ? crmData : {};
-  const contacts = Array.isArray(data.contacts) ? data.contacts : [];
-  const contact = contacts.find(item => String(item.id) === String(contactId));
-  if (!contact) return { data, contact: null };
-
-  const nextData = {
-    ...data,
-    contacts: contacts.filter(item => String(item.id) !== String(contactId)),
-    deals: Array.isArray(data.deals)
-      ? data.deals.map(deal => String(deal.contactId || '') === String(contactId)
-        ? { ...deal, contactId: '', contact: 'No primary contact' }
-        : deal)
-      : data.deals,
-    activities: [
-      {
-        id: `activity-${Date.now()}`,
-        type: 'Contact',
-        title: `Contact archived: ${contact.name || 'Untitled contact'}`,
-        account: contact.account || 'Workspace',
-        time: 'Just now',
-        owner: 'Workspace Admin',
-      },
-      ...(Array.isArray(data.activities) ? data.activities : []),
-    ],
-    archived_contacts: [
-      { ...contact, status: 'Archived', archivedAt: new Date().toISOString() },
-      ...(Array.isArray(data.archived_contacts) ? data.archived_contacts : []),
-    ],
-  };
-
-  return { data: nextData, contact };
-}
-
 async function archiveContact(req, input = {}) {
   const contactId = String(input.contactId || '').trim();
   if (!contactId) {
@@ -384,36 +444,42 @@ async function archiveContact(req, input = {}) {
     throw error;
   }
 
-  const { data: nextCrmData, contact } = archiveContactInCrmData(metadata[CRM_DATA_METADATA_KEY], contactId);
-  if (!contact) {
+  if (!UUID_PATTERN.test(contactId)) {
+    const error = new Error('Contact must be a database-backed record before it can be archived.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const { data: contact, error: loadError } = await serviceClient
+    .from('contacts')
+    .select('id,contact_name,full_name,email,status,custom_fields')
+    .eq('organization_id', user.organizationId)
+    .eq('id', contactId)
+    .single();
+
+  if (loadError || !contact) {
     const error = new Error('Contact was not found.');
     error.statusCode = 404;
     throw error;
   }
 
-  if (UUID_PATTERN.test(contactId)) {
-    await serviceClient
-      .from('contacts')
-      .update({ status: 'archived', updated_by: user.id })
-      .eq('organization_id', user.organizationId)
-      .eq('id', contactId)
-      .throwOnError();
-  }
+  const { error: archiveError } = await serviceClient
+    .from('contacts')
+    .update({
+      status: 'archived',
+      custom_fields: {
+        ...(contact.custom_fields || {}),
+        ui_status: 'Archived',
+        archived_at: new Date().toISOString(),
+      },
+      updated_by: user.id,
+    })
+    .eq('organization_id', user.organizationId)
+    .eq('id', contactId);
 
-  const nextMetadata = {
-    ...metadata,
-    [CRM_DATA_METADATA_KEY]: nextCrmData,
-    crm_data_updated_at: new Date().toISOString(),
-  };
-
-  const { error } = await serviceClient
-    .from('organizations')
-    .update({ metadata: nextMetadata })
-    .eq('id', user.organizationId);
-
-  if (error) throw error;
+  if (archiveError) throw archiveError;
   await writeAuditLog(serviceClient, user, 'contact.archived', 'contact', contactId, contact, { ...contact, status: 'Archived' }, { source: 'admin_controls', contact_id: contactId });
-  return { contactId, crmData: nextCrmData };
+  return { contactId, contact: { ...contact, status: 'Archived' } };
 }
 
 function sendJson(res, statusCode, payload) {
@@ -459,13 +525,12 @@ async function findIntegrationConnection(serviceClient, organizationId, provider
 function getEnvironmentCredentialStatus(provider) {
   if (provider === 'cognism') return { configured: Boolean(process.env.COGNISM_API_KEY), hints: { apiKey: maskSecret(process.env.COGNISM_API_KEY) }, source: 'env' };
   if (provider === 'aircall') {
-    const configured = Boolean(process.env.AIRCALL_API_ID && process.env.AIRCALL_API_TOKEN && process.env.AIRCALL_USER_ID);
+    const configured = Boolean(process.env.AIRCALL_API_ID && process.env.AIRCALL_API_TOKEN);
     return {
       configured,
       hints: {
         apiId: maskSecret(process.env.AIRCALL_API_ID),
         apiToken: maskSecret(process.env.AIRCALL_API_TOKEN),
-        userId: maskSecret(process.env.AIRCALL_USER_ID),
       },
       source: 'env',
     };
@@ -684,6 +749,10 @@ export async function handleApiRequest(req, res) {
     return true;
   }
 
+  if (pathname === '/api/profile') {
+    return handlePostRoute(req, res, async body => updateCurrentUserProfile(req, body), 'Profile update failed');
+  }
+
   if (pathname === '/api/admin-settings') {
     if (req.method === 'GET') {
       try {
@@ -764,17 +833,65 @@ export async function handleApiRequest(req, res) {
 
   if (pathname === '/api/aircall/dial') {
     return handlePostRoute(req, res, async body => {
-      const user = await getAuthenticatedCrmUser(req);
-      const aircallCredentials = await loadStoredIntegrationCredentials(req, 'aircall').catch(() => ({}));
+      const user = await getAuthenticatedCrmUserWithOrganization(req);
       return dialAircall(body, {
         userId: user.id,
-        aircallUserId: aircallCredentials.userId || user.aircallUserId,
-        apiId: aircallCredentials.apiId,
-        apiToken: aircallCredentials.apiToken,
+        aircallUserId: user.aircallUserId,
+        apiId: await getCredentialValue(req, 'aircall', 'apiId', 'AIRCALL_API_ID'),
+        apiToken: await getCredentialValue(req, 'aircall', 'apiToken', 'AIRCALL_API_TOKEN'),
         getContactById: getRedeemedContactById,
         allowSavedLeadNumbers: true,
       });
     }, 'Aircall dial failed');
+  }
+
+  if (pathname === '/api/aircall/sync') {
+    return handlePostRoute(req, res, async body => {
+      const user = await getAuthenticatedCrmUserWithOrganization(req);
+      assertAdmin(user);
+      return syncAircallData({
+        organizationId: user.organizationId,
+        apiId: await getCredentialValue(req, 'aircall', 'apiId', 'AIRCALL_API_ID'),
+        apiToken: await getCredentialValue(req, 'aircall', 'apiToken', 'AIRCALL_API_TOKEN'),
+        perPage: body.perPage,
+        maxUserPages: body.maxUserPages,
+        maxCallPages: body.maxCallPages,
+      }, {
+        serviceClient: getServiceClient(),
+      });
+    }, 'Aircall sync failed');
+  }
+
+  if (pathname === '/api/aircall/recording-link') {
+    return handlePostRoute(req, res, async body => {
+      const user = await getAuthenticatedCrmUserWithOrganization(req);
+      const callId = String(body.callId || body.aircallCallId || '').trim();
+      const { data: callRow, error: callError } = await getServiceClient()
+        .from('aircall_calls')
+        .select('id,user_id,aircall_user_id')
+        .eq('organization_id', user.organizationId)
+        .eq('aircall_call_id', callId)
+        .maybeSingle();
+      if (callError) throw callError;
+      if (!callRow) {
+        const error = new Error('Aircall call is not synced in this workspace.');
+        error.statusCode = 404;
+        throw error;
+      }
+      const canAccessCall = isAdminRole(user.role)
+        || callRow.user_id === user.id
+        || (user.aircallUserId && callRow.aircall_user_id === user.aircallUserId);
+      if (!canAccessCall) {
+        const error = new Error('You can only refresh recordings for your own calls.');
+        error.statusCode = 403;
+        throw error;
+      }
+      return createTemporaryAircallRecordingLink({
+        callId,
+        apiId: await getCredentialValue(req, 'aircall', 'apiId', 'AIRCALL_API_ID'),
+        apiToken: await getCredentialValue(req, 'aircall', 'apiToken', 'AIRCALL_API_TOKEN'),
+      });
+    }, 'Aircall recording link refresh failed');
   }
 
   if (pathname === '/api/hubspot/contacts/export') {

@@ -3,6 +3,7 @@ import { dialAircall } from './aircallDial.js'
 import { createTemporaryAircallRecordingLink, syncAircallData } from './aircallSync.js'
 import { createCognismPreview, redeemCognismContacts } from './cognismPreview.js'
 import { exportContactsToHubSpot } from './hubspotContacts.js'
+import { runIntentResearch } from './intentResearch.js'
 import { getRedeemedContactById } from './redeemedContactStore.js'
 import { suggestTargetRoles } from './roleSuggestions.js'
 
@@ -853,6 +854,16 @@ async function searchGooglePlaces(input = {}) {
   };
 }
 
+async function runIntentResearchRoute(req, input = {}) {
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  const serviceClient = getServiceClient();
+  return runIntentResearch({
+    client: serviceClient,
+    organizationId: user.organizationId,
+    input,
+  });
+}
+
 async function handlePostRoute(req, res, handler, fallbackMessage) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'Method not allowed' });
@@ -972,6 +983,10 @@ export async function handleApiRequest(req, res) {
       return true;
     }
     return proxyGooglePlacePhoto(req, res);
+  }
+
+  if (pathname === '/api/intent-research/run') {
+    return handlePostRoute(req, res, async body => runIntentResearchRoute(req, body), 'Intent research run failed');
   }
 
   if (pathname === '/api/contacts/archive') {

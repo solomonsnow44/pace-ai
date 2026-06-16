@@ -490,6 +490,7 @@ const navItems = [
   { id: "clients", label: "Client Accounts", icon: Building2 },
   { id: "campaigns", label: "Campaigns", icon: Megaphone },
   { id: "contacts", label: "Contacts", icon: Contact, highlight: true },
+  { id: "intent-research", label: "Intent Research", icon: Database, highlight: true },
   { id: "cognism", label: "Lead Finder", icon: CognismLogoIcon, logo: cognismLogoUrl, highlight: true },
   { id: "lead-lists", label: "Lead Lists", icon: ListFilter, highlight: true },
   { id: "pipeline", label: "Pipeline", icon: KanbanSquare },
@@ -506,9 +507,15 @@ const workspaceViewIds = new Set(navItems.map(item => item.id).concat([
   "contact-detail",
   "lead-lookup",
 ]));
+const workspacePathViews = new Map([
+  ["/intent-research", "intent-research"],
+]);
+const workspaceViewPaths = new Map([...workspacePathViews.entries()].map(([path, view]) => [view, path]));
 
 function readWorkspaceViewFromUrl() {
   if (typeof window === "undefined") return "";
+  const pathView = workspacePathViews.get(window.location.pathname);
+  if (pathView) return pathView;
   const view = new URL(window.location.href).searchParams.get("view") || "";
   return workspaceViewIds.has(view) ? view : "";
 }
@@ -516,7 +523,9 @@ function readWorkspaceViewFromUrl() {
 function writeWorkspaceHistory(state, mode = "push") {
   if (typeof window === "undefined" || !state?.activeView) return;
   const url = new URL(window.location.href);
-  if (state.activeView === "dashboard") {
+  const viewPath = workspaceViewPaths.get(state.activeView);
+  url.pathname = viewPath || "/";
+  if (state.activeView === "dashboard" || viewPath) {
     url.searchParams.delete("view");
   } else {
     url.searchParams.set("view", state.activeView);
@@ -1408,6 +1417,114 @@ async function saveRelationalContact(organizationId, contact) {
 
   if (error) throw error;
   return data;
+}
+
+function normalizeIntentSourceRecord(row = {}) {
+  return {
+    id: row.id,
+    organizationId: row.organization_id || "",
+    name: row.name || "",
+    url: row.url || "",
+    sourceType: row.source_type || "other",
+    enabled: row.enabled !== false,
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+  };
+}
+
+function normalizeIntentRun(row = {}) {
+  return {
+    id: row.id,
+    organizationId: row.organization_id || "",
+    query: row.query || "",
+    dateRangeStart: row.date_range_start || "",
+    dateRangeEnd: row.date_range_end || "",
+    eventTypes: row.event_types || [],
+    geography: row.geography || "",
+    industry: row.industry || "",
+    sourceFilter: row.source_filter || [],
+    status: row.status || "pending",
+    totalFound: Number(row.total_found) || 0,
+    newInserted: Number(row.new_inserted) || 0,
+    duplicatesSkipped: Number(row.duplicates_skipped) || 0,
+    errorMessage: row.error_message || "",
+    createdAt: row.created_at || "",
+    completedAt: row.completed_at || "",
+  };
+}
+
+function normalizeIntentEvent(row = {}) {
+  return {
+    id: row.id,
+    organizationId: row.organization_id || "",
+    runId: row.run_id || "",
+    companyName: row.company_name || "",
+    companyDomain: row.company_domain || "",
+    companyWebsite: row.company_website || "",
+    companyLinkedinUrl: row.company_linkedin_url || "",
+    eventType: row.event_type || "other",
+    eventDate: row.event_date || "",
+    title: row.title || "",
+    summary: row.summary || "",
+    fundingAmount: row.funding_amount || "",
+    fundingCurrency: row.funding_currency || "",
+    fundingRound: row.funding_round || "",
+    investors: row.investors || [],
+    sourceName: row.source_name || "",
+    sourceUrl: row.source_url || "",
+    confidenceScore: row.confidence_score === null || row.confidence_score === undefined ? "" : Number(row.confidence_score),
+    companyFingerprint: row.company_fingerprint || "",
+    eventFingerprint: row.event_fingerprint || "",
+    rawData: row.raw_data || {},
+    status: row.status || "new",
+    existingCompanyId: row.existing_company_id || "",
+    promotedCompanyId: row.promoted_company_id || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+  };
+}
+
+function normalizeIntentEventPerson(row = {}) {
+  return {
+    id: row.id,
+    organizationId: row.organization_id || "",
+    intentEventId: row.intent_event_id || "",
+    companyName: row.company_name || "",
+    companyDomain: row.company_domain || "",
+    name: row.name || "",
+    title: row.title || "",
+    linkedinUrl: row.linkedin_url || "",
+    email: row.email || "",
+    phone: row.phone || "",
+    department: row.department || "",
+    seniority: row.seniority || "",
+    source: row.source || "",
+    rawData: row.raw_data || {},
+    status: row.status || "new",
+    promotedContactId: row.promoted_contact_id || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+  };
+}
+
+async function loadIntentData(organizationId) {
+  if (!supabase || !organizationId) return { sources: [], runs: [], events: [], people: [] };
+  const [sourcesResult, runsResult, eventsResult, peopleResult] = await Promise.all([
+    supabase.from("intent_sources").select("*").eq("organization_id", organizationId).order("name", { ascending: true }),
+    supabase.from("intent_research_runs").select("*").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(50),
+    supabase.from("intent_events").select("*").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(500),
+    supabase.from("intent_people").select("*").eq("organization_id", organizationId).order("created_at", { ascending: false }).limit(1000),
+  ]);
+  if (sourcesResult.error) throw sourcesResult.error;
+  if (runsResult.error) throw runsResult.error;
+  if (eventsResult.error) throw eventsResult.error;
+  if (peopleResult.error) throw peopleResult.error;
+  return {
+    sources: (sourcesResult.data || []).map(normalizeIntentSourceRecord),
+    runs: (runsResult.data || []).map(normalizeIntentRun),
+    events: (eventsResult.data || []).map(normalizeIntentEvent),
+    people: (peopleResult.data || []).map(normalizeIntentEventPerson),
+  };
 }
 
 async function updateRelationalContactPipelineStage(organizationId, contact, stage) {
@@ -5199,6 +5316,196 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact, canDeleteConta
   );
 }
 
+function findIntentPersonDuplicates(intentPerson = {}, contacts = []) {
+  const email = normalizeEmail(intentPerson.email);
+  const linkedin = normalizeUrl(intentPerson.linkedinUrl).toLowerCase();
+  return contacts.filter(contact => {
+    const contactEmail = normalizeEmail(contact.email);
+    const contactLinkedin = normalizeUrl(contact.linkedin || contact.linkedinUrl).toLowerCase();
+    return (email && contactEmail && email === contactEmail) || (linkedin && contactLinkedin && linkedin === contactLinkedin);
+  });
+}
+
+function IntentResearchPage({
+  intentData,
+  crmData,
+  error = "",
+  onRunResearch,
+  onUpdateEventStatus,
+  onPromoteEventCompany,
+  onLinkEventCompany,
+  onPromotePerson,
+  onPromoteCompanyPeople,
+}) {
+  const [form, setForm] = useState({
+    range: "90",
+    customStart: "",
+    customEnd: "",
+    eventTypes: ["funding"],
+    geography: "",
+    industry: "",
+    sourceTypes: [],
+    query: "",
+    structuredJson: "",
+  });
+  const [includeSeen, setIncludeSeen] = useState(false);
+  const [filters, setFilters] = useState({ status: "new", eventType: "", date: "", confidence: "", existing: "" });
+  const [selectedEventId, setSelectedEventId] = useState(intentData.events[0]?.id || "");
+  const [message, setMessage] = useState(error);
+  const [running, setRunning] = useState(false);
+  const selectedEvent = intentData.events.find(event => event.id === selectedEventId) || intentData.events[0] || null;
+  const eventPeople = selectedEvent ? intentData.people.filter(person => person.intentEventId === selectedEvent.id) : [];
+
+  useEffect(() => {
+    if (!selectedEventId && intentData.events.length) setSelectedEventId(intentData.events[0].id);
+    if (selectedEventId && !intentData.events.some(event => event.id === selectedEventId)) setSelectedEventId(intentData.events[0]?.id || "");
+  }, [intentData.events, selectedEventId]);
+
+  function updateForm(field, value) {
+    setForm(current => ({ ...current, [field]: value }));
+  }
+
+  function toggleEventType(type) {
+    setForm(current => ({
+      ...current,
+      eventTypes: current.eventTypes.includes(type) ? current.eventTypes.filter(item => item !== type) : [...current.eventTypes, type],
+    }));
+  }
+
+  function toggleSourceType(type) {
+    setForm(current => ({
+      ...current,
+      sourceTypes: current.sourceTypes.includes(type) ? current.sourceTypes.filter(item => item !== type) : [...current.sourceTypes, type],
+    }));
+  }
+
+  function dateRange() {
+    const end = new Date();
+    const start = new Date();
+    if (form.range === "custom") return { start: form.customStart, end: form.customEnd };
+    if (form.range === "30") start.setDate(start.getDate() - 30);
+    if (form.range === "90") start.setDate(start.getDate() - 90);
+    if (form.range === "180") start.setMonth(start.getMonth() - 6);
+    if (form.range === "365") start.setFullYear(start.getFullYear() - 1);
+    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  }
+
+  async function submitRun(event) {
+    event.preventDefault();
+    setMessage("");
+    setRunning(true);
+    try {
+      const range = dateRange();
+      let structuredEvents = [];
+      if (form.structuredJson.trim()) {
+        const parsed = JSON.parse(form.structuredJson);
+        structuredEvents = Array.isArray(parsed) ? parsed : Array.isArray(parsed.events) ? parsed.events : [parsed];
+      }
+      const result = await onRunResearch({
+        query: form.query,
+        dateRangeStart: range.start,
+        dateRangeEnd: range.end,
+        eventTypes: form.eventTypes,
+        geography: form.geography,
+        industry: form.industry,
+        sourceFilter: form.sourceTypes,
+        events: structuredEvents,
+      });
+      setMessage(`Research run complete. ${result?.newInserted || 0} new, ${result?.duplicatesSkipped || 0} duplicate${result?.duplicatesSkipped === 1 ? "" : "s"} skipped.`);
+    } catch (runError) {
+      setMessage(runError.message || "Could not run intent research.");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const visibleEvents = intentData.events.filter(event => {
+    if (!includeSeen && event.status !== "new") return false;
+    if (filters.status && event.status !== filters.status) return false;
+    if (filters.eventType && event.eventType !== filters.eventType) return false;
+    if (filters.date && event.eventDate && event.eventDate < filters.date) return false;
+    if (filters.confidence && Number(event.confidenceScore || 0) < Number(filters.confidence)) return false;
+    if (filters.existing === "yes" && !event.existingCompanyId && !event.promotedCompanyId) return false;
+    if (filters.existing === "no" && (event.existingCompanyId || event.promotedCompanyId)) return false;
+    return true;
+  });
+
+  const companyDuplicates = selectedEvent ? findIntentEventCompanyDuplicates(selectedEvent, crmData.accounts || []) : [];
+
+  return (
+    <>
+      <PageHeader eyebrow="Intent/Staging" title="Intent Research" description="Research external buying signals, dedupe previously seen events, then explicitly promote only approved records.">
+        <StatusBadge tone="accent">{visibleEvents.length} visible</StatusBadge>
+      </PageHeader>
+      <div className="intent-research-layout">
+        <section className="panel intent-research-form-panel">
+          <div className="panel-header"><div><span className="eyebrow">Research job</span><h2>Run new research</h2></div><StatusBadge>Source agnostic</StatusBadge></div>
+          <form onSubmit={submitRun}>
+            <div className="form-grid">
+              <label className="form-field"><span>Date range</span><select value={form.range} onChange={event => updateForm("range", event.target.value)}><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 6 months</option><option value="365">Last 1 year</option><option value="custom">Custom</option></select></label>
+              {form.range === "custom" ? <label className="form-field"><span>Start</span><input type="date" value={form.customStart} onChange={event => updateForm("customStart", event.target.value)} /></label> : null}
+              {form.range === "custom" ? <label className="form-field"><span>End</span><input type="date" value={form.customEnd} onChange={event => updateForm("customEnd", event.target.value)} /></label> : null}
+              <label className="form-field"><span>Geography</span><input value={form.geography} onChange={event => updateForm("geography", event.target.value)} placeholder="UK, Ireland, EMEA" /></label>
+              <label className="form-field"><span>Industry</span><input value={form.industry} onChange={event => updateForm("industry", event.target.value)} placeholder="Cybersecurity, SaaS, healthcare" /></label>
+            </div>
+            <div className="role-choice-grid compact-choice-grid">
+              {intentEventTypes.map(type => <label key={type} className={`role-choice ${form.eventTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.eventTypes.includes(type)} onChange={() => toggleEventType(type)} /><span>{titleCase(type.replaceAll("_", " "))}</span></label>)}
+            </div>
+            <div className="role-choice-grid compact-choice-grid">
+              {intentSourceTypes.map(type => <label key={type} className={`role-choice ${form.sourceTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.sourceTypes.includes(type)} onChange={() => toggleSourceType(type)} /><span>{titleCase(type.replaceAll("_", " "))}</span></label>)}
+            </div>
+            <label className="form-field"><span>Custom query / ICP</span><textarea value={form.query} onChange={event => updateForm("query", event.target.value)} placeholder="Find recently funded B2B software companies in the UK hiring RevOps or customer operations leaders." /></label>
+            <label className="form-field"><span>Structured extraction JSON</span><textarea value={form.structuredJson} onChange={event => updateForm("structuredJson", event.target.value)} placeholder='Paste extracted events JSON. Future OpenAI/web extraction will fill this automatically.' /></label>
+            <button className="primary-button" type="submit" disabled={running}>{running ? <LoaderCircle className="button-spinner" size={16} /> : <Search size={16} />}{running ? "Running" : "Run research"}</button>
+          </form>
+          {message || error ? <div className={`form-success ${(message || error).toLowerCase().includes("could not") ? "warning" : ""}`}>{message || error}</div> : null}
+        </section>
+        <section className="panel intent-run-history-panel">
+          <div className="panel-header"><div><span className="eyebrow">Memory</span><h2>Run history</h2></div><StatusBadge>{intentData.runs.length}</StatusBadge></div>
+          <div className="compact-list">
+            {intentData.runs.length ? intentData.runs.slice(0, 8).map(run => <article key={run.id} className="compact-list-item"><div><strong>{run.query || "Intent research run"}</strong><span>{new Date(run.createdAt).toLocaleString()} - {run.status}</span></div><StatusBadge>{run.newInserted} new / {run.duplicatesSkipped} skipped</StatusBadge></article>) : <EmptyState icon={Clock} title="No research runs" text="Run history appears after the first intent research job." />}
+          </div>
+        </section>
+      </div>
+      <section className="panel">
+        <div className="panel-header"><div><span className="eyebrow">Net-new by default</span><h2>Intent events</h2></div><label className="toggle-row"><input type="checkbox" checked={includeSeen} onChange={event => setIncludeSeen(event.target.checked)} />Include previously seen</label></div>
+        <div className="filter-bar intent-filter-bar">
+          <div><span>Status</span><select value={filters.status} onChange={event => setFilters(current => ({ ...current, status: event.target.value }))}><option value="">All</option>{intentEventStatuses.map(status => <option key={status} value={status}>{titleCase(status)}</option>)}</select></div>
+          <div><span>Event type</span><select value={filters.eventType} onChange={event => setFilters(current => ({ ...current, eventType: event.target.value }))}><option value="">All</option>{intentEventTypes.map(type => <option key={type} value={type}>{titleCase(type.replaceAll("_", " "))}</option>)}</select></div>
+          <div><span>Date since</span><input type="date" value={filters.date} onChange={event => setFilters(current => ({ ...current, date: event.target.value }))} /></div>
+          <div><span>Confidence min</span><input value={filters.confidence} onChange={event => setFilters(current => ({ ...current, confidence: event.target.value }))} placeholder="70" /></div>
+          <div><span>Already in DB</span><select value={filters.existing} onChange={event => setFilters(current => ({ ...current, existing: event.target.value }))}><option value="">All</option><option value="yes">Yes</option><option value="no">No</option></select></div>
+        </div>
+        {visibleEvents.length ? <div className="table-wrap"><table className="data-table intent-table"><thead><tr><th>Company</th><th>Signal</th><th>Source</th><th>Status</th><th>Confidence</th></tr></thead><tbody>{visibleEvents.map(event => <tr key={event.id} className={selectedEvent?.id === event.id ? "clickable-row active-row" : "clickable-row"} onClick={() => setSelectedEventId(event.id)}><td><RecordName name={event.companyName} meta={[event.companyDomain, event.companyWebsite].filter(Boolean).join(" - ") || "Intent/Staging"} /></td><td><strong>{titleCase(String(event.eventType || "other").replaceAll("_", " "))}</strong><small>{[event.eventDate, event.title].filter(Boolean).join(" - ")}</small></td><td>{event.sourceUrl ? <a href={event.sourceUrl} target="_blank" rel="noreferrer" onClick={click => click.stopPropagation()}>{event.sourceName || "Source"}</a> : event.sourceName || "Unknown"}</td><td><StatusBadge tone={event.status === "promoted" ? "success" : event.status === "rejected" ? "warning" : "accent"}>{titleCase(event.status)}</StatusBadge></td><td>{event.confidenceScore || "Not scored"}</td></tr>)}</tbody></table></div> : <EmptyState icon={Database} title="No net-new intent events" text="Run research or enable previously seen records to inspect older events." />}
+      </section>
+      {selectedEvent ? <section className="panel intent-detail-panel">
+        <div className="panel-header"><div><span className="eyebrow">Event detail</span><h2>{selectedEvent.title || selectedEvent.companyName}</h2></div><StatusBadge>{titleCase(selectedEvent.status)}</StatusBadge></div>
+        <div className="intent-stage-warning"><Database size={16} /><span>Intent/Staging record. Official company/contact data is unchanged until promotion.</span></div>
+        <p>{selectedEvent.summary || "No summary provided."}</p>
+        {companyDuplicates.length ? <div className="duplicate-warning"><strong>Possible company duplicate</strong>{companyDuplicates.slice(0, 3).map(company => <button key={company.id} className="secondary-button small-button" type="button" onClick={() => onLinkEventCompany(selectedEvent, company)}>Link to {company.name}</button>)}</div> : null}
+        <div className="intent-action-row">
+          <button className="secondary-button" type="button" onClick={() => onUpdateEventStatus(selectedEvent, "reviewed")}>Mark reviewed</button>
+          <button className="secondary-button danger-button" type="button" onClick={() => onUpdateEventStatus(selectedEvent, "rejected")}>Reject</button>
+          <button className="primary-button" type="button" disabled={selectedEvent.promotedCompanyId} onClick={() => onPromoteEventCompany(selectedEvent)}>Promote company</button>
+          <button className="secondary-button success-button" type="button" onClick={() => onPromoteCompanyPeople(selectedEvent, eventPeople)}>Promote company + selected people</button>
+        </div>
+        <div className="compact-list intent-people-list">{eventPeople.length ? eventPeople.map(person => <article key={person.id} className="compact-list-item"><div><strong>{person.name || person.email || "Unnamed person"}</strong><span>{[person.title, person.email, person.linkedinUrl].filter(Boolean).join(" - ")}</span></div><button className="secondary-button small-button" type="button" disabled={person.promotedContactId} onClick={() => onPromotePerson(person, selectedEvent)}>Promote to Contacts</button></article>) : <EmptyState icon={Users} title="No people extracted" text="People discovered with this signal will appear here." />}</div>
+        <details className="raw-data-viewer"><summary>Raw data</summary><pre>{JSON.stringify(selectedEvent.rawData || {}, null, 2)}</pre></details>
+      </section> : null}
+    </>
+  );
+}
+
+function findIntentEventCompanyDuplicates(intentEvent = {}, companies = []) {
+  const intentName = normalizeLookupValue(intentEvent.companyName).toLowerCase();
+  const intentDomain = extractDomain(intentEvent.companyDomain || intentEvent.companyWebsite);
+  return companies.filter(company => {
+    const companyName = normalizeLookupValue(company.name).toLowerCase();
+    const companyDomain = extractDomain(company.website || company.domain);
+    return (intentDomain && companyDomain && intentDomain === companyDomain) || (intentName && companyName === intentName);
+  });
+}
+
 function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [], onOpenContact, canSync = false, onSyncAircall, onBookMeeting, currentUserId = "", currentAircallUserId = "", selectedAircallUserId = "", isAdmin = false }) {
   const { clients: crmClients = [], campaigns: crmCampaigns = [] } = useCrmData();
   const todayKey = toLocalDateKey(new Date());
@@ -7441,6 +7748,41 @@ const contactImportColumnMap = {
   directDial: ["direct", "direct dial", "direct phone", "direct number", "phone", "phone number", "telephone", "number"],
 };
 
+const intentStatuses = ["new", "reviewed", "enriched", "rejected", "promoted"];
+const intentSources = ["Crunchbase", "LinkedIn", "Apollo", "Clay", "Manual", "Other"];
+const intentEventStatuses = ["new", "reviewed", "rejected", "promoted"];
+const intentEventTypes = ["funding", "hiring", "expansion", "leadership_change", "acquisition", "partnership", "product_launch"];
+const intentSourceTypes = ["news", "vc_page", "company_blog", "press_release", "rss", "manual_url", "api", "other"];
+
+const intentCompanyColumnMap = {
+  name: ["company", "company name", "account", "account name", "organisation", "organization", "name"],
+  website: ["website", "web site", "domain", "company website", "url"],
+  linkedinUrl: ["linkedin", "linkedin url", "linkedin company url", "company linkedin"],
+  location: ["location", "hq", "headquarters", "city", "region"],
+  country: ["country"],
+  industry: ["industry", "sector", "vertical", "category"],
+  employeeRange: ["employees", "employee range", "headcount", "company size"],
+  fundingAmount: ["funding amount", "amount", "last funding amount", "money raised"],
+  fundingCurrency: ["funding currency", "currency"],
+  fundingDate: ["funding date", "announced date", "date"],
+  fundingRound: ["funding round", "round", "last funding type"],
+  source: ["source", "data source"],
+  sourceUrl: ["source url", "source link", "crunchbase url", "url"],
+};
+
+const intentPeopleColumnMap = {
+  companyName: ["company", "company name", "account", "account name", "organisation", "organization"],
+  companyWebsite: ["company website", "website", "domain", "company domain"],
+  name: ["person", "person name", "contact", "contact name", "name", "full name"],
+  title: ["title", "job title", "role", "position"],
+  linkedinUrl: ["linkedin", "linkedin url", "linkedin profile", "linkedin profile url"],
+  email: ["email", "email address", "work email"],
+  phone: ["phone", "phone number", "mobile", "direct dial", "telephone"],
+  department: ["department", "function", "team"],
+  seniority: ["seniority", "level"],
+  source: ["source", "data source"],
+};
+
 function normalizeImportHeader(value) {
   return String(value || "")
     .trim()
@@ -7646,6 +7988,177 @@ async function parseContactImportFile(file) {
   });
 
   return dedupeContactImportRows(importedRows);
+}
+
+function normalizeUrl(value) {
+  const url = normalizeLookupValue(value);
+  if (!url) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  return `https://${url.replace(/^\/+/, "")}`;
+}
+
+function extractDomain(value) {
+  const rawValue = normalizeLookupValue(value);
+  if (!rawValue) return "";
+  try {
+    const parsed = new URL(normalizeUrl(rawValue));
+    return parsed.hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return rawValue
+      .replace(/^https?:\/\//i, "")
+      .replace(/^www\./i, "")
+      .split("/")[0]
+      .toLowerCase();
+  }
+}
+
+function normalizeIntentStatus(status = "new") {
+  const normalized = normalizeLookupValue(status).toLowerCase().replace(/\s+/g, "_");
+  return intentStatuses.includes(normalized) ? normalized : "new";
+}
+
+function normalizeIntentSource(source = "Manual") {
+  const normalized = normalizeLookupValue(source);
+  return intentSources.find(item => item.toLowerCase() === normalized.toLowerCase()) || "Manual";
+}
+
+function parseIntentDate(value) {
+  const rawValue = normalizeLookupValue(value);
+  if (!rawValue) return null;
+  if (typeof value === "number") {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed) return `${parsed.y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}`;
+  }
+  const date = new Date(rawValue);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+function parseIntentMoneyValue(value) {
+  const normalized = normalizeLookupValue(value).replace(/,/g, "");
+  const multiplier = /\bbn\b|billion/i.test(normalized) ? 1000000000 : /\bm\b|million/i.test(normalized) ? 1000000 : /\bk\b|thousand/i.test(normalized) ? 1000 : 1;
+  const parsed = Number(normalized.replace(/[^0-9.-]+/g, ""));
+  return Number.isFinite(parsed) ? parsed * multiplier : null;
+}
+
+function parseIntentJsonList(value) {
+  const rawValue = normalizeLookupValue(value);
+  if (!rawValue) return [];
+  try {
+    const parsed = JSON.parse(rawValue);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return rawValue.split(/[;,]/).map(item => item.trim()).filter(Boolean);
+  }
+}
+
+function mapIntentCompanyRow(row, rawRow = {}) {
+  const name = normalizeLookupValue(row.name || row.companyName);
+  const website = normalizeUrl(row.website);
+  const fundingDate = parseIntentDate(row.fundingDate);
+  const fundingAmountValue = parseIntentMoneyValue(row.fundingAmount);
+  return {
+    externalId: normalizeLookupValue(row.externalId || row.crunchbaseId || row.uuid),
+    externalPermalink: normalizeLookupValue(row.externalPermalink || row.permalink),
+    crunchbaseUrl: normalizeUrl(row.crunchbaseUrl),
+    name,
+    description: normalizeLookupValue(row.description || row.shortDescription),
+    website,
+    linkedinUrl: normalizeUrl(row.linkedinUrl),
+    twitterUrl: normalizeUrl(row.twitterUrl),
+    facebookUrl: normalizeUrl(row.facebookUrl),
+    location: normalizeLookupValue(row.location),
+    country: normalizeLookupValue(row.country),
+    region: normalizeLookupValue(row.region),
+    city: normalizeLookupValue(row.city),
+    locationIdentifiers: parseIntentJsonList(row.locationIdentifiers),
+    industry: normalizeLookupValue(row.industry),
+    categories: parseIntentJsonList(row.categories || row.categoryGroups || row.industry),
+    employeeRange: normalizeLookupValue(row.employeeRange),
+    foundedOn: parseIntentDate(row.foundedOn),
+    operatingStatus: normalizeLookupValue(row.operatingStatus),
+    companyType: normalizeLookupValue(row.companyType),
+    rankValue: parsePositiveInteger(row.rankValue),
+    fundingTotalAmount: parseIntentMoneyValue(row.fundingTotalAmount),
+    fundingTotalCurrency: normalizeLookupValue(row.fundingTotalCurrency),
+    fundingAmount: normalizeLookupValue(row.fundingAmount),
+    fundingAmountValue,
+    fundingCurrency: normalizeLookupValue(row.fundingCurrency),
+    fundingDate,
+    fundingRound: normalizeLookupValue(row.fundingRound),
+    fundingRoundId: normalizeLookupValue(row.fundingRoundId),
+    fundingRoundUrl: normalizeUrl(row.fundingRoundUrl),
+    numFundingRounds: parsePositiveInteger(row.numFundingRounds),
+    investors: parseIntentJsonList(row.investors),
+    acquisitions: parseIntentJsonList(row.acquisitions),
+    signals: parseIntentJsonList(row.signals),
+    source: normalizeIntentSource(row.source || "Crunchbase"),
+    sourceUrl: normalizeUrl(row.sourceUrl || row.crunchbaseUrl),
+    rawData: rawRow && Object.keys(rawRow).length ? rawRow : row,
+    status: normalizeIntentStatus(row.status || "new"),
+  };
+}
+
+function mapIntentPersonRow(row, rawRow = {}) {
+  return {
+    companyName: normalizeLookupValue(row.companyName),
+    companyWebsite: normalizeUrl(row.companyWebsite),
+    externalId: normalizeLookupValue(row.externalId || row.crunchbaseId || row.uuid),
+    externalPermalink: normalizeLookupValue(row.externalPermalink || row.permalink),
+    crunchbaseUrl: normalizeUrl(row.crunchbaseUrl),
+    name: normalizeLookupValue(row.name),
+    title: normalizeLookupValue(row.title),
+    linkedinUrl: normalizeUrl(row.linkedinUrl),
+    twitterUrl: normalizeUrl(row.twitterUrl),
+    facebookUrl: normalizeUrl(row.facebookUrl),
+    email: normalizeEmail(row.email),
+    phone: normalizePhoneFieldValue(row.phone),
+    location: normalizeLookupValue(row.location),
+    department: normalizeLookupValue(row.department),
+    seniority: normalizeLookupValue(row.seniority),
+    roleType: normalizeLookupValue(row.roleType),
+    startedOn: parseIntentDate(row.startedOn),
+    endedOn: parseIntentDate(row.endedOn),
+    isCurrent: normalizeLookupValue(row.isCurrent).toLowerCase() === "false" ? false : null,
+    source: normalizeIntentSource(row.source || "Crunchbase"),
+    rawData: rawRow && Object.keys(rawRow).length ? rawRow : row,
+    status: normalizeIntentStatus(row.status || "new"),
+  };
+}
+
+function extractIntentRowsFromSheet(rows, columnMap, mapper, sourceFile, sourceSheet = "") {
+  const headerRowIndex = rows.findIndex(row => Object.values(columnMap).some(aliases => findImportColumnIndex(row, aliases) !== -1));
+  if (headerRowIndex === -1) return [];
+  const headerRow = rows[headerRowIndex];
+  const columnIndexes = Object.fromEntries(
+    Object.entries(columnMap).map(([field, aliases]) => [field, findImportColumnIndex(headerRow, aliases)]),
+  );
+
+  return rows
+    .slice(headerRowIndex + 1)
+    .filter(row => row.some(cell => normalizeLookupValue(cell)))
+    .map(row => {
+      const rawRow = Object.fromEntries(headerRow.map((header, index) => [normalizeLookupValue(header) || `Column ${index + 1}`, row[index] ?? ""]));
+      const mappedRow = Object.fromEntries(
+        Object.entries(columnIndexes).map(([field, index]) => [field, importCellValue(row, index)]),
+      );
+      return mapper({ ...mappedRow, sourceFile, sourceSheet }, { ...rawRow, sourceFile, sourceSheet });
+    });
+}
+
+async function parseIntentImportFile(file, type = "companies") {
+  const filename = file?.name || "";
+  const extension = filename.split(".").pop()?.toLowerCase();
+  if (!["csv", "xlsx"].includes(extension)) throw new Error("Upload a .xlsx or .csv file.");
+  const workbook = extension === "csv"
+    ? XLSX.read(await file.text(), { type: "string", cellDates: true })
+    : XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  const columnMap = type === "people" ? intentPeopleColumnMap : intentCompanyColumnMap;
+  const mapper = type === "people" ? mapIntentPersonRow : mapIntentCompanyRow;
+  return workbook.SheetNames.flatMap(sheetName => {
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "", blankrows: false, raw: false });
+    return extractIntentRowsFromSheet(rows, columnMap, mapper, filename, extension === "csv" ? "" : sheetName);
+  });
 }
 
 const cognismExportColumns = [
@@ -14651,6 +15164,8 @@ export default function App() {
   const [dataUserId, setDataUserId] = useState(null);
   const [dataOrgId, setDataOrgId] = useState(null);
   const [leadLists, setLeadLists] = useState([]);
+  const [intentData, setIntentData] = useState({ sources: [], runs: [], events: [], people: [] });
+  const [intentDataError, setIntentDataError] = useState("");
   const [leadListsError, setLeadListsError] = useState("");
   const [leadContactDatabase, setLeadContactDatabase] = useState([]);
   const [privateContactNotes, setPrivateContactNotes] = useState({});
@@ -14696,6 +15211,8 @@ export default function App() {
       setDataUserId(null);
       setDataOrgId(null);
       setLeadLists([]);
+      setIntentData({ sources: [], runs: [], events: [], people: [] });
+      setIntentDataError("");
       setLeadListsError("");
       setLeadContactDatabase([]);
       setPrivateContactNotes({});
@@ -14789,12 +15306,17 @@ export default function App() {
       organizationId = await ensureWorkspace(nextUser);
       const currentWorkspaceUser = mapAuthUserToWorkspaceUser(nextUser);
       const workspaceUsers = await loadWorkspaceUsers(organizationId);
-      const [syncedCrmData, nextLeadLists, nextLeadContactDatabase, nextPrivateContactNotes, nextAircallData, nextAdminSettings] = await Promise.all([
+      const [syncedCrmData, nextLeadLists, nextIntentData, nextLeadContactDatabase, nextPrivateContactNotes, nextAircallData, nextAdminSettings] = await Promise.all([
         loadSyncedCrmData(nextUser.id, organizationId, workspaceUsers),
         loadLeadLists(organizationId).catch(error => {
           console.error("Could not load lead lists", error);
           setLeadListsError(error.message || "Could not load lead lists.");
           return [];
+        }),
+        loadIntentData(organizationId).catch(error => {
+          console.error("Could not load intent data", error);
+          setIntentDataError(error.message || "Could not load intent data.");
+          return { sources: [], runs: [], events: [], people: [] };
         }),
         loadLeadContactDatabase(organizationId).catch(error => {
           console.error("Could not load contacts", error);
@@ -14836,6 +15358,7 @@ export default function App() {
       };
       setCrmData(refreshCrmData(nextCrmData));
       setLeadLists(nextLeadLists);
+      setIntentData(nextIntentData);
       setLeadContactDatabase(nextLeadContactDatabase);
       setPrivateContactNotes(nextPrivateContactNotes);
       setAircallData(nextAircallData);
@@ -14868,6 +15391,7 @@ export default function App() {
       setUser(nextUserWithProfile);
       setCurrencyCode(nextUserWithProfile.crm_profile.currencyCode || "GBP");
       setLeadListsError("");
+      setIntentDataError("");
     } catch (error) {
       console.error("Could not load synced CRM data", error);
       const fallbackWorkspaceUser = organizationId
@@ -14881,6 +15405,8 @@ export default function App() {
       });
       setDataOrgId(organizationId);
       setLeadLists([]);
+      setIntentData({ sources: [], runs: [], events: [], people: [] });
+      setIntentDataError("");
       setLeadContactDatabase([]);
       setPrivateContactNotes({});
       setAircallData({ users: [], calls: [], dailyStats: [] });
@@ -16207,6 +16733,198 @@ export default function App() {
     return { addedCount: newAccounts.length, skippedCount };
   }
 
+  async function refreshIntentData() {
+    if (!dataOrgId) return { sources: [], runs: [], events: [], people: [] };
+    const nextIntentData = await loadIntentData(dataOrgId);
+    setIntentData(nextIntentData);
+    return nextIntentData;
+  }
+
+  async function handleRunIntentResearch(input = {}) {
+    const response = await fetch("/api/intent-research/run", {
+      method: "POST",
+      headers: await buildApiHeaders(),
+      body: JSON.stringify(input),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || "Intent research failed.");
+    await refreshIntentData();
+    return payload;
+  }
+
+  async function handleUpdateIntentEventStatus(event, status) {
+    if (!supabase || !dataOrgId || !event?.id) throw new Error("Database connection is required.");
+    const { data, error } = await supabase
+      .from("intent_events")
+      .update({ status })
+      .eq("organization_id", dataOrgId)
+      .eq("id", event.id)
+      .select("*")
+      .single();
+    if (error) throw error;
+    const nextEvent = normalizeIntentEvent(data);
+    setIntentData(current => ({
+      ...current,
+      events: current.events.map(item => item.id === nextEvent.id ? nextEvent : item),
+    }));
+    return nextEvent;
+  }
+
+  async function handleLinkIntentEventCompany(event, company) {
+    if (!supabase || !dataOrgId || !event?.id || !company?.id) throw new Error("Choose an existing company to link.");
+    const { data, error } = await supabase
+      .from("intent_events")
+      .update({ existing_company_id: company.id, status: event.status === "new" ? "reviewed" : event.status })
+      .eq("organization_id", dataOrgId)
+      .eq("id", event.id)
+      .select("*")
+      .single();
+    if (error) throw error;
+    const nextEvent = normalizeIntentEvent(data);
+    setIntentData(current => ({
+      ...current,
+      events: current.events.map(item => item.id === nextEvent.id ? nextEvent : item),
+    }));
+    return nextEvent;
+  }
+
+  async function handlePromoteIntentEventCompany(event) {
+    if (!supabase || !dataOrgId) throw new Error("Database connection is required.");
+    if (event.promotedCompanyId) return event.promotedCompanyId;
+    const duplicate = findIntentEventCompanyDuplicates(event, crmData.accounts || [])[0];
+    if (duplicate) {
+      await handleLinkIntentEventCompany(event, duplicate);
+      return duplicate.id;
+    }
+    const client = crmData.clients.find(item => UUID_PATTERN.test(String(item.id))) || crmData.clients[0];
+    if (!UUID_PATTERN.test(String(client?.id || ""))) throw new Error("Create a database-backed client account before promoting intent companies.");
+    const persistedCompany = await createRelationalCompany(dataOrgId, {
+      clientId: client.id,
+      name: event.companyName,
+      domain: event.companyDomain || extractDomain(event.companyWebsite) || "No domain",
+      website: event.companyWebsite || "",
+      industry: event.rawData?.industry || "Unspecified",
+      location: event.rawData?.geography || "Unspecified",
+      employees: "Unknown",
+      value: 0,
+      stage: "Lead In",
+      status: "New",
+      nextAction: `Review intent signal: ${titleCase(String(event.eventType || "event").replaceAll("_", " "))}`,
+      insight: event.summary || event.title || "Promoted from Intent Research.",
+      scripts: null,
+    });
+    const { data, error } = await supabase
+      .from("intent_events")
+      .update({ promoted_company_id: persistedCompany.id, status: "promoted" })
+      .eq("organization_id", dataOrgId)
+      .eq("id", event.id)
+      .select("*")
+      .single();
+    if (error) throw error;
+    const account = {
+      id: persistedCompany.id,
+      clientId: client.id,
+      name: event.companyName,
+      domain: event.companyDomain || extractDomain(event.companyWebsite) || "No domain",
+      website: event.companyWebsite || "",
+      owner: "Workspace user",
+      stage: "lead",
+      status: "New",
+      industry: event.rawData?.industry || "Unspecified",
+      location: event.rawData?.geography || "Unspecified",
+      employees: "Unknown",
+      value: 0,
+      lastActivity: "Promoted from Intent Research",
+      nextAction: `Review intent signal: ${event.title || event.eventType}`,
+      insight: event.summary || "",
+      scripts: null,
+    };
+    updateData(current => ({ ...current, accounts: [account, ...current.accounts], activities: [makeActivity("Intent", `Promoted intent company: ${account.name}`, account.name), ...current.activities] }));
+    const nextEvent = normalizeIntentEvent(data);
+    setIntentData(current => ({ ...current, events: current.events.map(item => item.id === nextEvent.id ? nextEvent : item) }));
+    return persistedCompany.id;
+  }
+
+  async function handlePromoteIntentPerson(person, event) {
+    if (!supabase || !dataOrgId) throw new Error("Database connection is required.");
+    if (person.promotedContactId) return person.promotedContactId;
+    const companyId = event.promotedCompanyId || event.existingCompanyId || await handlePromoteIntentEventCompany(event);
+    const company = crmData.accounts.find(item => item.id === companyId) || { id: companyId, name: event.companyName, clientId: crmData.clients[0]?.id || "" };
+    const duplicate = findIntentPersonDuplicates(person, crmData.contacts || [])[0];
+    if (duplicate) {
+      const { data, error } = await supabase
+        .from("intent_people")
+        .update({ promoted_contact_id: duplicate.id, status: "promoted" })
+        .eq("organization_id", dataOrgId)
+        .eq("id", person.id)
+        .select("*")
+        .single();
+      if (error) throw error;
+      const nextPerson = normalizeIntentEventPerson(data);
+      setIntentData(current => ({ ...current, people: current.people.map(item => item.id === nextPerson.id ? nextPerson : item) }));
+      return duplicate.id;
+    }
+    const savedContact = await createRelationalContact(dataOrgId, {
+      clientId: company.clientId || crmData.clients[0]?.id || "",
+      accountId: companyId,
+      companyId,
+      account: company.name || event.companyName,
+      company: company.name || event.companyName,
+      name: person.name || person.email || "Intent contact",
+      title: person.title || "",
+      role: person.title || "",
+      email: person.email || "",
+      mobile: person.phone || "",
+      directDial: person.phone || "",
+      status: "New",
+      stage: "lead",
+    });
+    const { data, error } = await supabase
+      .from("intent_people")
+      .update({ promoted_contact_id: savedContact.id, status: "promoted" })
+      .eq("organization_id", dataOrgId)
+      .eq("id", person.id)
+      .select("*")
+      .single();
+    if (error) throw error;
+    const contact = {
+      id: savedContact.id,
+      clientId: company.clientId || crmData.clients[0]?.id || "",
+      companyId,
+      accountId: companyId,
+      company: company.name || event.companyName,
+      account: company.name || event.companyName,
+      name: person.name || person.email || "Intent contact",
+      firstName: "",
+      lastName: "",
+      email: person.email || "",
+      phone: person.phone || "",
+      mobile: person.phone || "",
+      directDial: person.phone || "",
+      title: person.title || "",
+      role: person.title || "",
+      linkedin: person.linkedinUrl || "",
+      status: "New",
+      stage: "lead",
+      owner: "Workspace user",
+      lastTouch: "Promoted from Intent Research",
+    };
+    updateData(current => ({ ...current, contacts: [contact, ...current.contacts], activities: [makeActivity("Intent", `Promoted intent person: ${contact.name}`, contact.account), ...current.activities] }));
+    const nextPerson = normalizeIntentEventPerson(data);
+    setIntentData(current => ({ ...current, people: current.people.map(item => item.id === nextPerson.id ? nextPerson : item) }));
+    return savedContact.id;
+  }
+
+  async function handlePromoteIntentCompanyPeople(event, people = []) {
+    const companyId = await handlePromoteIntentEventCompany(event);
+    const nextEvent = { ...event, promotedCompanyId: companyId, existingCompanyId: event.existingCompanyId || companyId };
+    for (const person of people.filter(item => !item.promotedContactId)) {
+      await handlePromoteIntentPerson(person, nextEvent);
+    }
+    await refreshIntentData();
+    return { companyId };
+  }
+
   function handleUpdatePipelineStages(stages) {
     updateData(current => ({
       ...current,
@@ -16972,6 +17690,8 @@ export default function App() {
       case "contacts":
       case "lead-lookup":
         return <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} onSaveLeadList={handleSaveLeadList} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
+      case "intent-research":
+        return <IntentResearchPage intentData={intentData} crmData={crmData} error={intentDataError} onRunResearch={handleRunIntentResearch} onUpdateEventStatus={handleUpdateIntentEventStatus} onPromoteEventCompany={handlePromoteIntentEventCompany} onLinkEventCompany={handleLinkIntentEventCompany} onPromotePerson={handlePromoteIntentPerson} onPromoteCompanyPeople={handlePromoteIntentCompanyPeople} />;
       case "contact-detail":
         return selectedContact
           ? <ContactDetailPage

@@ -492,6 +492,10 @@ function configuredEnv(keys) {
   return Object.fromEntries(keys.map(key => [key, Boolean(process.env[key])]));
 }
 
+function getGooglePlacesApiKey() {
+  return process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_PLACES_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY;
+}
+
 function maskSecret(value = '') {
   const cleanValue = String(value || '').trim();
   if (!cleanValue) return '';
@@ -673,6 +677,176 @@ async function saveIntegrationSettings(req, input = {}) {
   });
 }
 
+function normalizeGooglePlace(place = {}) {
+  const addressComponents = Array.isArray(place.addressComponents) ? place.addressComponents : [];
+  const findAddressComponent = type => addressComponents.find(component => (component.types || []).includes(type))?.longText || '';
+  const country = findAddressComponent('country');
+  const city = findAddressComponent('postal_town') || findAddressComponent('locality') || findAddressComponent('administrative_area_level_2');
+  const postcode = findAddressComponent('postal_code');
+  const primaryType = place.primaryType || place.types?.[0] || 'store';
+  const photoName = Array.isArray(place.photos) ? place.photos[0]?.name || '' : '';
+  return {
+    id: place.id || place.name || `place-${Math.random().toString(36).slice(2)}`,
+    placeId: place.id || '',
+    name: place.displayName?.text || place.displayName || 'Unnamed place',
+    industry: place.primaryTypeDisplayName?.text || primaryType.split('_').map(part => `${part.charAt(0).toUpperCase()}${part.slice(1)}`).join(' '),
+    placeType: primaryType,
+    address: place.formattedAddress || place.shortFormattedAddress || '',
+    city,
+    country,
+    postcode,
+    phone: place.internationalPhoneNumber || place.nationalPhoneNumber || '',
+    website: place.websiteUri || place.googleMapsUri || '',
+    lat: place.location?.latitude || null,
+    lng: place.location?.longitude || null,
+    hours: place.currentOpeningHours?.weekdayDescriptions?.[0] || place.regularOpeningHours?.weekdayDescriptions?.[0] || '',
+    photo: photoName ? `/api/google-places/photo?name=${encodeURIComponent(photoName)}` : '',
+    photoName,
+    score: 72,
+    footfall: '',
+    access: '',
+    fit: 'Google Places match. Confirm frontage, access hours, power, landlord approval, and installation space before outreach.',
+    source: 'Google Places',
+    status: 'New prospect',
+  };
+}
+
+async function proxyGooglePlacePhoto(req, res) {
+  const apiKey = getGooglePlacesApiKey();
+  if (!apiKey) {
+    sendJson(res, 503, { error: 'Google Places API key is not configured.' });
+    return true;
+  }
+
+  const url = new URL(req.url, 'http://localhost');
+  const photoName = String(url.searchParams.get('name') || '').trim();
+  if (!photoName || !photoName.startsWith('places/')) {
+    sendJson(res, 400, { error: 'A valid Google Places photo name is required.' });
+    return true;
+  }
+
+  try {
+    const photoUrl = new URL(`https://places.googleapis.com/v1/${photoName}/media`);
+    photoUrl.searchParams.set('maxWidthPx', '720');
+    photoUrl.searchParams.set('maxHeightPx', '420');
+    photoUrl.searchParams.set('key', apiKey);
+    const response = await fetch(photoUrl);
+    if (!response.ok) {
+      sendJson(res, response.status, { error: 'Google Places photo request failed.' });
+      return true;
+    }
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const bytes = Buffer.from(await response.arrayBuffer());
+    res.statusCode = 200;
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.end(bytes);
+  } catch (error) {
+    sendJson(res, 500, { error: error?.message || 'Google Places photo request failed.' });
+  }
+  return true;
+}
+
+async function searchGooglePlaces(input = {}) {
+  const apiKey = getGooglePlacesApiKey();
+  if (!apiKey) {
+    const error = new Error('Google Places API key is not configured. Add GOOGLE_PLACES_API_KEY or GOOGLE_MAPS_API_KEY to the server environment.');
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const city = String(input.city || '').trim();
+  const country = String(input.country || '').trim();
+  const postcode = String(input.postcode || '').trim();
+  const includedTypes = Array.isArray(input.placeTypes) ? input.placeTypes.filter(Boolean).slice(0, 8) : [];
+  const customIndustryQueries = Array.isArray(input.customIndustryQueries)
+    ? input.customIndustryQueries.map(value => String(value || '').trim()).filter(Boolean).slice(0, 6)
+    : [];
+  const queryLocation = [city, postcode, country].filter(Boolean).join(', ') || 'London, United Kingdom';
+  const typeQueries = includedTypes;
+  const searchQueries = [
+    ...typeQueries.map(placeType => ({
+      textQuery: `${placeType.replaceAll('_', ' ')} near ${queryLocation}`,
+      includedType: placeType,
+    })),
+    ...customIndustryQueries.map(query => ({
+      textQuery: `${query} near ${queryLocation}`,
+      includedType: '',
+    })),
+  ];
+  if (!searchQueries.length) {
+    return {
+      source: 'google_places',
+      places: [],
+      message: 'Choose at least one industry filter or enter a custom industry.',
+    };
+  }
+  const resultsById = new Map();
+
+  for (const searchQuery of searchQueries) {
+    const requestBody = {
+      textQuery: searchQuery.textQuery,
+      maxResultCount: 12,
+    };
+    if (searchQuery.includedType) requestBody.includedType = searchQuery.includedType;
+    const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': [
+          'places.id',
+          'places.displayName',
+          'places.formattedAddress',
+          'places.addressComponents',
+          'places.location',
+          'places.primaryType',
+          'places.primaryTypeDisplayName',
+          'places.types',
+          'places.internationalPhoneNumber',
+          'places.nationalPhoneNumber',
+          'places.websiteUri',
+          'places.googleMapsUri',
+          'places.photos',
+          'places.currentOpeningHours',
+          'places.regularOpeningHours',
+        ].join(','),
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(payload.error?.message || 'Google Places search failed.');
+      error.statusCode = response.status;
+      error.provider = 'google_places';
+      error.providerStatus = response.status;
+      throw error;
+    }
+
+    for (const place of payload.places || []) {
+      const normalized = normalizeGooglePlace(place);
+      const scoreBoost = {
+        convenience_store: 24,
+        gas_station: 22,
+        supermarket: 16,
+        train_station: 14,
+        parking: 10,
+        shopping_mall: 8,
+      }[normalized.placeType] || 0;
+      resultsById.set(normalized.placeId || normalized.id, {
+        ...normalized,
+        score: Math.min(96, 68 + scoreBoost),
+      });
+    }
+  }
+
+  return {
+    source: 'google_places',
+    places: [...resultsById.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)),
+  };
+}
+
 async function handlePostRoute(req, res, handler, fallbackMessage) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'Method not allowed' });
@@ -721,6 +895,8 @@ export async function handleApiRequest(req, res) {
         'AIRCALL_API_ID',
         'AIRCALL_API_TOKEN',
         'AIRCALL_USER_ID',
+        'GOOGLE_PLACES_API_KEY',
+        'GOOGLE_MAPS_API_KEY',
       ]),
     });
     return true;
@@ -778,6 +954,18 @@ export async function handleApiRequest(req, res) {
 
   if (pathname === '/api/workspace-users/role') {
     return handlePostRoute(req, res, async body => updateWorkspaceUserRole(req, body), 'Workspace user role update failed');
+  }
+
+  if (pathname === '/api/google-places/search') {
+    return handlePostRoute(req, res, async body => searchGooglePlaces(body), 'Google Places search failed');
+  }
+
+  if (pathname === '/api/google-places/photo') {
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'Method not allowed' });
+      return true;
+    }
+    return proxyGooglePlacePhoto(req, res);
   }
 
   if (pathname === '/api/contacts/archive') {

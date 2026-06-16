@@ -1,5 +1,7 @@
-import { createContext, createElement, useContext, useEffect, useRef, useState } from "react";
+import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import * as XLSX from "xlsx";
 import {
   ArrowRight,
@@ -16,6 +18,8 @@ import {
   Contact,
   Copy,
   Database,
+  Download,
+  Earth,
   ExternalLink,
   Eye,
   EyeOff,
@@ -42,6 +46,7 @@ import {
   Settings,
   ShieldCheck,
   Sparkles,
+  StickyNote,
   Sun,
   Target,
   Trash2,
@@ -97,7 +102,6 @@ const CRM_MANAGEMENT_WORKFLOWS = new Set([
   "contact",
   "edit-contact",
   "deal",
-  "research",
   "file",
 ]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -356,12 +360,15 @@ const pipelineColumns = [
   { id: "qualified", name: "Qualified" },
 ];
 
-const scriptBoardStages = [
-  { id: "ideas", name: "Ideas" },
-  { id: "drafts", name: "Drafts" },
-  { id: "ready", name: "Ready" },
-  { id: "used", name: "Used" },
-];
+function pipelineStageIdForValue(value, stages = pipelineColumns) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return stages[0]?.id || pipelineColumns[0].id;
+  const matched = (stages || pipelineColumns).find(stage => (
+    String(stage.id).toLowerCase() === normalized
+    || String(stage.name).trim().toLowerCase() === normalized
+  ));
+  return matched?.id || stages[0]?.id || pipelineColumns[0].id;
+}
 
 const demoDeals = [
   { id: "d1", account: "Target Account 03", contact: "Product Operations Contact 01", stage: "lead", value: 52000, owner: "Workspace Admin", due: "Today" },
@@ -388,8 +395,10 @@ const initialActivities = useDemoData ? demoActivities : [];
 const initialResearchItems = [];
 const initialFiles = [];
 const initialScriptItems = [];
+const initialActionNotes = [];
 const initialCallInsights = [];
 const initialWeeklyReports = [];
+const initialLockerProspects = [];
 
 const emptyClient = {
   id: "none",
@@ -480,8 +489,9 @@ const navItems = [
   { id: "contacts", label: "Contacts", icon: Contact, highlight: true },
   { id: "cognism", label: "Lead Finder", icon: CognismLogoIcon, logo: cognismLogoUrl, highlight: true },
   { id: "lead-lists", label: "Lead Lists", icon: ListFilter, highlight: true },
-  { id: "pipeline", label: "Pipeline", icon: KanbanSquare },
-  { id: "research", label: "Research", icon: FileText },
+  { id: "pipeline", label: "Pipeline", icon: KanbanSquare, adminOnly: true },
+  { id: "research", label: "Research", icon: FileText, adminOnly: true },
+  { id: "locker-finder", label: "Locker Finder", icon: Earth, highlight: true },
   { id: "integrations", label: "Integrations", icon: Plug, highlight: true },
   { id: "settings", label: "Settings", icon: Settings, highlight: true },
 ];
@@ -629,9 +639,11 @@ function createInitialCrmData() {
     researchItems: cloneRecords(initialResearchItems),
     files: cloneRecords(initialFiles),
     scriptItems: cloneRecords(initialScriptItems),
+    actionNotes: cloneRecords(initialActionNotes),
     callInsights: cloneRecords(initialCallInsights),
     meetings: [],
     weeklyReports: cloneRecords(initialWeeklyReports),
+    lockerProspects: cloneRecords(initialLockerProspects),
     integrations: hydrateIntegrations(),
     pipelineStages: cloneRecords(pipelineColumns),
   };
@@ -665,9 +677,11 @@ function normalizeCrmData(data) {
     researchItems: Array.isArray(data.researchItems) ? data.researchItems : initial.researchItems,
     files: Array.isArray(data.files) ? data.files : initial.files,
     scriptItems: Array.isArray(data.scriptItems) ? data.scriptItems : initial.scriptItems,
+    actionNotes: Array.isArray(data.actionNotes) ? data.actionNotes : initial.actionNotes,
     callInsights: Array.isArray(data.callInsights) ? data.callInsights : initial.callInsights,
     meetings: Array.isArray(data.meetings) ? data.meetings : initial.meetings,
     weeklyReports: Array.isArray(data.weeklyReports) ? data.weeklyReports : initial.weeklyReports,
+    lockerProspects: Array.isArray(data.lockerProspects) ? data.lockerProspects : initial.lockerProspects,
     integrations: hydrateIntegrations(Array.isArray(data.integrations) ? data.integrations : []),
     pipelineStages: Array.isArray(data.pipelineStages) && data.pipelineStages.length
       ? pipelineColumns.map(column => {
@@ -694,8 +708,52 @@ function saveUiState() {
   return undefined;
 }
 
-async function loadRelationalCrmData(organizationId) {
+function formatOwnerRole(role) {
+  const normalizedRole = String(role || "member").toLowerCase().replaceAll(" ", "_");
+  if (["platform_admin", "org_owner", "org_admin"].includes(normalizedRole)) return "Org Admin";
+  if (normalizedRole === "admin") return "Admin";
+  return formatRole(normalizedRole);
+}
+
+function formatWorkspaceOwnerLabel(workspaceUser, fallback = "Workspace user") {
+  if (!workspaceUser) return fallback || "Workspace user";
+  const name = workspaceUser.name || workspaceUser.email?.split("@")[0] || "Workspace user";
+  return name;
+}
+
+function formatWorkspaceOwnerRoleLabel(workspaceUser, fallback = "") {
+  if (!workspaceUser) return fallback || "";
+  return formatOwnerRole(workspaceUser.roleKey || workspaceUser.role);
+}
+
+function findFallbackAdminOwnerUser(workspaceUsers = []) {
+  return (workspaceUsers || []).find(workspaceUser => ORG_ADMIN_ROLES.has(workspaceUser.roleKey || String(workspaceUser.role || "").toLowerCase().replaceAll(" ", "_")))
+    || (workspaceUsers || []).find(workspaceUser => String(workspaceUser.roleKey || workspaceUser.role || "").toLowerCase().replaceAll(" ", "_") === "admin")
+    || null;
+}
+
+function findRecordOwnerUser(record = {}, members = [], workspaceUsers = []) {
+  const workspaceUserById = new Map((workspaceUsers || []).map(workspaceUser => [workspaceUser.id, workspaceUser]));
+  return workspaceUserById.get(record.owner_id)
+    || workspaceUserById.get(record.ownerId)
+    || (members || []).map(member => workspaceUserById.get(member.user_id || member.userId)).find(Boolean)
+    || null;
+}
+
+async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
   if (!supabase || !organizationId) return null;
+
+  async function fetchAllRows(createQuery, pageSize = 1000) {
+    const rows = [];
+    for (let from = 0; ; from += pageSize) {
+      const to = from + pageSize - 1;
+      const result = await createQuery().range(from, to);
+      if (result.error) return result;
+      const pageRows = result.data || [];
+      rows.push(...pageRows);
+      if (pageRows.length < pageSize) return { data: rows, error: null };
+    }
+  }
 
   const [
     clientsResult,
@@ -706,46 +764,59 @@ async function loadRelationalCrmData(organizationId) {
     clientMembersResult,
     campaignMembersResult,
     meetingsResult,
+    actionNotesResult,
+    actionNoteContactsResult,
   ] = await Promise.all([
-    supabase
+    fetchAllRows(() => supabase
       .from("clients")
-      .select("id,name,status,industry,website,metadata")
+      .select("id,name,status,industry,website,owner_id,metadata")
       .eq("organization_id", organizationId)
-      .order("name", { ascending: true }),
-    supabase
+      .order("name", { ascending: true })),
+    fetchAllRows(() => supabase
       .from("campaigns")
       .select("id,client_id,name,status,channel,settings")
       .eq("organization_id", organizationId)
-      .order("name", { ascending: true }),
-    supabase
+      .order("name", { ascending: true })),
+    fetchAllRows(() => supabase
       .from("companies")
       .select("id,client_id,name,domain,website,industry,employee_count,annual_revenue,status,notes,custom_fields")
       .eq("organization_id", organizationId)
-      .order("name", { ascending: true }),
-    supabase
+      .order("name", { ascending: true })),
+    fetchAllRows(() => supabase
       .from("contacts")
       .select("id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,status,custom_fields")
       .eq("organization_id", organizationId)
-      .order("created_at", { ascending: true }),
-    supabase
+      .order("created_at", { ascending: true })),
+    fetchAllRows(() => supabase
       .from("campaign_targets")
       .select("campaign_id,company_id,contact_id")
-      .eq("organization_id", organizationId),
-    supabase
+      .eq("organization_id", organizationId)),
+    fetchAllRows(() => supabase
       .from("client_members")
       .select("client_id,user_id")
-      .eq("organization_id", organizationId),
-    supabase
+      .eq("organization_id", organizationId)),
+    fetchAllRows(() => supabase
       .from("campaign_members")
       .select("campaign_id,user_id")
-      .eq("organization_id", organizationId),
-    supabase
+      .eq("organization_id", organizationId)),
+    fetchAllRows(() => supabase
       .from("meetings")
       .select("id,organization_id,client_id,campaign_id,company_id,contact_id,user_id,owner_user_id,booked_by_user_id,aircall_call_id,aircall_user_record_id,aircall_user_id,agent_name,title,meeting_at,status,notes,transcript,phone_number,created_at")
       .eq("organization_id", organizationId)
-      .order("meeting_at", { ascending: false, nullsFirst: false }),
+      .order("meeting_at", { ascending: false, nullsFirst: false })),
+    fetchAllRows(() => supabase
+      .from("action_notes")
+      .select("id,organization_id,client_id,campaign_id,company_id,title,body,status,action_type,source,created_by,updated_by,created_at,updated_at")
+      .eq("organization_id", organizationId)
+      .order("updated_at", { ascending: false })),
+    fetchAllRows(() => supabase
+      .from("action_note_contacts")
+      .select("action_note_id,organization_id,contact_id")
+      .eq("organization_id", organizationId)),
   ]);
 
+  if (actionNotesResult.error) console.error("Could not load action notes", actionNotesResult.error);
+  if (actionNoteContactsResult.error) console.error("Could not load action note contacts", actionNoteContactsResult.error);
   const results = [clientsResult, campaignsResult, companiesResult, contactsResult, campaignTargetsResult, clientMembersResult, campaignMembersResult, meetingsResult];
   const failedResult = results.find(result => result.error);
   if (failedResult?.error) throw failedResult.error;
@@ -758,21 +829,36 @@ async function loadRelationalCrmData(organizationId) {
   const clientMembers = clientMembersResult.data || [];
   const campaignMembers = campaignMembersResult.data || [];
   const meetings = meetingsResult.data || [];
+  const actionNotes = actionNotesResult.error ? [] : actionNotesResult.data || [];
+  const actionNoteContacts = actionNoteContactsResult.error ? [] : actionNoteContactsResult.data || [];
 
   if (!clients.length && !campaigns.length && !companies.length && !contacts.length) return null;
 
   const companyById = new Map(companies.map(company => [company.id, company]));
+  const contactIdsByActionNoteId = actionNoteContacts.reduce((map, row) => {
+    const ids = map.get(row.action_note_id) || [];
+    ids.push(row.contact_id);
+    map.set(row.action_note_id, ids);
+    return map;
+  }, new Map());
 
   return normalizeCrmData({
     clientAccounts: clients.map(client => {
       const clientCompanies = companies.filter(company => company.client_id === client.id);
       const clientContacts = contacts.filter(contact => contact.client_id === client.id);
+      const clientOwner = findRecordOwnerUser(
+        client,
+        clientMembers.filter(member => member.client_id === client.id),
+        workspaceUsers,
+      ) || findFallbackAdminOwnerUser(workspaceUsers);
       return {
         id: client.id,
         name: client.name,
         workspace: client.metadata?.workspace || client.name,
         status: titleCase(client.status || "active"),
-        owner: client.metadata?.owner || "Workspace Admin",
+        owner: formatWorkspaceOwnerLabel(clientOwner, client.metadata?.owner || "Workspace user"),
+        ownerRole: formatWorkspaceOwnerRoleLabel(clientOwner, ""),
+        ownerId: client.owner_id || clientOwner?.id || "",
         metadata: client.metadata || {},
         memberIds: clientMembers.filter(member => member.client_id === client.id).map(member => member.user_id),
         industry: client.industry || "",
@@ -792,7 +878,7 @@ async function loadRelationalCrmData(organizationId) {
       domain: company.domain || "",
       website: company.website || "",
       owner: "Workspace Admin",
-      stage: company.custom_fields?.ui_stage || "Imported",
+      stage: pipelineStageIdForValue(company.custom_fields?.ui_stage || "lead"),
       status: company.custom_fields?.ui_status || titleCase(company.status || "active"),
       industry: company.industry || "",
       employees: company.employee_count || "",
@@ -802,6 +888,7 @@ async function loadRelationalCrmData(organizationId) {
       nextAction: company.custom_fields?.next_action || "Review company",
       insight: company.notes || "",
       scripts: company.custom_fields?.scripts || null,
+      customFields: company.custom_fields || {},
     })),
     campaigns: campaigns.map(campaign => {
       const campaignCompanies = new Set(campaignTargets
@@ -853,6 +940,28 @@ async function loadRelationalCrmData(organizationId) {
       phoneNumber: meeting.phone_number || "",
       createdAt: meeting.created_at || "",
     })),
+    actionNotes: actionNotes.map(note => {
+      const company = companyById.get(note.company_id);
+      return {
+        id: note.id,
+        organizationId: note.organization_id,
+        clientId: note.client_id || company?.client_id || "",
+        campaignId: note.campaign_id || "",
+        accountId: note.company_id || "",
+        companyId: note.company_id || "",
+        account: company?.name || "",
+        title: note.title || "Action note",
+        body: note.body || "",
+        status: note.status || "open",
+        actionType: note.action_type || "general",
+        source: note.source || "",
+        contactIds: contactIdsByActionNoteId.get(note.id) || [],
+        createdBy: note.created_by || "",
+        updatedBy: note.updated_by || "",
+        createdAt: note.created_at || "",
+        updatedAt: note.updated_at || "",
+      };
+    }),
     contacts: contacts.map(contact => {
       const company = companyById.get(contact.company_id);
       const name = contact.full_name || [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.email || "Unnamed contact";
@@ -874,6 +983,8 @@ async function loadRelationalCrmData(organizationId) {
         role: contact.job_title || "",
         linkedin: contact.linkedin_url || "",
         status: contact.custom_fields?.ui_status || titleCase(contact.status || "active"),
+        stage: pipelineStageIdForValue(contact.custom_fields?.pipeline_stage || "lead"),
+        customFields: contact.custom_fields || {},
         owner: "Workspace Admin",
         lastTouch: "Imported from CRM database",
       };
@@ -881,9 +992,9 @@ async function loadRelationalCrmData(organizationId) {
   });
 }
 
-async function loadSyncedCrmData(_userId, organizationId) {
+async function loadSyncedCrmData(_userId, organizationId, workspaceUsers = []) {
   if (!supabase || !organizationId) return createInitialCrmData();
-  const relationalData = await loadRelationalCrmData(organizationId);
+  const relationalData = await loadRelationalCrmData(organizationId, workspaceUsers);
   return relationalData || createInitialCrmData();
 }
 
@@ -957,7 +1068,7 @@ async function createRelationalClient(organizationId, userId, client) {
   const { data, error } = await supabase
     .from("clients")
     .insert(payload)
-    .select("id,name,status,industry,website,metadata")
+    .select("id,name,status,industry,website,owner_id,metadata")
     .single();
 
   if (error) throw error;
@@ -1105,6 +1216,33 @@ async function deleteRelationalMeeting(organizationId, meetingId) {
   if (error) throw error;
 }
 
+async function updateRelationalMeetingAssignment(organizationId, meeting, updates = {}) {
+  if (!supabase || !organizationId || !UUID_PATTERN.test(String(meeting?.id || ""))) return null;
+  const ownerUserId = updates.ownerUserId === "" ? null : ((updates.ownerUserId ?? meeting.ownerUserId) || null);
+  const bookedByUserId = updates.bookedByUserId === "" ? null : ((updates.bookedByUserId ?? meeting.bookedByUserId) || null);
+  const userId = ownerUserId || bookedByUserId || meeting.userId;
+  if (!UUID_PATTERN.test(String(userId || ""))) throw new Error("A valid workspace user is required for this meeting.");
+  const { data, error } = await supabase
+    .from("meetings")
+    .update({
+      user_id: userId,
+      owner_user_id: UUID_PATTERN.test(String(ownerUserId || "")) ? ownerUserId : null,
+      booked_by_user_id: UUID_PATTERN.test(String(bookedByUserId || "")) ? bookedByUserId : null,
+    })
+    .eq("organization_id", organizationId)
+    .eq("id", meeting.id)
+    .select("id,organization_id,client_id,campaign_id,company_id,contact_id,user_id,owner_user_id,booked_by_user_id,aircall_call_id,aircall_user_record_id,aircall_user_id,agent_name,title,meeting_at,status,notes,transcript,phone_number,created_at")
+    .single();
+
+  if (error) throw error;
+  return {
+    ...meeting,
+    userId: data.user_id || "",
+    ownerUserId: data.owner_user_id || "",
+    bookedByUserId: data.booked_by_user_id || "",
+  };
+}
+
 function buildCompanyPayload(organizationId, company) {
   return {
     organization_id: organizationId,
@@ -1145,6 +1283,26 @@ async function saveRelationalCompany(organizationId, company) {
   return data;
 }
 
+async function updateRelationalCompanyPipelineStage(organizationId, company, stage) {
+  if (!supabase || !organizationId || !UUID_PATTERN.test(String(company?.id || ""))) return null;
+  const customFields = {
+    ...(company.customFields || company.custom_fields || {}),
+    company_hq_location: company.location && company.location !== "Unspecified" ? company.location : "",
+    ui_stage: pipelineStageIdForValue(stage),
+    ui_status: company.status || "",
+    next_action: company.nextAction || "",
+    scripts: company.scripts || null,
+  };
+  const { error } = await supabase
+    .from("companies")
+    .update({ custom_fields: customFields })
+    .eq("id", company.id)
+    .eq("organization_id", organizationId);
+
+  if (error) throw error;
+  return { ...company, stage: customFields.ui_stage, customFields };
+}
+
 async function createRelationalCompany(organizationId, company) {
   if (!supabase || !organizationId) return null;
   const { data, error } = await supabase
@@ -1159,6 +1317,8 @@ async function createRelationalCompany(organizationId, company) {
 
 function buildContactPayload(organizationId, contact) {
   const { firstName, lastName } = splitContactName(contact.name);
+  const mobile = normalizePhoneFieldValue(contact.mobile);
+  const directDial = normalizePhoneFieldValue(contact.directDial);
   return {
     organization_id: organizationId,
     client_id: UUID_PATTERN.test(String(contact.clientId || "")) ? contact.clientId : null,
@@ -1169,18 +1329,19 @@ function buildContactPayload(organizationId, contact) {
     full_name: contact.name,
     company: contact.account || contact.company || null,
     email: normalizeEmail(contact.email) || null,
-    phone: contact.directDial || null,
-    mobile: contact.mobile || null,
-    direct_dial: contact.directDial || null,
+    phone: directDial || null,
+    mobile: mobile || null,
+    direct_dial: directDial || null,
     manual_email: normalizeEmail(contact.email) || null,
-    manual_mobile: contact.mobile || null,
-    manual_direct_dial: contact.directDial || null,
+    manual_mobile: mobile || null,
+    manual_direct_dial: directDial || null,
     job_title: contact.role || contact.title || null,
     data_source: "manual",
     normalized_identity_key: `person:${normalizeLookupValue(contact.name).toLowerCase()}|${normalizeLookupValue(contact.account || contact.company).toLowerCase()}`,
     status: "active",
     custom_fields: {
       ui_status: contact.status || "",
+      pipeline_stage: pipelineStageIdForValue(contact.stage || "lead"),
     },
   };
 }
@@ -1211,6 +1372,111 @@ async function saveRelationalContact(organizationId, contact) {
 
   if (error) throw error;
   return data;
+}
+
+async function updateRelationalContactPipelineStage(organizationId, contact, stage) {
+  if (!supabase || !organizationId || !UUID_PATTERN.test(String(contact?.id || ""))) return null;
+  const customFields = {
+    ...(contact.customFields || contact.custom_fields || {}),
+    ui_status: contact.status || "",
+    pipeline_stage: pipelineStageIdForValue(stage),
+  };
+  const { error } = await supabase
+    .from("contacts")
+    .update({ custom_fields: customFields })
+    .eq("id", contact.id)
+    .eq("organization_id", organizationId);
+
+  if (error) throw error;
+  return { ...contact, stage: customFields.pipeline_stage, customFields };
+}
+
+async function saveRelationalActionNote(organizationId, note, currentUserId = "") {
+  if (!supabase || !organizationId) return null;
+  const contactIds = [...new Set((note.contactIds || []).filter(id => UUID_PATTERN.test(String(id || ""))))];
+  const payload = {
+    organization_id: organizationId,
+    client_id: UUID_PATTERN.test(String(note.clientId || "")) ? note.clientId : null,
+    campaign_id: UUID_PATTERN.test(String(note.campaignId || "")) ? note.campaignId : null,
+    company_id: UUID_PATTERN.test(String(note.accountId || note.companyId || "")) ? (note.accountId || note.companyId) : null,
+    title: normalizeLookupValue(note.title) || "Action note",
+    body: normalizeLookupValue(note.body),
+    status: note.status || "open",
+    action_type: note.actionType || "general",
+    source: normalizeLookupValue(note.source) || null,
+    updated_by: UUID_PATTERN.test(String(currentUserId || "")) ? currentUserId : null,
+  };
+
+  if (!payload.body) throw new Error("Action note needs a note body.");
+
+  const query = UUID_PATTERN.test(String(note.id || ""))
+    ? supabase
+      .from("action_notes")
+      .update(payload)
+      .eq("id", note.id)
+      .eq("organization_id", organizationId)
+    : supabase
+      .from("action_notes")
+      .insert({
+        ...payload,
+        created_by: UUID_PATTERN.test(String(currentUserId || "")) ? currentUserId : null,
+      });
+
+  const { data, error } = await query
+    .select("id,organization_id,client_id,campaign_id,company_id,title,body,status,action_type,source,created_by,updated_by,created_at,updated_at")
+    .single();
+
+  if (error) throw error;
+
+  const { error: deleteError } = await supabase
+    .from("action_note_contacts")
+    .delete()
+    .eq("organization_id", organizationId)
+    .eq("action_note_id", data.id);
+
+  if (deleteError) throw deleteError;
+
+  if (contactIds.length) {
+    const { error: insertError } = await supabase
+      .from("action_note_contacts")
+      .insert(contactIds.map(contactId => ({
+        organization_id: organizationId,
+        action_note_id: data.id,
+        contact_id: contactId,
+      })));
+
+    if (insertError) throw insertError;
+  }
+
+  return {
+    id: data.id,
+    organizationId: data.organization_id,
+    clientId: data.client_id || "",
+    campaignId: data.campaign_id || "",
+    accountId: data.company_id || "",
+    companyId: data.company_id || "",
+    title: data.title || "Action note",
+    body: data.body || "",
+    status: data.status || "open",
+    actionType: data.action_type || "general",
+    source: data.source || "",
+    contactIds,
+    createdBy: data.created_by || "",
+    updatedBy: data.updated_by || "",
+    createdAt: data.created_at || "",
+    updatedAt: data.updated_at || "",
+  };
+}
+
+async function deleteRelationalActionNote(organizationId, noteId) {
+  if (!supabase || !organizationId || !UUID_PATTERN.test(String(noteId || ""))) return;
+  const { error } = await supabase
+    .from("action_notes")
+    .delete()
+    .eq("organization_id", organizationId)
+    .eq("id", noteId);
+
+  if (error) throw error;
 }
 
 async function saveRelationalCampaignCompanyTarget(organizationId, campaign, companyId) {
@@ -1258,6 +1524,35 @@ async function loadWorkspaceUsers(organizationId) {
       currencyCode: normalizeCurrencyCode(workspaceUser.currency_code),
     };
   });
+}
+
+async function loadCurrentWorkspaceUser(organizationId, authUser) {
+  if (!supabase || !organizationId || !authUser?.id) return mapAuthUserToWorkspaceUser(authUser);
+  let query = supabase
+    .from("users")
+    .select("id,email,first_name,last_name,display_name,role,status,aircall_user_id,currency_code,organization_id")
+    .eq("organization_id", organizationId);
+  query = UUID_PATTERN.test(String(authUser.id || ""))
+    ? query.eq("id", authUser.id)
+    : query.eq("email", authUser.email || "");
+
+  const { data, error } = await query.maybeSingle();
+  if (error || !data) return mapAuthUserToWorkspaceUser(authUser);
+  const displayName = data.display_name || [data.first_name, data.last_name].filter(Boolean).join(" ");
+  const name = displayName || data.email?.split("@")[0] || "Workspace user";
+  return {
+    id: data.id,
+    email: data.email,
+    name,
+    firstName: data.first_name || "",
+    lastName: data.last_name || "",
+    role: formatRole(data.role || "member"),
+    roleKey: data.role || "member",
+    initials: accountInitial(name),
+    status: titleCase(data.status || "active"),
+    aircallUserId: data.aircall_user_id || "",
+    currencyCode: normalizeCurrencyCode(data.currency_code),
+  };
 }
 
 function mapAuthUserToWorkspaceUser(user) {
@@ -1337,7 +1632,11 @@ function effectiveWorkspaceUserForSession(authUser, workspaceUsers = [], setting
     || mapAuthUserToWorkspaceUser(authUser);
 }
 
-function effectiveAccessStateForSession(adminSettingsState = {}, settings = {}) {
+function normalizeRoleKey(role = "member") {
+  return String(role || "member").toLowerCase().replaceAll(" ", "_");
+}
+
+function effectiveAccessStateForSession(adminSettingsState = {}, settings = {}, workspaceUser = {}) {
   const normalizedSettings = normalizeAdminSettings(settings);
   if (normalizedSettings.test_account_enabled) {
     return {
@@ -1347,10 +1646,13 @@ function effectiveAccessStateForSession(adminSettingsState = {}, settings = {}) 
       isTestAccount: true,
     };
   }
+  const settingsRole = normalizeRoleKey(adminSettingsState.role || "member");
+  const workspaceRole = normalizeRoleKey(workspaceUser?.roleKey || workspaceUser?.role || "member");
+  const role = settingsRole !== "member" ? settingsRole : workspaceRole;
   return {
-    role: adminSettingsState.role || "member",
-    isAdmin: Boolean(adminSettingsState.isAdmin),
-    isOrgAdmin: Boolean(adminSettingsState.isOrgAdmin),
+    role,
+    isAdmin: Boolean(adminSettingsState.isAdmin) || ADMIN_ROLES.has(role),
+    isOrgAdmin: Boolean(adminSettingsState.isOrgAdmin) || ORG_ADMIN_ROLES.has(role),
     isTestAccount: false,
   };
 }
@@ -1364,6 +1666,18 @@ function aircallCallBelongsToWorkspaceUser(call = {}, workspaceUser = {}) {
 
 function recordHasMember(record = {}, userId = "") {
   return Boolean(userId && Array.isArray(record.memberIds) && record.memberIds.includes(userId));
+}
+
+function uniqueIds(values = []) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function workspaceMembersForRecord(record = {}, workspaceUsers = [], fallbackUserId = "", includeFallback = false) {
+  const memberIds = uniqueIds([
+    ...(Array.isArray(record.memberIds) ? record.memberIds : []),
+    includeFallback ? fallbackUserId : "",
+  ]);
+  return workspaceUsers.filter(workspaceUser => memberIds.includes(workspaceUser.id));
 }
 
 function scopeCrmDataForWorkspaceUser(data, workspaceUser = {}, accessState = {}) {
@@ -1380,11 +1694,13 @@ function scopeCrmDataForWorkspaceUser(data, workspaceUser = {}, accessState = {}
       contacts: [],
       deals: [],
       activities: [],
-      meetings: [],
-      researchItems: [],
-      scriptItems: [],
-      weeklyReports: [],
-    };
+    meetings: [],
+    researchItems: [],
+    scriptItems: [],
+    actionNotes: [],
+    weeklyReports: [],
+    lockerProspects: [],
+  };
   }
 
   const campaignIds = new Set((data.campaigns || [])
@@ -1423,7 +1739,15 @@ function scopeCrmDataForWorkspaceUser(data, workspaceUser = {}, accessState = {}
     meetings: (data.meetings || []).filter(meeting => clientIds.has(meeting.clientId) || campaignIds.has(meeting.campaignId)),
     researchItems: (data.researchItems || []).filter(item => clientIds.has(item.clientId) || accountIds.has(item.accountId) || campaignIds.has(item.campaignId)),
     scriptItems: (data.scriptItems || []).filter(item => clientIds.has(item.clientId) || accountIds.has(item.accountId) || campaignIds.has(item.campaignId)),
+    actionNotes: (data.actionNotes || []).filter(note => (
+      clientIds.has(note.clientId)
+      || accountIds.has(note.accountId)
+      || accountIds.has(note.companyId)
+      || campaignIds.has(note.campaignId)
+      || (note.contactIds || []).some(contactId => contactIds.has(contactId))
+    )),
     weeklyReports: (data.weeklyReports || []).filter(report => clientIds.has(report.clientId) || campaignIds.has(report.campaignId)),
+    lockerProspects: (data.lockerProspects || []).filter(prospect => !prospect.clientId || clientIds.has(prospect.clientId)),
   });
 }
 
@@ -1931,15 +2255,24 @@ function normalizeEmail(value) {
   return normalizeLookupValue(value).toLowerCase();
 }
 
+const PHONE_FIELD_PATTERN = /^[+\d\s()-]+$/;
+
 function normalizePhone(value) {
   return normalizeLookupValue(value).replace(/[^\d+]/g, "");
+}
+
+function normalizePhoneFieldValue(value) {
+  const rawValue = normalizeLookupValue(value);
+  if (!rawValue) return "";
+  const digitCount = rawValue.replace(/\D/g, "").length;
+  return PHONE_FIELD_PATTERN.test(rawValue) && digitCount >= 7 ? rawValue : "";
 }
 
 function getDisplayPhoneNumber(value) {
   const rawValue = normalizeLookupValue(value);
   const normalizedValue = normalizePhone(rawValue);
   const digitCount = normalizedValue.replace(/\D/g, "").length;
-  return digitCount >= 7 ? rawValue : "";
+  return PHONE_FIELD_PATTERN.test(rawValue) && digitCount >= 7 ? rawValue : "";
 }
 
 function normalizeLinkedinUrl(value) {
@@ -1975,6 +2308,7 @@ function splitContactName(contactName = "") {
 }
 
 function buildLeadIdentityKey(lead = {}) {
+  if (lead.googlePlaceId) return `google-place:${normalizeLookupValue(lead.googlePlaceId).toLowerCase()}`;
   if (lead.cognismContactId) return `cognism:${normalizeLookupValue(lead.cognismContactId).toLowerCase()}`;
   if (lead.linkedinProfileUrl) return `linkedin:${normalizeLinkedinUrl(lead.linkedinProfileUrl).toLowerCase()}`;
   return `person:${normalizeLookupValue(lead.contactName).toLowerCase()}|${normalizeLookupValue(lead.company).toLowerCase()}`;
@@ -1993,8 +2327,8 @@ function mapContactDatabaseRecord(record) {
     location: record.location || "",
     linkedinProfileUrl: record.linkedin_profile_url || record.linkedin_url || "",
     manualEmail: record.manual_email || record.email || "",
-    manualMobile: record.manual_mobile || record.mobile || "",
-    manualDirectDial: record.manual_direct_dial || record.direct_dial || record.phone || "",
+    manualMobile: normalizePhoneFieldValue(record.manual_mobile || record.mobile),
+    manualDirectDial: normalizePhoneFieldValue(record.manual_direct_dial || record.direct_dial || record.phone),
     notes: record.notes || record.lookup_notes || "",
     sourceNote: record.source_note || "",
     dataSource: record.data_source || "manual",
@@ -2016,14 +2350,22 @@ function mapContactDatabaseRecord(record) {
 
 async function loadLeadContactDatabase(organizationId) {
   if (!supabase || !organizationId) return [];
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("organization_id", organizationId)
-    .order("updated_at", { ascending: false });
+  const rows = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from("contacts")
+      .select("*")
+      .eq("organization_id", organizationId)
+      .order("updated_at", { ascending: false })
+      .range(from, from + pageSize - 1);
 
-  if (error) throw error;
-  return (data || []).map(mapContactDatabaseRecord);
+    if (error) throw error;
+    const pageRows = data || [];
+    rows.push(...pageRows);
+    if (pageRows.length < pageSize) break;
+  }
+  return rows.map(mapContactDatabaseRecord);
 }
 
 async function ensureLeadCompanyRecord(organizationId, companyName) {
@@ -2161,6 +2503,10 @@ function leadHasPaceOpsData(lead = {}) {
     || normalizeLookupValue(lead.notes)
     || normalizeLookupValue(lead.dbContactId)
   );
+}
+
+function shouldPersistLeadToContactDatabase(lead = {}) {
+  return leadHasPaceOpsData(lead) && lead.dataSource !== "google_places_location";
 }
 
 function getLeadSavedPhoneData(lead = {}, contactDatabase = []) {
@@ -2378,7 +2724,6 @@ function validateLeadManualFields(lead = {}) {
   const email = normalizeLookupValue(lead.manualEmail);
   const mobile = normalizeLookupValue(lead.manualMobile);
   const directDial = normalizeLookupValue(lead.manualDirectDial);
-  const phonePattern = /^[+\d\s()-]+$/;
 
   if (linkedinUrl && !/^https:\/\/(www\.)?linkedin\.com\/in\/.+/i.test(linkedinUrl)) {
     return "LinkedIn profile URL must be a LinkedIn /in/ profile URL.";
@@ -2386,13 +2731,20 @@ function validateLeadManualFields(lead = {}) {
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return "Manual email must look like a valid email address.";
   }
-  if (mobile && !phonePattern.test(mobile)) {
+  if (mobile && !PHONE_FIELD_PATTERN.test(mobile)) {
     return "Manual mobile can only include +, digits, spaces, brackets, and dashes.";
   }
-  if (directDial && !phonePattern.test(directDial)) {
+  if (directDial && !PHONE_FIELD_PATTERN.test(directDial)) {
     return "Manual direct dial can only include +, digits, spaces, brackets, and dashes.";
   }
   return "";
+}
+
+function describeLeadForValidation(lead = {}) {
+  return [
+    normalizeLookupValue(lead.contactName || [lead.firstName, lead.lastName].filter(Boolean).join(" ")),
+    normalizeLookupValue(lead.company),
+  ].filter(Boolean).join(" at ") || "Selected lead";
 }
 
 function findPotentialContactConflicts(lead = {}, contactDatabase = []) {
@@ -2415,8 +2767,8 @@ function buildLeadContactDatabasePayload(lead, organizationId, userId) {
   const contactName = normalizeLookupValue(lead.contactName);
   const companyName = normalizeLookupValue(lead.company);
   const manualEmail = normalizeEmail(lead.manualEmail) || null;
-  const manualMobile = normalizeLookupValue(lead.manualMobile) || null;
-  const manualDirectDial = normalizeLookupValue(lead.manualDirectDial) || null;
+  const manualMobile = normalizePhoneFieldValue(lead.manualMobile) || null;
+  const manualDirectDial = normalizePhoneFieldValue(lead.manualDirectDial) || null;
   const linkedinProfileUrl = normalizeLinkedinUrl(lead.linkedinProfileUrl) || null;
   const hasManualData = leadHasManualData(lead) || lead.dataSource === "manual";
   const isCognismPreviewLead = Boolean(normalizeLookupValue(lead.cognismContactId));
@@ -2469,8 +2821,8 @@ function buildPreviewContactDatabasePayload(lead, organizationId, userId, existi
   const contactName = existingContact?.contactName || normalizeLookupValue(lead.contactName);
   const companyName = existingContact?.company || normalizeLookupValue(lead.company);
   const manualEmail = normalizeEmail(lead.manualEmail) || existingContact?.manualEmail || null;
-  const manualMobile = normalizeLookupValue(lead.manualMobile) || existingContact?.manualMobile || null;
-  const manualDirectDial = normalizeLookupValue(lead.manualDirectDial) || existingContact?.manualDirectDial || null;
+  const manualMobile = normalizePhoneFieldValue(lead.manualMobile) || existingContact?.manualMobile || null;
+  const manualDirectDial = normalizePhoneFieldValue(lead.manualDirectDial) || existingContact?.manualDirectDial || null;
   const linkedinProfileUrl = existingContact?.linkedinProfileUrl || normalizeLinkedinUrl(lead.linkedinProfileUrl) || null;
   const payload = {
     organization_id: organizationId,
@@ -2537,30 +2889,6 @@ function titleCase(value) {
     .join(" ");
 }
 
-function buildWeeklyReport({ calls = [], insights = [], client, campaign, timeframe = "This week" }) {
-  const meetingCount = calls.filter(call => call.outcome === "Meeting booked").length;
-  const connectedCount = calls.filter(call => call.outcome === "Connected").length;
-  const averageSentiment = insights.length
-    ? Math.round((insights.reduce((total, insight) => total + Number(insight.sentimentScore || 0), 0) / insights.length) * 10) / 10
-    : 0;
-  const objections = [...new Set(insights.flatMap(insight => insight.possibleObjections || []))].slice(0, 6);
-
-  return {
-    id: makeId("weekly-report"),
-    clientId: client?.id || "",
-    campaignId: campaign?.id || "",
-    timeframe,
-    title: `${client?.name || "Workspace"} ${timeframe.toLowerCase()} sales analysis`,
-    summary: `${calls.length} calls reviewed. ${connectedCount} connected, ${meetingCount} meetings booked. Average sentiment ${averageSentiment || "not enough data"}.`,
-    highlights: [
-      meetingCount ? `${meetingCount} meeting${meetingCount === 1 ? "" : "s"} booked` : "No meetings booked yet",
-      objections.length ? `Common objections: ${objections.join(", ")}` : "No recurring objections captured yet",
-      insights[0]?.suggestedMove || "Capture more transcripts to improve recommendations",
-    ],
-    createdAt: new Date().toISOString(),
-  };
-}
-
 function refreshCrmData(data) {
   const workspaceUsers = Array.isArray(data.workspaceUsers) ? data.workspaceUsers : [];
   const sourceCompanies = Array.isArray(data.companies) ? data.companies : data.accounts;
@@ -2568,8 +2896,16 @@ function refreshCrmData(data) {
     const clientCompanies = data.accounts.filter(account => account.clientId === client.id);
     const clientContacts = data.contacts.filter(contact => contact.clientId === client.id);
     const clientMeetings = (data.meetings || []).filter(meeting => meeting.clientId === client.id);
+    const ownerUser = findRecordOwnerUser(
+      client,
+      (Array.isArray(client.memberIds) ? client.memberIds : []).map(userId => ({ user_id: userId })),
+      workspaceUsers,
+    ) || findFallbackAdminOwnerUser(workspaceUsers);
     return {
       ...client,
+      owner: ownerUser ? formatWorkspaceOwnerLabel(ownerUser, client.owner) : client.owner,
+      ownerRole: ownerUser ? formatWorkspaceOwnerRoleLabel(ownerUser, client.ownerRole || "") : client.ownerRole,
+      ownerId: client.ownerId || ownerUser?.id || "",
       accounts: clientCompanies.length,
       companies: clientCompanies.length,
       contacts: clientContacts.length,
@@ -2769,7 +3105,7 @@ function PageHeader({ title, eyebrow, description, children }) {
   );
 }
 
-function Sidebar({ activeView, onNavigate }) {
+function Sidebar({ activeView, onNavigate, isAdmin = false }) {
   return (
     <aside className="sidebar" aria-label="Primary navigation">
       <div className="sidebar-brand">
@@ -2780,17 +3116,20 @@ function Sidebar({ activeView, onNavigate }) {
       <nav className="sidebar-nav">
         {navItems.map(item => {
           const Icon = item.icon;
+          const disabled = item.adminOnly && !isAdmin;
           return (
             <button
               key={item.id}
               className={`sidebar-button ${activeView === item.id ? "active" : ""} ${item.highlight ? "highlight" : ""}`}
               type="button"
-              title={item.label}
-              aria-label={item.label}
-              onClick={() => onNavigate(item.id)}
+              aria-label={disabled ? `${item.label} requires admin access` : item.label}
+              disabled={disabled}
+              onClick={() => {
+                if (!disabled) onNavigate(item.id);
+              }}
             >
               {item.logo ? <img className="sidebar-button-logo" src={item.logo} alt="" aria-hidden="true" /> : <Icon size={20} />}
-              <span>{item.label}</span>
+              <span>{disabled ? `${item.label} requires admin` : item.label}</span>
             </button>
           );
         })}
@@ -2907,8 +3246,22 @@ function MetricCard({ label, value, detail, icon }) {
   );
 }
 
-function DashboardPage({ activeClient, activeCampaign, onNavigate }) {
-  const { deals, campaigns, accounts, teamMembers } = useCrmData();
+function OwnerCell({ name, role }) {
+  return (
+    <div className="owner-cell">
+      <strong>{name || "Workspace user"}</strong>
+      {role ? (
+        <span className="owner-role-badge">
+          <ShieldCheck size={13} />
+          {String(role).toLowerCase()}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function DashboardPage({ activeClient, activeCampaign, onNavigate, currentUserId = "", isAdmin = false }) {
+  const { deals, campaigns, accounts, workspaceUsers } = useCrmData();
   const { formatCurrency } = useCurrency();
   if (activeClient?.id === "none" || activeCampaign?.id === "none") {
     return <ScopeSelectionPrompt />;
@@ -2927,6 +3280,9 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate }) {
   const scopedDeals = deals.filter(deal => scopedAccountNames.has(deal.account));
   const pipelineValue = scopedDeals.reduce((total, deal) => total + deal.value, 0);
   const bookedMeetings = scopedCampaigns.reduce((total, campaign) => total + campaign.meetings, 0);
+  const campaignMembers = workspaceMembersForRecord(activeCampaign, workspaceUsers, currentUserId, isAdmin);
+  const clientMembers = workspaceMembersForRecord(activeClient, workspaceUsers, currentUserId, isAdmin && !campaignMembers.length);
+  const deliveryTeam = campaignMembers.length ? campaignMembers : clientMembers;
 
   return (
     <>
@@ -2935,10 +3291,12 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate }) {
         title="Sales workspace"
         description="A focused view of campaigns, pipeline, contacts, and research activity for the current client account."
       >
-        <button className="secondary-button" type="button" onClick={() => onNavigate("research")}>
-          <FileText size={16} />
-          Open research
-        </button>
+        {isAdmin ? (
+          <button className="secondary-button" type="button" onClick={() => onNavigate("research")}>
+            <FileText size={16} />
+            Open research
+          </button>
+        ) : null}
         {/*
         Calls workspace disabled.
         <button className="primary-button" type="button" onClick={() => onNavigate("calls")}>
@@ -2972,14 +3330,14 @@ function DashboardPage({ activeClient, activeCampaign, onNavigate }) {
               <h2>Delivery team</h2>
             </div>
           </div>
-          {teamMembers.length ? (
+          {deliveryTeam.length ? (
             <div className="team-list">
-              {teamMembers.map(member => (
-              <div key={member.name} className="team-row">
+              {deliveryTeam.map(member => (
+              <div key={member.id || member.name} className="team-row">
                 <span>{member.initials}</span>
                 <div>
                   <strong>{member.name}</strong>
-                  <small>{member.role}</small>
+                  <small>{member.email || member.role}</small>
                 </div>
                 <TeamStatusBadge status={member.status} />
               </div>
@@ -3020,7 +3378,7 @@ function ClientsPage({ onOpenClient, onNewClient, onEditClient, onRemoveClient, 
             client.workspace,
             client.industry || "Not set",
             client.website ? <a key="website" href={client.website} target="_blank" rel="noreferrer">{client.website}</a> : "Not set",
-            client.owner,
+            <OwnerCell key="owner" name={client.owner} role={client.ownerRole} />,
             client.accounts,
             client.contacts,
             <div key="actions" className="row-actions">
@@ -3413,9 +3771,10 @@ function UserCallSummaryList({ rows = [], onOpenUser }) {
   );
 }
 
-function MeetingList({ meetings = [], campaigns = [], workspaceUsers = [], calls = [], onDeleteMeeting }) {
+function MeetingList({ meetings = [], campaigns = [], workspaceUsers = [], calls = [], onDeleteMeeting, onUpdateMeetingAssignment, canManageMeetings = false }) {
   const [activeMeeting, setActiveMeeting] = useState(null);
   const [deletingMeetingId, setDeletingMeetingId] = useState("");
+  const [updatingMeetingId, setUpdatingMeetingId] = useState("");
   const [pendingDeleteMeeting, setPendingDeleteMeeting] = useState(null);
   if (!meetings.length) {
     return <EmptyState icon={CalendarDays} title="No meetings booked" text="Booked meetings from Aircall will appear here with campaign, owner, notes, and transcript context." />;
@@ -3433,6 +3792,17 @@ function MeetingList({ meetings = [], campaigns = [], workspaceUsers = [], calls
       setDeletingMeetingId("");
     }
   }
+
+  async function updateMeetingAssignment(meeting, updates) {
+    if (!onUpdateMeetingAssignment) return;
+    setUpdatingMeetingId(meeting.id);
+    try {
+      await onUpdateMeetingAssignment(meeting, updates);
+    } finally {
+      setUpdatingMeetingId("");
+    }
+  }
+
   function renderMeetingTranscriptModal() {
     if (!activeMeeting) return null;
     const owner = userById.get(activeMeeting.ownerUserId);
@@ -3508,15 +3878,35 @@ function MeetingList({ meetings = [], campaigns = [], workspaceUsers = [], calls
         {meetings.map(meeting => {
           const campaign = campaignById.get(meeting.campaignId);
           const owner = userById.get(meeting.ownerUserId);
+          const bookedBy = userById.get(meeting.bookedByUserId);
           const call = callById.get(meeting.aircallCallId);
-          const meetingOwnerName = owner?.name || meeting.agentName || call?.userName || "Aircall user";
+          const meetingOwnerName = owner?.name || meeting.agentName || call?.userName || "Unassigned";
           return (
             <article className="meeting-row" key={meeting.id}>
               <div>
                 <strong>{meeting.title}</strong>
                 <span>{campaign?.name || "No campaign"} · {meetingOwnerName}</span>
                 <small>{formatDateTime(meeting.meetingAt || meeting.createdAt)} · {meeting.phoneNumber || call?.externalPhoneNumber || "No number recorded"}</small>
+                {bookedBy ? <small>Set by {bookedBy.name}</small> : canManageMeetings ? <small>Set by unassigned</small> : null}
                 {meeting.notes ? <p>{meeting.notes}</p> : null}
+                {canManageMeetings ? (
+                  <div className="meeting-assignment-controls">
+                    <label>
+                      <span>Owner</span>
+                      <select value={meeting.ownerUserId || ""} onChange={event => updateMeetingAssignment(meeting, { ownerUserId: event.target.value })} disabled={updatingMeetingId === meeting.id}>
+                        <option value="">Unassigned</option>
+                        {workspaceUsers.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Set by</span>
+                      <select value={meeting.bookedByUserId || ""} onChange={event => updateMeetingAssignment(meeting, { bookedByUserId: event.target.value })} disabled={updatingMeetingId === meeting.id}>
+                        <option value="">Unassigned</option>
+                        {workspaceUsers.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                ) : null}
               </div>
               <div className="meeting-row-meta">
                 <StatusBadge tone={meetingStatusTone(meeting.status)}>{meeting.status}</StatusBadge>
@@ -3700,16 +4090,20 @@ function MeetingBookingModal({ call, campaigns = [], contacts = [], workspaceUse
   );
 }
 
-function ClientDetailPage({ client, aircallData, onOpenCampaign, onOpenAccount, onEditClient, onEditAccount, onNewCampaign, onManageClientAccount, onOpenAircallUser, onDeleteMeeting, currentUserId = "", canManageCrmRecords = false }) {
+function ClientDetailPage({ client, aircallData, onOpenCampaign, onOpenAccount, onEditClient, onEditAccount, onNewCampaign, onManageClientAccount, onOpenAircallUser, onDeleteMeeting, onUpdateMeetingAssignment, onImportCompanies, currentUserId = "", canManageCrmRecords = false }) {
   const { campaigns, accounts, contacts, activities, workspaceUsers, meetings } = useCrmData();
   const [membershipOpen, setMembershipOpen] = useState(false);
-  const [companiesExpanded, setCompaniesExpanded] = useState(false);
+  const [activeClientActivityView, setActiveClientActivityView] = useState("meetings");
+  const companyImportInputRef = useRef(null);
+  const [companyImportStatus, setCompanyImportStatus] = useState("idle");
+  const [companyImportMessage, setCompanyImportMessage] = useState("");
   if (client?.id === "none") {
     return <ScopeSelectionPrompt requireCampaign={false} />;
   }
   const clientCampaigns = campaigns.filter(campaign => campaign.clientId === client.id);
   const clientAccounts = accounts.filter(account => account.clientId === client.id);
   const clientContacts = contacts.filter(contact => contact.clientId === client.id);
+  const clientMembers = workspaceMembersForRecord(client, workspaceUsers || [], currentUserId, canManageCrmRecords);
   const clientCalls = activities.filter(activity => activity.type === "Call" && clientAccounts.some(account => account.name === activity.account));
   const syncedClientCalls = (aircallData?.calls || []).filter(call => (
     call.clientId === client.id
@@ -3719,6 +4113,38 @@ function ClientDetailPage({ client, aircallData, onOpenCampaign, onOpenAccount, 
   const todaysClientCalls = callsForDate(syncedClientCalls);
   const userCallRows = buildUserCallSummaries(todaysClientCalls, workspaceUsers || []);
   const clientMeetings = (meetings || []).filter(meeting => meeting.clientId === client.id);
+  const clientActivityViews = [
+    { id: "calls", label: "Calls", icon: Phone, count: todaysClientCalls.length },
+    { id: "meetings", label: "Meetings", icon: CalendarDays, count: clientMeetings.length },
+    { id: "campaigns", label: "Campaigns", icon: Megaphone, count: clientCampaigns.length },
+    { id: "companies", label: "Companies", icon: BriefcaseBusiness, count: clientAccounts.length },
+  ];
+  const activeClientActivity = clientActivityViews.find(view => view.id === activeClientActivityView) || clientActivityViews[1];
+
+  async function importClientCompanies(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!files.length) return;
+
+    setCompanyImportStatus("loading");
+    setCompanyImportMessage("");
+    try {
+      const importedRows = (await Promise.all(files.map(parseCompanyImportFile))).flat();
+      if (!importedRows.length) {
+        throw new Error("No company rows found. Include a company or company name column.");
+      }
+      const result = await onImportCompanies?.(client, importedRows);
+      setCompanyImportStatus("success");
+      setCompanyImportMessage(`${result?.addedCount || 0} companies imported${result?.skippedCount ? `, ${result.skippedCount} duplicates skipped` : ""}.`);
+    } catch (error) {
+      setCompanyImportStatus("error");
+      setCompanyImportMessage(error.message || "Could not import companies.");
+    }
+  }
+
+  function exportClientCompanies() {
+    exportCompaniesCsv(clientAccounts, defaultCsvFilename(`${client.name || "client"}-companies`));
+  }
 
   return (
     <>
@@ -3758,57 +4184,110 @@ function ClientDetailPage({ client, aircallData, onOpenCampaign, onOpenAccount, 
       <div className="metrics-grid client-metrics-grid">
         <MetricCard label="Campaigns" value={clientCampaigns.length} detail={clientCampaigns.length ? "Campaigns in this client account" : "Create the first campaign"} icon={Megaphone} />
         <MetricCard label="Companies" value={clientAccounts.length} detail={clientAccounts.length ? "Companies assigned" : "Add companies"} icon={BriefcaseBusiness} />
+        <MetricCard label="Users" value={clientMembers.length} detail={clientMembers.length ? "Users in this client account" : "No users assigned"} icon={Users} />
         <MetricCard label="Meetings" value={clientMeetings.length} detail={clientMeetings.length ? "Booked across this client account" : "No meetings booked yet"} icon={CalendarDays} />
         <MetricCard label="Calls today" value={todaysClientCalls.length || clientCalls.length} detail={todaysClientCalls.length ? "Synced from Aircall today" : "No synced calls today"} icon={Phone} />
       </div>
-      <div className="content-grid two">
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <span className="eyebrow">Today</span>
-              <h2>Calls by user</h2>
-            </div>
+      <section className="panel client-activity-workbench">
+        <div className="client-activity-toolbar">
+          <div>
+            <span className="eyebrow">Workspace view</span>
+            <h2>{activeClientActivity.label}</h2>
           </div>
-          <UserCallSummaryList rows={userCallRows} onOpenUser={onOpenAircallUser} />
-        </section>
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <span className="eyebrow">Meetings</span>
-              <h2>Booked meetings</h2>
-            </div>
-            <strong>{clientMeetings.length}</strong>
-          </div>
-          <MeetingList meetings={clientMeetings} campaigns={clientCampaigns} workspaceUsers={workspaceUsers || []} calls={aircallData?.calls || []} onDeleteMeeting={onDeleteMeeting} />
-        </section>
-      </div>
-      <div className="content-grid two">
-        <section className="panel">
-          <div className="panel-header"><h2>Campaigns</h2></div>
-          <CampaignList campaigns={clientCampaigns} compact onOpenCampaign={onOpenCampaign} />
-        </section>
-        <section className={`panel client-companies-panel${companiesExpanded ? " expanded" : ""}`}>
-          <div className="panel-header">
-            <h2>Companies</h2>
-            {clientAccounts.length ? (
+        </div>
+        <div className="client-activity-tabs" role="tablist" aria-label="Client account workspace view">
+          {clientActivityViews.map(view => {
+            const ViewIcon = view.icon;
+            return (
               <button
-                className="secondary-button small-button"
+                key={view.id}
+                className={activeClientActivity.id === view.id ? "active" : ""}
                 type="button"
-                onClick={() => setCompaniesExpanded(current => !current)}
-                aria-expanded={companiesExpanded}
+                onClick={() => setActiveClientActivityView(view.id)}
+                role="tab"
+                aria-selected={activeClientActivity.id === view.id}
               >
-                <ChevronDown className={companiesExpanded ? "chevron-open" : ""} size={15} />
-                {companiesExpanded ? "Show less" : "View more"}
+                <ViewIcon size={16} />
+                <span>{view.label}</span>
+                <strong>{view.count}</strong>
               </button>
-            ) : null}
-          </div>
-          <div className={`client-companies-frame${companiesExpanded ? " expanded" : ""}`}>
-            {clientAccounts.length
-              ? <AccountTable accounts={clientAccounts} onOpenAccount={onOpenAccount} onEditAccount={canManageCrmRecords ? onEditAccount : undefined} />
-              : <EmptyState icon={BriefcaseBusiness} title="No companies yet" text="Add companies inside this client account before building contacts, research, and pipeline." />}
-          </div>
-        </section>
-      </div>
+            );
+          })}
+        </div>
+        <div className="client-activity-viewport">
+          {activeClientActivity.id === "calls" ? (
+            <section>
+              <div className="panel-header compact-header">
+                <div>
+                  <span className="eyebrow">Today</span>
+                  <h2>Calls by user</h2>
+                </div>
+              </div>
+              <UserCallSummaryList rows={userCallRows} onOpenUser={onOpenAircallUser} />
+            </section>
+          ) : null}
+          {activeClientActivity.id === "meetings" ? (
+            <section>
+              <div className="panel-header compact-header">
+                <div>
+                  <span className="eyebrow">Meetings</span>
+                  <h2>Booked meetings</h2>
+                </div>
+                <strong>{clientMeetings.length}</strong>
+              </div>
+              <MeetingList
+                meetings={clientMeetings}
+                campaigns={clientCampaigns}
+                workspaceUsers={workspaceUsers || []}
+                calls={aircallData?.calls || []}
+                onDeleteMeeting={onDeleteMeeting}
+                onUpdateMeetingAssignment={onUpdateMeetingAssignment}
+                canManageMeetings={canManageCrmRecords}
+              />
+            </section>
+          ) : null}
+          {activeClientActivity.id === "campaigns" ? (
+            <section>
+              <div className="panel-header compact-header">
+                <div>
+                  <span className="eyebrow">Campaigns</span>
+                  <h2>Client campaigns</h2>
+                </div>
+              </div>
+              <CampaignList campaigns={clientCampaigns} compact onOpenCampaign={onOpenCampaign} />
+            </section>
+          ) : null}
+          {activeClientActivity.id === "companies" ? (
+            <section>
+              <div className="panel-header compact-header">
+                <div>
+                  <span className="eyebrow">Companies</span>
+                  <h2>Client companies</h2>
+                </div>
+                <div className="panel-header-actions">
+                  <input ref={companyImportInputRef} className="visually-hidden" type="file" accept=".csv,.xlsx" multiple onChange={importClientCompanies} />
+                  {canManageCrmRecords ? (
+                    <button className="secondary-button small-button" type="button" onClick={() => companyImportInputRef.current?.click()} disabled={companyImportStatus === "loading"}>
+                      {companyImportStatus === "loading" ? <LoaderCircle className="button-spinner" size={15} aria-hidden="true" /> : <Upload size={15} />}
+                      {companyImportStatus === "loading" ? "Importing" : "Import CSV"}
+                    </button>
+                  ) : null}
+                  <button className="secondary-button small-button" type="button" onClick={exportClientCompanies} disabled={!clientAccounts.length}>
+                    <FileText size={15} />
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+              {companyImportMessage ? <div className={companyImportStatus === "error" ? "form-error" : "form-success"}>{companyImportMessage}</div> : null}
+              <div className="client-companies-frame client-activity-companies-frame">
+                {clientAccounts.length
+                  ? <AccountTable accounts={clientAccounts} onOpenAccount={onOpenAccount} onEditAccount={canManageCrmRecords ? onEditAccount : undefined} />
+                  : <EmptyState icon={BriefcaseBusiness} title="No companies yet" text="Add companies inside this client account before building contacts, research, and pipeline." />}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      </section>
       {membershipOpen ? (
         <ClientMembershipModal
           client={client}
@@ -3863,6 +4342,7 @@ function CampaignsPage({ activeClient, onOpenCampaign, onEditCampaign, onNewCamp
 function CampaignList({ campaigns: providedCampaigns, onOpenCampaign, onEditCampaign, compact = false }) {
   const { campaigns: allCampaigns } = useCrmData();
   const campaigns = providedCampaigns || allCampaigns;
+  const canOpenCampaign = Boolean(onOpenCampaign);
 
   return (
     <section className={compact ? "" : "panel"}>
@@ -3870,8 +4350,17 @@ function CampaignList({ campaigns: providedCampaigns, onOpenCampaign, onEditCamp
         {campaigns.map(campaign => (
           <article
             key={campaign.id}
-            className={`campaign-card ${compact ? "compact" : ""}`}
-            onClick={compact && onOpenCampaign ? () => onOpenCampaign(campaign.id) : undefined}
+            className={`campaign-card ${compact ? "compact" : ""} ${canOpenCampaign ? "clickable" : ""}`}
+            role={canOpenCampaign ? "button" : undefined}
+            tabIndex={canOpenCampaign ? 0 : undefined}
+            onClick={canOpenCampaign ? () => onOpenCampaign(campaign.id) : undefined}
+            onKeyDown={event => {
+              if (!canOpenCampaign || event.target !== event.currentTarget) return;
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpenCampaign(campaign.id);
+              }
+            }}
           >
             <div className="campaign-card-head">
               {campaign.imageUrl
@@ -3915,7 +4404,7 @@ function CampaignList({ campaigns: providedCampaigns, onOpenCampaign, onEditCamp
   );
 }
 
-function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, onOpenAccount, onOpenContact, onEditCampaign, onManageCampaignMembers, onAddCompany, onOpenAircallUser, onDeleteMeeting, currentUserId = "", canManageCrmRecords = false }) {
+function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, onOpenAccount, onOpenContact, onEditCampaign, onManageCampaignMembers, onAddCompany, onOpenAircallUser, onDeleteMeeting, onUpdateMeetingAssignment, currentUserId = "", canManageCrmRecords = false }) {
   const { clients, accounts, contacts, workspaceUsers, meetings } = useCrmData();
   const [expandedCampaignSection, setExpandedCampaignSection] = useState("");
   const [membershipOpen, setMembershipOpen] = useState(false);
@@ -3932,9 +4421,7 @@ function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, o
   const companiesExpanded = expandedCampaignSection === "companies";
   const contactsExpanded = expandedCampaignSection === "contacts";
   const visibleCampaignContacts = contactsExpanded ? campaignContacts : campaignContacts.slice(0, 8);
-  const rawAssignedUserIds = Array.isArray(campaign.memberIds) ? campaign.memberIds : [];
-  const assignedUserIds = rawAssignedUserIds.length || !currentUserId ? rawAssignedUserIds : [currentUserId];
-  const assignedUsers = (workspaceUsers || []).filter(workspaceUser => assignedUserIds.includes(workspaceUser.id));
+  const assignedUsers = workspaceMembersForRecord(campaign, workspaceUsers || [], currentUserId, canManageCrmRecords);
   const campaignCalls = (aircallData?.calls || []).filter(call => (
     call.campaignId === campaign.id
     || campaignCompanyIds.has(call.companyId)
@@ -4000,7 +4487,15 @@ function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, o
             </div>
             <strong>{campaignMeetings.length}</strong>
           </div>
-          <MeetingList meetings={campaignMeetings} campaigns={[campaign]} workspaceUsers={workspaceUsers || []} calls={aircallData?.calls || []} onDeleteMeeting={onDeleteMeeting} />
+          <MeetingList
+            meetings={campaignMeetings}
+            campaigns={[campaign]}
+            workspaceUsers={workspaceUsers || []}
+            calls={aircallData?.calls || []}
+            onDeleteMeeting={onDeleteMeeting}
+            onUpdateMeetingAssignment={onUpdateMeetingAssignment}
+            canManageMeetings={canManageCrmRecords}
+          />
         </section>
       </div>
       <section className="panel campaign-setup-panel">
@@ -4194,7 +4689,7 @@ function AccountTable({ accounts: providedAccounts, onOpenAccount, onEditAccount
   );
 }
 
-function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResearch, onNewContact, onNewDeal, canManageCrmRecords = false }) {
+function AccountDetailPage({ account, onOpenContact, onEditAccount, onNewContact, onNewDeal, canManageCrmRecords = false }) {
   const { contacts, deals } = useCrmData();
   const { formatCurrency } = useCurrency();
   const accountContacts = contacts.filter(contact => contact.accountId === account.id);
@@ -4212,12 +4707,6 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
           <ExternalLink size={16} />
           {account.domain}
         </button>
-        {canManageCrmRecords ? (
-          <button className="primary-button" type="button" onClick={() => onQueueResearch(account.id)}>
-            <Sparkles size={16} />
-            Research brief
-          </button>
-        ) : null}
       </PageHeader>
       <div className="record-hero">
         <span className="record-avatar large">{accountInitial(account.name)}</span>
@@ -4261,7 +4750,7 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
           </div> : <EmptyState icon={KanbanSquare} title="No deals for this company" text="Create a deal when there is a qualified opportunity to track." />}
         </section>
       </div>
-      {account.scripts && (
+      {account.scripts ? (
         <section className="panel">
           <div className="panel-header">
             <div>
@@ -4293,7 +4782,7 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onQueueResea
             </div>
           </div>
         </section>
-      )}
+      ) : null}
       <section className="panel">
         <div className="panel-header"><h2>Activity timeline</h2></div>
         <ActivityTimeline account={account.name} />
@@ -5198,15 +5687,48 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
                         {call.myOutcome ? <span className="sentiment-chip neutral">{call.myOutcome}</span> : null}
                         {tags.slice(0, 4).map(tag => <span key={`${call.id || call.aircallCallId}:tag:${tag}`} className="sentiment-chip neutral">{tag}</span>)}
                       </div>
-                    </div>
-                    <div className="row-actions">
-                      {contact ? <button className="icon-button" type="button" title="Open contact" onClick={() => onOpenContact(contact.id)}><Contact size={16} /></button> : null}
-                      {transcriptText ? <button className="icon-button" type="button" title="Open transcript" onClick={() => setTranscriptModalCall(call)}><FileText size={16} /></button> : null}
-                      <button className="icon-button" type="button" title="Book meeting" onClick={() => setMeetingBookingCall({ ...call, transcriptText })}><CalendarDays size={16} /></button>
-                      {transcriptText ? <button className="icon-button" type="button" title="Copy transcript" onClick={() => copyCall(call)}><Copy size={16} /></button> : null}
-                      {call.recordingUrl ? <a className="icon-button" href={call.recordingUrl} target="_blank" rel="noreferrer" title="Listen to recording" aria-label="Listen to recording"><PlayCircle size={16} /></a> : null}
-                      {call.recordingUrl ? <button className="icon-button" type="button" title="Create temporary recording link" aria-label="Create temporary recording link" onClick={() => openFreshRecording(call)} disabled={freshRecordingStatus === String(call.aircallCallId)}>{freshRecordingStatus === String(call.aircallCallId) ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <RefreshCw size={16} />}</button> : null}
-                      {call.directLink ? <a className="icon-button" href={call.directLink} target="_blank" rel="noreferrer" title="Open in Aircall"><ExternalLink size={16} /></a> : null}
+                      <div className="row-actions aircall-row-actions">
+                        {contact ? (
+                          <button className="aircall-call-action" type="button" title="Open contact" onClick={() => onOpenContact(contact.id)}>
+                            <Contact size={14} />
+                            <span>Contact</span>
+                          </button>
+                        ) : null}
+                        {transcriptText ? (
+                          <button className="aircall-call-action" type="button" title="Open transcript" onClick={() => setTranscriptModalCall(call)}>
+                            <FileText size={14} />
+                            <span>Text</span>
+                          </button>
+                        ) : null}
+                        <button className="aircall-call-action" type="button" title="Book meeting" onClick={() => setMeetingBookingCall({ ...call, transcriptText })}>
+                          <CalendarDays size={14} />
+                          <span>Meet</span>
+                        </button>
+                        {transcriptText ? (
+                          <button className="aircall-call-action" type="button" title="Copy transcript" onClick={() => copyCall(call)}>
+                            <Copy size={14} />
+                            <span>Copy</span>
+                          </button>
+                        ) : null}
+                        {call.recordingUrl ? (
+                          <a className="aircall-call-action" href={call.recordingUrl} target="_blank" rel="noreferrer" title="Listen to recording" aria-label="Listen to recording">
+                            <PlayCircle size={14} />
+                            <span>Listen</span>
+                          </a>
+                        ) : null}
+                        {call.recordingUrl ? (
+                          <button className="aircall-call-action" type="button" title="Create temporary recording link" aria-label="Create temporary recording link" onClick={() => openFreshRecording(call)} disabled={freshRecordingStatus === String(call.aircallCallId)}>
+                            {freshRecordingStatus === String(call.aircallCallId) ? <LoaderCircle className="button-spinner" size={14} aria-hidden="true" /> : <RefreshCw size={14} />}
+                            <span>Audio</span>
+                          </button>
+                        ) : null}
+                        {call.directLink ? (
+                          <a className="aircall-call-action" href={call.directLink} target="_blank" rel="noreferrer" title="Open in Aircall">
+                            <ExternalLink size={14} />
+                            <span>Aircall</span>
+                          </a>
+                        ) : null}
+                      </div>
                     </div>
                   </article>
                 );
@@ -5227,7 +5749,12 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
                       {call.count > 1 ? <b className="repeat-count">x{call.count}</b> : null}
                     </span>
                   </div>
-                  {call.directLink ? <a className="icon-button" href={call.directLink} target="_blank" rel="noreferrer" title="Open in Aircall"><ExternalLink size={16} /></a> : null}
+                  {call.directLink ? (
+                    <a className="aircall-call-action" href={call.directLink} target="_blank" rel="noreferrer" title="Open in Aircall">
+                      <ExternalLink size={16} />
+                      <span>Aircall</span>
+                    </a>
+                  ) : null}
                 </article>
               ))}
               {!missedInboundRows.length ? <EmptyState icon={Phone} title="No missed inbound calls" text="Inbound calls with no attached agent will appear here." /> : null}
@@ -5251,8 +5778,8 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   );
 }
 
-function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpdateContact, onSavePrivateNote, onLogCall, onRemoveContact, canDeleteContacts, canManageCrmRecords = false }) {
-  const { accounts } = useCrmData();
+function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpdateContact, onSavePrivateNote, onLogCall, onRemoveContact, onDeleteMeeting, onUpdateMeetingAssignment, canDeleteContacts, canManageCrmRecords = false }) {
+  const { accounts, campaigns, workspaceUsers, meetings } = useCrmData();
   const [outcome, setOutcome] = useState("Connected");
   const [noteDraft, setNoteDraft] = useState(privateNote);
   const [noteStatus, setNoteStatus] = useState("idle");
@@ -5272,6 +5799,7 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
   const phoneNumber = getContactPhoneNumber(contact);
   const mobileNumber = getContactMobileNumber(contact);
   const directDialNumber = getContactDirectDialNumber(contact);
+  const contactMeetings = (meetings || []).filter(meeting => meeting.contactId === contact.id);
 
   function updateDraft(field, value) {
     setDraft(current => ({ ...current, [field]: value }));
@@ -5443,6 +5971,24 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
             </button>
           </div>
         </section>
+        <section className="panel contact-meetings-panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Meetings</span>
+              <h2>Booked meetings</h2>
+            </div>
+            <strong>{contactMeetings.length}</strong>
+          </div>
+          <MeetingList
+            meetings={contactMeetings}
+            campaigns={campaigns || []}
+            workspaceUsers={workspaceUsers || []}
+            calls={[]}
+            onDeleteMeeting={onDeleteMeeting}
+            onUpdateMeetingAssignment={onUpdateMeetingAssignment}
+            canManageMeetings={canManageCrmRecords}
+          />
+        </section>
       </div>
       {deleteOpen ? (
         <section className="modal-backdrop" role="presentation" onMouseDown={event => {
@@ -5477,24 +6023,183 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
   );
 }
 
-function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onMoveDeal, onNewDeal, onUpdateStages }) {
-  const { deals, accounts, pipelineStages } = useCrmData();
-  const { formatCurrency } = useCurrency();
-  const [draggedDealId, setDraggedDealId] = useState("");
+function ActionNoteManager({ account, contacts = [], actionNotes = [], activeCampaign, onSaveActionNote, onDeleteActionNote, defaultContactIds = [] }) {
+  const [draft, setDraft] = useState(null);
+  const [status, setStatus] = useState("idle");
+
+  function startDraft(note = null) {
+    if (!account) return;
+    setStatus("idle");
+    setDraft(note ? { ...note } : {
+      accountId: account.id,
+      companyId: account.id,
+      clientId: account.clientId,
+      campaignId: activeCampaign?.id !== "none" ? activeCampaign?.id : "",
+      title: "Action note",
+      body: "",
+      status: "open",
+      actionType: "call_back_needed",
+      source: "",
+      contactIds: defaultContactIds.filter(id => contacts.some(contact => contact.id === id)),
+    });
+  }
+
+  function updateDraft(field, value) {
+    setStatus("idle");
+    setDraft(current => ({ ...current, [field]: value }));
+  }
+
+  function toggleContact(contactId) {
+    setStatus("idle");
+    setDraft(current => {
+      const selected = new Set(current?.contactIds || []);
+      if (selected.has(contactId)) selected.delete(contactId);
+      else selected.add(contactId);
+      return { ...current, contactIds: [...selected] };
+    });
+  }
+
+  async function saveDraft(event) {
+    event.preventDefault();
+    if (!account || !draft) return;
+    setStatus("saving");
+    try {
+      await onSaveActionNote({
+        ...draft,
+        accountId: account.id,
+        companyId: account.id,
+        clientId: account.clientId,
+        campaignId: activeCampaign?.id !== "none" ? activeCampaign?.id : "",
+      });
+      setDraft(null);
+      setStatus("saved");
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  return (
+    <section className="action-note-manager pipeline-action-note-manager">
+      <div className="panel-header">
+        <div>
+          <span className="eyebrow">Action notes</span>
+          <h3>Current process notes</h3>
+        </div>
+        <button className="secondary-button" type="button" onClick={() => startDraft()}>
+          <Plus size={16} />
+          Add note
+        </button>
+      </div>
+      {draft ? (
+        <form className="action-note-editor" onSubmit={saveDraft}>
+          <FormField label="Note type">
+            <select value={draft.actionType} onChange={event => updateDraft("actionType", event.target.value)}>
+              {actionNoteTypeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </FormField>
+          <FormField label="Status">
+            <select value={draft.status} onChange={event => updateDraft("status", event.target.value)}>
+              {actionNoteStatusOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </FormField>
+          <FormField label="Title">
+            <input value={draft.title} onChange={event => updateDraft("title", event.target.value)} placeholder="Call Back Needed" />
+          </FormField>
+          <FormField label="Source">
+            <input value={draft.source} onChange={event => updateDraft("source", event.target.value)} placeholder="Current process, call note, manual review" />
+          </FormField>
+          <FormField label="Note">
+            <textarea required value={draft.body} onChange={event => updateDraft("body", event.target.value)} placeholder="Add what needs to happen, who it relates to, and any callback context." />
+          </FormField>
+          <div className="action-note-contact-picker">
+            <span>Attach to people</span>
+            {contacts.length ? contacts.map(contact => (
+              <label key={contact.id}>
+                <input
+                  type="checkbox"
+                  checked={(draft.contactIds || []).includes(contact.id)}
+                  onChange={() => toggleContact(contact.id)}
+                />
+                <span>
+                  <strong>{contact.name}</strong>
+                  <small>{contact.role || contact.email || "Company contact"}</small>
+                </span>
+              </label>
+            )) : <small>No people are saved for this company yet. The note will stay attached to the company.</small>}
+          </div>
+          <div className="modal-actions">
+            <button className="secondary-button" type="button" onClick={() => setDraft(null)}>Cancel</button>
+            <button className="primary-button" type="submit" disabled={status === "saving"}>
+              {status === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <StickyNote size={16} />}
+              {status === "saving" ? "Saving" : "Save note"}
+            </button>
+          </div>
+        </form>
+      ) : null}
+      {status === "saved" ? <div className="form-success">Action note saved.</div> : null}
+      {status === "error" ? <div className="form-error">Could not save action note.</div> : null}
+      <div className="action-note-list">
+        {actionNotes.length ? actionNotes.map(note => {
+          const linkedContacts = contacts.filter(contact => (note.contactIds || []).includes(contact.id));
+          return (
+            <article key={note.id} className="action-note-card">
+              <div>
+                <strong>{note.title || actionNoteTypeLabel(note.actionType)}</strong>
+                <span>{actionNoteTypeLabel(note.actionType)} · {actionNoteStatusLabel(note.status)}</span>
+              </div>
+              <p>{note.body}</p>
+              {linkedContacts.length ? <small>People: {linkedContacts.map(contact => contact.name).join(", ")}</small> : <small>Company-level note</small>}
+              <div className="research-card-actions">
+                <button className="icon-button" type="button" title="Edit note" onClick={() => startDraft(note)}>
+                  <Pencil size={16} />
+                </button>
+                <button className="icon-button" type="button" title="Delete note" onClick={() => onDeleteActionNote(note.id)}>
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </article>
+          );
+        }) : <EmptyState icon={StickyNote} title="No action notes yet" text="Add notes and attach them to this company or specific people." />}
+      </div>
+    </section>
+  );
+}
+
+function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenContact, onMovePipelineItem, onUpdateStages, onSaveActionNote, onDeleteActionNote }) {
+  const { accounts, contacts, pipelineStages, actionNotes = [] } = useCrmData();
+  const [pipelineMode, setPipelineMode] = useState("companies");
+  const [draggedItem, setDraggedItem] = useState(null);
   const [dropStage, setDropStage] = useState("");
   const [editingStages, setEditingStages] = useState(false);
   const [draftStages, setDraftStages] = useState(() => cloneRecords(pipelineStages || pipelineColumns));
+  const [selectedItem, setSelectedItem] = useState(null);
   if (activeClient?.id === "none" || activeCampaign?.id === "none") {
     return <ScopeSelectionPrompt />;
   }
-  const scopedAccounts = activeClient?.id && activeClient.id !== "none"
+  const campaignCompanyIds = new Set(Array.isArray(activeCampaign?.companyIds) ? activeCampaign.companyIds : []);
+  const campaignContactIds = new Set(Array.isArray(activeCampaign?.contactIds) ? activeCampaign.contactIds : []);
+  const clientAccounts = activeClient?.id && activeClient.id !== "none"
     ? accounts.filter(account => account.clientId === activeClient.id)
     : [];
-  const scopedAccountNames = new Set(scopedAccounts.map(account => account.name));
-  const scopedDeals = deals.filter(deal => (
-    scopedAccountNames.has(deal.account)
-    && (!activeCampaign?.id || activeCampaign.id === "none" || !deal.campaignId || deal.campaignId === activeCampaign.id)
+  const scopedAccounts = campaignCompanyIds.size
+    ? clientAccounts.filter(account => campaignCompanyIds.has(account.id))
+    : clientAccounts;
+  const scopedAccountIds = new Set(scopedAccounts.map(account => account.id));
+  const scopedContacts = contacts.filter(contact => (
+    contact.clientId === activeClient?.id
+    && (campaignContactIds.size ? campaignContactIds.has(contact.id) : scopedAccountIds.has(contact.accountId || contact.companyId))
   ));
+  const records = pipelineMode === "companies"
+    ? scopedAccounts.map(account => ({ type: "company", id: account.id, stage: pipelineStageIdForValue(account.stage, pipelineStages || pipelineColumns), account }))
+    : scopedContacts.map(contact => ({ type: "contact", id: contact.id, stage: pipelineStageIdForValue(contact.stage, pipelineStages || pipelineColumns), contact, account: accounts.find(account => account.id === (contact.accountId || contact.companyId)) }));
+
+  function contactsForAccount(accountId) {
+    return contacts.filter(contact => (contact.accountId || contact.companyId) === accountId);
+  }
+
+  function notesForAccount(accountId) {
+    return (actionNotes || []).filter(note => note.accountId === accountId || note.companyId === accountId);
+  }
 
   function saveStages() {
     const nextStages = draftStages.map((stage, index) => ({
@@ -5512,6 +6217,22 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onMoveDeal,
         title="Opportunity board"
         description={`${activeClient?.name || "Client account"} pipeline${activeCampaign?.name && activeCampaign.id !== "none" ? ` for ${activeCampaign.name}` : ""}.`}
       >
+        <div className="pipeline-mode-toggle" role="tablist" aria-label="Pipeline records">
+          <button className={pipelineMode === "companies" ? "active" : ""} type="button" role="tab" aria-selected={pipelineMode === "companies"} onClick={() => {
+            setPipelineMode("companies");
+            setSelectedItem(null);
+          }}>
+            <Building2 size={16} />
+            Companies
+          </button>
+          <button className={pipelineMode === "people" ? "active" : ""} type="button" role="tab" aria-selected={pipelineMode === "people"} onClick={() => {
+            setPipelineMode("people");
+            setSelectedItem(null);
+          }}>
+            <Users size={16} />
+            People
+          </button>
+        </div>
         <button className="secondary-button" type="button" onClick={() => {
           if (!editingStages) setDraftStages(cloneRecords(pipelineStages || pipelineColumns));
           setEditingStages(value => !value);
@@ -5519,12 +6240,8 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onMoveDeal,
           <Settings size={16} />
           Stage settings
         </button>
-        <button className="primary-button" type="button" onClick={() => onNewDeal()}>
-          <Plus size={16} />
-          New deal
-        </button>
       </PageHeader>
-      {editingStages && (
+      {editingStages ? (
         <section className="panel pipeline-settings-panel">
           <div className="panel-header">
             <div>
@@ -5550,10 +6267,10 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onMoveDeal,
             <button className="primary-button" type="button" onClick={saveStages}>Save stages</button>
           </div>
         </section>
-      )}
+      ) : null}
       <div className="pipeline-board">
         {(pipelineStages || pipelineColumns).map(column => {
-          const columnDeals = scopedDeals.filter(deal => deal.stage === column.id);
+          const columnRecords = records.filter(record => record.stage === column.id);
           return (
             <section
               key={column.id}
@@ -5568,46 +6285,51 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onMoveDeal,
               }}
               onDrop={event => {
                 event.preventDefault();
-                const dealId = event.dataTransfer.getData("text/plain") || draggedDealId;
-                setDraggedDealId("");
+                const encoded = event.dataTransfer.getData("text/plain");
+                const [type, id] = encoded.split(":");
+                const item = draggedItem || (type && id ? { type, id } : null);
+                setDraggedItem(null);
                 setDropStage("");
-                if (dealId) onMoveDeal(dealId, column.id);
+                if (item?.id) onMovePipelineItem(item.type, item.id, column.id);
               }}
             >
               <div className="pipeline-column-head">
                 <strong>{column.name}</strong>
-                <span>{columnDeals.length}</span>
+                <span>{columnRecords.length}</span>
               </div>
-              {columnDeals.map(deal => {
-                const account = accounts.find(item => item.name === deal.account);
+              {columnRecords.map(record => {
+                const accountContacts = record.account ? contactsForAccount(record.account.id) : [];
+                const contactCount = accountContacts.length;
+                const title = record.type === "company" ? record.account.name : record.contact.name;
+                const subtitle = record.type === "company"
+                  ? `${contactCount} contact${contactCount === 1 ? "" : "s"}`
+                  : record.account?.name || "No company";
                 return (
                   <article
-                    key={deal.id}
-                    className={`pipeline-card ${draggedDealId === deal.id ? "dragging" : ""}`}
+                    key={`${record.type}:${record.id}`}
+                    className={`pipeline-card ${draggedItem?.type === record.type && draggedItem?.id === record.id ? "dragging" : ""}`}
                     draggable
                     role="button"
                     tabIndex={0}
-                    onClick={() => account && onOpenAccount(account.id)}
+                    onClick={() => setSelectedItem(record)}
                     onKeyDown={event => {
-                      if (event.key === "Enter") account && onOpenAccount(account.id);
+                      if (event.key === "Enter") setSelectedItem(record);
                     }}
                     onDragStart={event => {
-                      setDraggedDealId(deal.id);
+                      setDraggedItem({ type: record.type, id: record.id });
                       event.dataTransfer.effectAllowed = "move";
-                      event.dataTransfer.setData("text/plain", deal.id);
+                      event.dataTransfer.setData("text/plain", `${record.type}:${record.id}`);
                     }}
                     onDragEnd={() => {
-                      setDraggedDealId("");
+                      setDraggedItem(null);
                       setDropStage("");
                     }}
                   >
-                    <strong>{deal.account}</strong>
-                    <span>{deal.contact}</span>
+                    <strong>{title}</strong>
+                    <span>{subtitle}</span>
                     <div>
-                      <small>{deal.owner}</small>
-                      <small>{formatCurrency(deal.value)}</small>
+                      <small>{record.type === "company" ? record.account.industry || "No industry" : record.contact.role || "No role"}</small>
                     </div>
-                    <StatusBadge>{deal.due}</StatusBadge>
                   </article>
                 );
               })}
@@ -5615,11 +6337,92 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onMoveDeal,
           );
         })}
       </div>
-      {!scopedDeals.length && (
-        <section className="panel empty-board-panel">
-          <EmptyState icon={KanbanSquare} title="No deals in this pipeline yet" text="Create companies and contacts inside the client account, then add deals to track pipeline." />
+      {selectedItem ? (
+        <section className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) setSelectedItem(null);
+        }}>
+          <div className="workflow-modal pipeline-detail-modal" role="dialog" aria-modal="true" aria-labelledby="pipeline-detail-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">{selectedItem.type === "company" ? "Company" : "Person"}</span>
+                <h2 id="pipeline-detail-title">{selectedItem.type === "company" ? selectedItem.account.name : selectedItem.contact.name}</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setSelectedItem(null)} aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="pipeline-detail-scroll">
+              {selectedItem.type === "company" ? (
+                <>
+                <div className="pipeline-detail-actions">
+                  <button className="secondary-button" type="button" onClick={() => {
+                    setSelectedItem(null);
+                    onOpenAccount(selectedItem.account.id);
+                  }}>
+                    <Building2 size={16} />
+                    Open company
+                  </button>
+                </div>
+                <div className="pipeline-linked-list">
+                  {contactsForAccount(selectedItem.account.id).map(contact => (
+                    <button key={contact.id} type="button" onClick={() => {
+                      setSelectedItem(null);
+                      onOpenContact(contact.id);
+                    }}>
+                      <span>{accountInitial(contact.name)}</span>
+                      <div>
+                        <strong>{contact.name}</strong>
+                        <small>{contact.role || contact.email || "Contact"}</small>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <ActionNoteManager
+                  account={selectedItem.account}
+                  contacts={contactsForAccount(selectedItem.account.id)}
+                  actionNotes={notesForAccount(selectedItem.account.id)}
+                  activeCampaign={activeCampaign}
+                  onSaveActionNote={onSaveActionNote}
+                  onDeleteActionNote={onDeleteActionNote}
+                />
+                </>
+              ) : (
+                <>
+                <div className="pipeline-detail-actions">
+                  <button className="secondary-button" type="button" onClick={() => {
+                    setSelectedItem(null);
+                    onOpenContact(selectedItem.contact.id);
+                  }}>
+                    <UserRound size={16} />
+                    Open contact
+                  </button>
+                  {selectedItem.account ? (
+                    <button className="secondary-button" type="button" onClick={() => {
+                      setSelectedItem(null);
+                      onOpenAccount(selectedItem.account.id);
+                    }}>
+                      <Building2 size={16} />
+                      Open company
+                    </button>
+                  ) : null}
+                </div>
+                {selectedItem.account ? (
+                  <ActionNoteManager
+                    account={selectedItem.account}
+                    contacts={contactsForAccount(selectedItem.account.id)}
+                    actionNotes={notesForAccount(selectedItem.account.id)}
+                    activeCampaign={activeCampaign}
+                    onSaveActionNote={onSaveActionNote}
+                    onDeleteActionNote={onDeleteActionNote}
+                    defaultContactIds={[selectedItem.contact.id]}
+                  />
+                ) : null}
+                </>
+              )}
+            </div>
+          </div>
         </section>
-      )}
+      ) : null}
     </>
   );
 }
@@ -5712,22 +6515,150 @@ function CallsPage({ onOpenContact, onLogCall, onStartCallBlock }) {
 }
 */
 
-function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource, onQueueResearch, onGenerateScripts, onMoveScript, onGenerateReport }) {
-  const { accounts, researchItems, scriptItems = [], weeklyReports = [], callInsights = [] } = useCrmData();
-  const [draggedScriptId, setDraggedScriptId] = useState("");
-  const [reportTimeframe, setReportTimeframe] = useState("This week");
+const actionNoteTypeOptions = [
+  { value: "general", label: "General" },
+  { value: "call_back_needed", label: "Call back needed" },
+  { value: "unprocessed", label: "Unprocessed" },
+  { value: "follow_up", label: "Follow up" },
+  { value: "research", label: "Research" },
+  { value: "gatekeeper", label: "Gatekeeper" },
+  { value: "objection", label: "Objection" },
+];
+
+const actionNoteStatusOptions = [
+  { value: "open", label: "Open" },
+  { value: "in_progress", label: "In progress" },
+  { value: "done", label: "Done" },
+  { value: "archived", label: "Archived" },
+];
+
+function actionNoteTypeLabel(value) {
+  return actionNoteTypeOptions.find(option => option.value === value)?.label || "General";
+}
+
+function actionNoteStatusLabel(value) {
+  return actionNoteStatusOptions.find(option => option.value === value)?.label || "Open";
+}
+
+function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onEditAccount, onAddSource, onGenerateScripts, onSaveScript, onDeleteScript, onSaveActionNote, onDeleteActionNote }) {
+  const { accounts, contacts, scriptItems = [], actionNotes = [] } = useCrmData();
+  const [searchTerm, setSearchTerm] = useState("");
+  const [infoAccountId, setInfoAccountId] = useState("");
+  const [scriptAccountId, setScriptAccountId] = useState("");
+  const [scriptDraft, setScriptDraft] = useState(null);
+  const [actionNoteDraft, setActionNoteDraft] = useState(null);
+  const [actionNoteStatus, setActionNoteStatus] = useState("idle");
   if (activeClient?.id === "none" || activeCampaign?.id === "none") {
     return <ScopeSelectionPrompt />;
   }
   const scopedAccounts = activeClient?.id && activeClient.id !== "none" ? accounts.filter(account => account.clientId === activeClient.id) : [];
-  const scopedResearchItems = researchItems.filter(item => (
-    (!activeClient?.id || activeClient.id === "none" || item.clientId === activeClient.id)
-    && (!activeCampaign?.id || activeCampaign.id === "none" || !item.campaignId || item.campaignId === activeCampaign.id)
-  ));
   const scopedScripts = scriptItems.filter(item => (
     (!activeClient?.id || activeClient.id === "none" || item.clientId === activeClient.id)
     && (!activeCampaign?.id || activeCampaign.id === "none" || !item.campaignId || item.campaignId === activeCampaign.id)
   ));
+  const scopedActionNotes = actionNotes.filter(item => (
+    (!activeClient?.id || activeClient.id === "none" || item.clientId === activeClient.id)
+    && (!activeCampaign?.id || activeCampaign.id === "none" || !item.campaignId || item.campaignId === activeCampaign.id)
+  ));
+  const normalizedSearch = normalizeLookupValue(searchTerm).toLowerCase();
+  const visibleAccounts = normalizedSearch ? scopedAccounts.filter(account => (
+    [account.name, account.domain, account.industry, account.location, account.insight, account.nextAction]
+      .some(value => normalizeLookupValue(value).toLowerCase().includes(normalizedSearch))
+  )) : scopedAccounts;
+  const infoAccount = scopedAccounts.find(account => account.id === infoAccountId);
+  const scriptAccount = scopedAccounts.find(account => account.id === scriptAccountId);
+  const accountScripts = scriptAccount ? scopedScripts.filter(script => script.accountId === scriptAccount.id) : [];
+  const infoAccountContacts = infoAccount ? contacts.filter(contact => contact.accountId === infoAccount.id || contact.companyId === infoAccount.id) : [];
+  const infoAccountActionNotes = infoAccount ? scopedActionNotes.filter(note => note.accountId === infoAccount.id || note.companyId === infoAccount.id) : [];
+
+  function openScriptModal(account) {
+    setScriptAccountId(account.id);
+    setScriptDraft(null);
+  }
+
+  function startNewScript(account = scriptAccount) {
+    if (!account) return;
+    setScriptDraft({
+      accountId: account.id,
+      clientId: account.clientId,
+      campaignId: activeCampaign?.id !== "none" ? activeCampaign.id : "",
+      title: `Gatekeeper script for ${account.name}`,
+      channel: "Gatekeeper",
+      body: "",
+      stage: "drafts",
+    });
+  }
+
+  function editScript(script) {
+    setScriptDraft({ ...script });
+  }
+
+  function updateScriptDraft(field, value) {
+    setScriptDraft(current => ({ ...current, [field]: value }));
+  }
+
+  function saveScriptDraft(event) {
+    event.preventDefault();
+    if (!scriptAccount || !scriptDraft) return;
+    onSaveScript({
+      ...scriptDraft,
+      accountId: scriptAccount.id,
+      clientId: scriptAccount.clientId,
+      campaignId: activeCampaign?.id !== "none" ? activeCampaign.id : "",
+    });
+    setScriptDraft(null);
+  }
+
+  function startActionNoteDraft(note = null) {
+    if (!infoAccount) return;
+    setActionNoteStatus("idle");
+    setActionNoteDraft(note ? { ...note } : {
+      accountId: infoAccount.id,
+      companyId: infoAccount.id,
+      clientId: infoAccount.clientId,
+      campaignId: activeCampaign?.id !== "none" ? activeCampaign.id : "",
+      title: "Action note",
+      body: "",
+      status: "open",
+      actionType: "call_back_needed",
+      source: "",
+      contactIds: [],
+    });
+  }
+
+  function updateActionNoteDraft(field, value) {
+    setActionNoteStatus("idle");
+    setActionNoteDraft(current => ({ ...current, [field]: value }));
+  }
+
+  function toggleActionNoteContact(contactId) {
+    setActionNoteStatus("idle");
+    setActionNoteDraft(current => {
+      const selected = new Set(current?.contactIds || []);
+      if (selected.has(contactId)) selected.delete(contactId);
+      else selected.add(contactId);
+      return { ...current, contactIds: [...selected] };
+    });
+  }
+
+  async function saveActionNoteDraft(event) {
+    event.preventDefault();
+    if (!infoAccount || !actionNoteDraft) return;
+    setActionNoteStatus("saving");
+    try {
+      await onSaveActionNote({
+        ...actionNoteDraft,
+        accountId: infoAccount.id,
+        companyId: infoAccount.id,
+        clientId: infoAccount.clientId,
+        campaignId: activeCampaign?.id !== "none" ? activeCampaign.id : "",
+      });
+      setActionNoteDraft(null);
+      setActionNoteStatus("saved");
+    } catch {
+      setActionNoteStatus("error");
+    }
+  }
 
   return (
     <>
@@ -5740,118 +6671,263 @@ function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onAddSource
           <Upload size={16} />
           Add source
         </button>
-        <button className="primary-button" type="button" onClick={() => onQueueResearch()}>
-          <ListFilter size={16} />
-          Queue research
-        </button>
-        <button className="secondary-button" type="button" onClick={onGenerateScripts}>
-          <FileText size={16} />
-          Generate scripts
-        </button>
       </PageHeader>
       <section className="panel research-scope-panel">
         <div className="results-summary">
           <div><span>Client account</span><strong>{activeClient?.name || "No client account"}</strong></div>
           <div><span>Campaign</span><strong>{activeCampaign?.name || "No campaign"}</strong></div>
-          <div><span>Call insights</span><strong>{callInsights.length}</strong></div>
-          <div><span>Reports</span><strong>{weeklyReports.length}</strong></div>
+          <div><span>Companies</span><strong>{scopedAccounts.length}</strong></div>
+          <div><span>Action notes</span><strong>{scopedActionNotes.length}</strong></div>
         </div>
+        <label className="research-search">
+          <Search size={16} />
+          <input value={searchTerm} onChange={event => setSearchTerm(event.target.value)} placeholder="Search companies, industries, locations, or research notes" />
+        </label>
       </section>
-      {scopedResearchItems.length > 0 && (
-        <section className="panel research-queue-panel">
-          <div className="panel-header"><h2>Research queue</h2></div>
-          <div className="detail-list">
-            {scopedResearchItems.map(item => (
-              <div key={item.id}>
-                <span>{item.account}</span>
-                <strong>{item.title}</strong>
-                <small>{item.summary}</small>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
       <div className="research-grid">
-        {scopedAccounts.length ? scopedAccounts.map(account => (
+        {visibleAccounts.length ? visibleAccounts.map(account => {
+          const accountScriptCount = scopedScripts.filter(script => script.accountId === account.id).length;
+          const accountActionNoteCount = scopedActionNotes.filter(note => note.accountId === account.id || note.companyId === account.id).length;
+          return (
           <article key={account.id} className="research-card">
             <div className="research-card-head">
-              <span className="record-avatar">{accountInitial(account.name)}</span>
-              <StatusBadge tone={account.status === "Priority" ? "accent" : "neutral"}>{account.status}</StatusBadge>
+              <div className="research-card-identity">
+                <span className="record-avatar">{accountInitial(account.name)}</span>
+                <div>
+                  <h2>{account.name}</h2>
+                  <span>{[account.industry, account.location].filter(Boolean).join(" - ") || "Company research"}</span>
+                </div>
+              </div>
             </div>
-            <h2>{account.name}</h2>
             <p>{account.insight}</p>
             <div className="detail-list">
-              <div><span>Data gap</span><strong>Buying committee validation</strong></div>
-              <div><span>Suggested angle</span><strong>{account.nextAction}</strong></div>
+              <div><span>Research angle</span><strong>{account.nextAction}</strong></div>
+              <div><span>Action notes</span><strong>{accountActionNoteCount}</strong></div>
+              <div><span>Scripts attached</span><strong>{accountScriptCount}</strong></div>
             </div>
-            <button className="text-button" type="button" onClick={() => onOpenAccount(account.id)}>
-              Open company <ArrowRight size={14} />
-            </button>
+            <div className="research-card-footer">
+              <button className="research-icon-action" type="button" onClick={() => onEditAccount(account)} title="Edit research" aria-label={`Edit ${account.name}`}>
+                <Pencil size={16} />
+                <span>Edit</span>
+              </button>
+              <button className="research-icon-action" type="button" onClick={() => {
+                setInfoAccountId(account.id);
+                setActionNoteDraft(null);
+              }} title="Company info" aria-label={`Open ${account.name} info`}>
+                <Building2 size={16} />
+                <span>Info</span>
+              </button>
+              <button className="research-icon-action" type="button" onClick={() => {
+                setInfoAccountId(account.id);
+                setActionNoteDraft(null);
+              }} title="Action notes" aria-label={`Open ${account.name} notes`}>
+                <StickyNote size={16} />
+                <span>Notes</span>
+              </button>
+              <button className="research-icon-action" type="button" onClick={() => openScriptModal(account)} title="Manage scripts" aria-label={`Manage ${account.name} scripts`}>
+                <FileText size={16} />
+                <span>Scripts</span>
+              </button>
+            </div>
           </article>
-        )) : <section className="panel"><EmptyState icon={FileText} title="No research records yet" text="Research summaries will appear after companies are added and research jobs are created." /></section>}
+          );
+        }) : <section className="panel"><EmptyState icon={FileText} title="No matching companies" text="Search another company, or add companies before managing research and scripts." /></section>}
       </div>
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <span className="eyebrow">Script builder</span>
-            <h2>Script board</h2>
-          </div>
-          <StatusBadge>{scopedScripts.length} scripts</StatusBadge>
+
+      {infoAccount ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="workflow-modal research-info-modal" role="dialog" aria-modal="true" aria-labelledby="research-info-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Company info</span>
+                <h2 id="research-info-title">{infoAccount.name}</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={() => {
+                setInfoAccountId("");
+                setActionNoteDraft(null);
+              }} aria-label="Close company info">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="research-info-grid">
+              <div><span>Domain</span><strong>{infoAccount.domain || "No domain"}</strong></div>
+              <div><span>Industry</span><strong>{infoAccount.industry || "Unspecified"}</strong></div>
+              <div><span>Location</span><strong>{infoAccount.location || "Unspecified"}</strong></div>
+              <div><span>Employees</span><strong>{infoAccount.employees || "Unknown"}</strong></div>
+              <div className="wide"><span>Research note</span><strong>{infoAccount.insight || "No research note yet."}</strong></div>
+              <div className="wide"><span>Research angle</span><strong>{infoAccount.nextAction || "No angle set."}</strong></div>
+            </div>
+            <section className="action-note-manager">
+              <div className="panel-header">
+                <div>
+                  <span className="eyebrow">Action notes</span>
+                  <h3>Company and people notes</h3>
+                </div>
+                <button className="secondary-button" type="button" onClick={() => startActionNoteDraft()}>
+                  <Plus size={16} />
+                  Add note
+                </button>
+              </div>
+              {actionNoteDraft ? (
+                <form className="action-note-editor" onSubmit={saveActionNoteDraft}>
+                  <FormField label="Note type">
+                    <select value={actionNoteDraft.actionType} onChange={event => updateActionNoteDraft("actionType", event.target.value)}>
+                      {actionNoteTypeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </FormField>
+                  <FormField label="Status">
+                    <select value={actionNoteDraft.status} onChange={event => updateActionNoteDraft("status", event.target.value)}>
+                      {actionNoteStatusOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </FormField>
+                  <FormField label="Title">
+                    <input value={actionNoteDraft.title} onChange={event => updateActionNoteDraft("title", event.target.value)} placeholder="Call Back Needed" />
+                  </FormField>
+                  <FormField label="Source">
+                    <input value={actionNoteDraft.source} onChange={event => updateActionNoteDraft("source", event.target.value)} placeholder="Imported row, call note, manual review" />
+                  </FormField>
+                  <FormField label="Note">
+                    <textarea required value={actionNoteDraft.body} onChange={event => updateActionNoteDraft("body", event.target.value)} placeholder="Add what needs to happen, who it relates to, and any callback context." />
+                  </FormField>
+                  <div className="action-note-contact-picker">
+                    <span>Attach to people</span>
+                    {infoAccountContacts.length ? infoAccountContacts.map(contact => (
+                      <label key={contact.id}>
+                        <input
+                          type="checkbox"
+                          checked={(actionNoteDraft.contactIds || []).includes(contact.id)}
+                          onChange={() => toggleActionNoteContact(contact.id)}
+                        />
+                        <span>
+                          <strong>{contact.name}</strong>
+                          <small>{contact.role || contact.email || "Company contact"}</small>
+                        </span>
+                      </label>
+                    )) : <small>No people are saved for this company yet. The note will stay attached to the company.</small>}
+                  </div>
+                  <div className="modal-actions">
+                    <button className="secondary-button" type="button" onClick={() => setActionNoteDraft(null)}>Cancel</button>
+                    <button className="primary-button" type="submit" disabled={actionNoteStatus === "saving"}>
+                      {actionNoteStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <StickyNote size={16} />}
+                      {actionNoteStatus === "saving" ? "Saving" : "Save note"}
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+              {actionNoteStatus === "saved" ? <div className="form-success">Action note saved.</div> : null}
+              {actionNoteStatus === "error" ? <div className="form-error">Could not save action note.</div> : null}
+              <div className="action-note-list">
+                {infoAccountActionNotes.length ? infoAccountActionNotes.map(note => {
+                  const linkedContacts = infoAccountContacts.filter(contact => (note.contactIds || []).includes(contact.id));
+                  return (
+                    <article key={note.id} className="action-note-card">
+                      <div>
+                        <strong>{note.title || actionNoteTypeLabel(note.actionType)}</strong>
+                        <span>{actionNoteTypeLabel(note.actionType)} · {actionNoteStatusLabel(note.status)}</span>
+                      </div>
+                      <p>{note.body}</p>
+                      {linkedContacts.length ? <small>People: {linkedContacts.map(contact => contact.name).join(", ")}</small> : <small>Company-level note</small>}
+                      <div className="research-card-actions">
+                        <button className="icon-button" type="button" title="Edit note" onClick={() => startActionNoteDraft(note)}>
+                          <Pencil size={16} />
+                        </button>
+                        <button className="icon-button" type="button" title="Delete note" onClick={() => onDeleteActionNote(note.id)}>
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </article>
+                  );
+                }) : <EmptyState icon={StickyNote} title="No action notes yet" text="Add callback, unprocessed, follow-up, or research notes and attach them to the company or specific people." />}
+              </div>
+            </section>
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => {
+                setInfoAccountId("");
+                setActionNoteDraft(null);
+                onOpenAccount(infoAccount.id);
+              }}>
+                <Building2 size={16} />
+                Open full record
+              </button>
+              <button className="primary-button" type="button" onClick={() => {
+                setInfoAccountId("");
+                setActionNoteDraft(null);
+                onEditAccount(infoAccount);
+              }}>
+                <Pencil size={16} />
+                Edit info
+              </button>
+            </div>
+          </section>
         </div>
-        <div className="script-board">
-          {scriptBoardStages.map(stage => (
-            <section
-              key={stage.id}
-              className={`script-board-column ${draggedScriptId ? "dragging" : ""}`}
-              onDragOver={event => event.preventDefault()}
-              onDrop={() => {
-                if (draggedScriptId) onMoveScript(draggedScriptId, stage.id);
-                setDraggedScriptId("");
-              }}
-            >
-              <h3>{stage.name}</h3>
-              {scopedScripts.filter(script => script.stage === stage.id).map(script => (
-                <article key={script.id} className="script-card" draggable onDragStart={() => setDraggedScriptId(script.id)} onDragEnd={() => setDraggedScriptId("")}>
-                  <strong>{script.title}</strong>
-                  <span>{script.channel}</span>
+      ) : null}
+
+      {scriptAccount ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="workflow-modal research-script-modal" role="dialog" aria-modal="true" aria-labelledby="research-script-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Company scripts</span>
+                <h2 id="research-script-title">{scriptAccount.name}</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={() => {
+                setScriptAccountId("");
+                setScriptDraft(null);
+              }} aria-label="Close scripts">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="script-modal-toolbar">
+              <button className="secondary-button" type="button" onClick={() => onGenerateScripts(scriptAccount.id)}>
+                <Sparkles size={16} />
+                Generate scripts
+              </button>
+              <button className="primary-button" type="button" onClick={() => startNewScript(scriptAccount)}>
+                <Plus size={16} />
+                Add script
+              </button>
+            </div>
+            {scriptDraft ? (
+              <form className="script-editor" onSubmit={saveScriptDraft}>
+                <FormField label="Script name">
+                  <input required value={scriptDraft.title} onChange={event => updateScriptDraft("title", event.target.value)} placeholder="Gatekeeper script" />
+                </FormField>
+                <FormField label="Target or channel">
+                  <input value={scriptDraft.channel} onChange={event => updateScriptDraft("channel", event.target.value)} placeholder="Gatekeeper, IT buyer, procurement" />
+                </FormField>
+                <FormField label="Script">
+                  <textarea required value={scriptDraft.body} onChange={event => updateScriptDraft("body", event.target.value)} placeholder="Write the opener, gatekeeper route, voicemail, or email sequence here." />
+                </FormField>
+                <div className="modal-actions">
+                  <button className="secondary-button" type="button" onClick={() => setScriptDraft(null)}>Cancel</button>
+                  <button className="primary-button" type="submit">Save script</button>
+                </div>
+              </form>
+            ) : null}
+            <div className="company-script-list">
+              {accountScripts.length ? accountScripts.map(script => (
+                <article key={script.id} className="script-card">
+                  <div className="script-card-header">
+                    <div>
+                      <strong>{script.title}</strong>
+                      <span>{script.channel}</span>
+                    </div>
+                    <div className="research-card-actions">
+                      <button className="icon-button" type="button" onClick={() => editScript(script)} title="Edit script">
+                        <Pencil size={16} />
+                      </button>
+                      <button className="icon-button" type="button" onClick={() => onDeleteScript(script.id)} title="Delete script">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
                   <p>{script.body}</p>
                 </article>
-              ))}
-            </section>
-          ))}
+              )) : <EmptyState icon={FileText} title="No scripts attached" text="Generate or add scripts for each audience you want to target at this company." />}
+            </div>
+          </section>
         </div>
-      </section>
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <span className="eyebrow">Calendar analysis</span>
-            <h2>Sales analysis reports</h2>
-          </div>
-          <div className="report-range-controls">
-            <select value={reportTimeframe} onChange={event => setReportTimeframe(event.target.value)}>
-              <option>Today</option>
-              <option>Yesterday</option>
-              <option>This week</option>
-              <option>Last 7 days</option>
-              <option>This month</option>
-            </select>
-            <button className="secondary-button" type="button" onClick={() => onGenerateReport(reportTimeframe)}>
-              <FileText size={16} />
-              Generate report
-            </button>
-          </div>
-        </div>
-        {weeklyReports.length ? <div className="weekly-report-list">
-          {weeklyReports.slice(0, 4).map(report => (
-            <article key={report.id} className="weekly-report-card">
-              <strong>{report.title}</strong>
-              <span>{report.timeframe}</span>
-              <p>{report.summary}</p>
-              <ul>{(report.highlights || []).map(item => <li key={item}>{item}</li>)}</ul>
-            </article>
-          ))}
-        </div> : <EmptyState icon={FileText} title="No reports yet" text="Save call transcripts, then generate a weekly analysis report." />}
-      </section>
+      ) : null}
     </>
   );
 }
@@ -5863,14 +6939,31 @@ function parseLines(value) {
     .filter(Boolean);
 }
 
-const companyImportColumnNames = new Set([
-  "company",
-  "company name",
-  "account",
-  "account name",
-  "organisation",
-  "organization",
-]);
+const companyImportColumnMap = {
+  companyName: ["company", "company name", "account", "account name", "organisation", "organization", "business", "business name"],
+  domain: ["domain", "website", "web site", "company domain", "company website", "url"],
+  industry: ["industry", "sector", "vertical", "category"],
+  location: ["location", "hq", "hq location", "headquarters", "country", "region", "city"],
+  employees: ["employees", "employee count", "employee range", "headcount", "staff", "company size"],
+  value: ["value", "pipeline value", "deal value", "annual revenue", "revenue"],
+  stage: ["stage", "pipeline stage", "crm stage"],
+  status: ["status", "priority", "company status"],
+  nextAction: ["next action", "next step", "action", "follow up", "follow-up"],
+  insight: ["insight", "notes", "research note", "research notes", "summary"],
+};
+
+const companyImportFieldOptions = [
+  ["companyName", "Company name", true],
+  ["domain", "Domain", false],
+  ["industry", "Industry", false],
+  ["location", "Location", false],
+  ["employees", "Employees", false],
+  ["value", "Pipeline value", false],
+  ["stage", "Stage", false],
+  ["status", "Status", false],
+  ["nextAction", "Next action", false],
+  ["insight", "Insight", false],
+];
 
 const contactImportColumnMap = {
   name: ["contact", "contact name", "name", "full name", "person", "lead", "lead name"],
@@ -5893,13 +6986,72 @@ function findImportColumnIndex(headerRow, aliases) {
   return headerRow.findIndex(cell => aliases.includes(normalizeImportHeader(cell)));
 }
 
+function firstImportHeaderRowIndex(rows) {
+  const recognizedIndex = rows.findIndex(row => Object.values(companyImportColumnMap).some(aliases => findImportColumnIndex(row, aliases) !== -1));
+  if (recognizedIndex !== -1) return recognizedIndex;
+  return rows.findIndex(row => row.some(cell => normalizeLookupValue(cell)));
+}
+
+async function parseCompanyImportMappingFile(file) {
+  const filename = file?.name || "";
+  const extension = filename.split(".").pop()?.toLowerCase();
+  if (!["csv", "xlsx"].includes(extension)) {
+    throw new Error("Upload a .xlsx or .csv file.");
+  }
+
+  const workbook = extension === "csv"
+    ? XLSX.read(await file.text(), { type: "string" })
+    : XLSX.read(await file.arrayBuffer(), { type: "array" });
+
+  for (const sheetName of workbook.SheetNames) {
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "", blankrows: false });
+    const headerRowIndex = firstImportHeaderRowIndex(rows);
+    if (headerRowIndex === -1) continue;
+
+    const headerRow = rows[headerRowIndex];
+    const headers = headerRow.map((cell, index) => normalizeLookupValue(cell) || `Column ${index + 1}`);
+    const columnMap = Object.fromEntries(
+      Object.entries(companyImportColumnMap).map(([field, aliases]) => [field, findImportColumnIndex(headerRow, aliases)]),
+    );
+    const rawRows = rows
+      .slice(headerRowIndex + 1)
+      .filter(row => row.some(cell => normalizeLookupValue(cell)));
+
+    if (headers.length && rawRows.length) {
+      return {
+        sourceFile: filename,
+        sourceSheet: extension === "csv" ? "" : sheetName,
+        headers,
+        rawRows,
+        columnMap,
+      };
+    }
+  }
+
+  throw new Error("Could not find rows to import in this file.");
+}
+
+function importCellValue(row, columnIndex) {
+  return columnIndex === -1 ? "" : String(row[columnIndex] || "").trim();
+}
+
+function parseImportNumber(value) {
+  const normalized = String(value || "").replace(/[^0-9.-]+/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function dedupeCompanyImportRows(rows) {
   const seenCompanies = new Set();
   const uniqueRows = [];
 
   for (const row of rows) {
     const companyName = String(row.companyName || "").trim();
-    const companyKey = companyName.toLowerCase();
+    const companyKey = [
+      companyName.toLowerCase(),
+      String(row.domain || "").trim().toLowerCase(),
+    ].filter(Boolean).join("|");
     if (!companyName || seenCompanies.has(companyKey)) continue;
     seenCompanies.add(companyKey);
     uniqueRows.push({ ...row, companyName });
@@ -5909,16 +7061,27 @@ function dedupeCompanyImportRows(rows) {
 }
 
 function extractCompanyImportRowsFromSheet(rows, sourceFile, sourceSheet = "") {
-  const headerRowIndex = rows.findIndex(row => row.some(cell => companyImportColumnNames.has(normalizeImportHeader(cell))));
+  const headerRowIndex = rows.findIndex(row => findImportColumnIndex(row, companyImportColumnMap.companyName) !== -1);
   if (headerRowIndex === -1) return [];
 
   const headerRow = rows[headerRowIndex];
-  const companyColumnIndex = headerRow.findIndex(cell => companyImportColumnNames.has(normalizeImportHeader(cell)));
+  const columnIndexes = Object.fromEntries(
+    Object.entries(companyImportColumnMap).map(([field, aliases]) => [field, findImportColumnIndex(headerRow, aliases)]),
+  );
 
   return rows
     .slice(headerRowIndex + 1)
     .map(row => ({
-      companyName: String(row[companyColumnIndex] || "").trim(),
+      companyName: importCellValue(row, columnIndexes.companyName),
+      domain: importCellValue(row, columnIndexes.domain),
+      industry: importCellValue(row, columnIndexes.industry),
+      location: importCellValue(row, columnIndexes.location),
+      employees: importCellValue(row, columnIndexes.employees),
+      value: importCellValue(row, columnIndexes.value),
+      stage: importCellValue(row, columnIndexes.stage),
+      status: importCellValue(row, columnIndexes.status),
+      nextAction: importCellValue(row, columnIndexes.nextAction),
+      insight: importCellValue(row, columnIndexes.insight),
       sourceFile,
       sourceSheet,
     }))
@@ -5990,8 +7153,8 @@ function extractContactImportRowsFromSheet(rows, sourceFile, sourceSheet = "") {
       account: String(row[accountColumnIndex] || "").trim(),
       role: roleColumnIndex === -1 ? "" : String(row[roleColumnIndex] || "").trim(),
       email: emailColumnIndex === -1 ? "" : normalizeEmail(row[emailColumnIndex]),
-      mobile: mobileColumnIndex === -1 ? "" : String(row[mobileColumnIndex] || "").trim(),
-      directDial: directDialColumnIndex === -1 ? "" : String(row[directDialColumnIndex] || "").trim(),
+      mobile: mobileColumnIndex === -1 ? "" : normalizePhoneFieldValue(row[mobileColumnIndex]),
+      directDial: directDialColumnIndex === -1 ? "" : normalizePhoneFieldValue(row[directDialColumnIndex]),
       sourceFile,
       sourceSheet,
     }))
@@ -6127,6 +7290,131 @@ function exportCognismResults(results, format, assignedUsers = [], requestedFile
     "text/csv;charset=utf-8",
     [header, ...rows].join("\n"),
   );
+}
+
+function parseLockerLeadNoteValue(notes = "", label = "") {
+  const prefix = `${label}:`;
+  return String(notes || "")
+    .split(/\r?\n/)
+    .find(line => line.startsWith(prefix))
+    ?.slice(prefix.length)
+    .trim() || "";
+}
+
+function isLockerFinderLead(lead = {}) {
+  const notes = String(lead.notes || "");
+  return lead.dataSource === "google_places_location"
+    || lead.sourceNote === "Saved from Locker Finder"
+    || Boolean(lead.googlePlaceId)
+    || notes.includes("Google Place ID:")
+    || notes.includes("Host fit score:")
+    || notes.includes("Postcode/Eircode:");
+}
+
+function isLockerFinderList(list = {}) {
+  return list.filters?.source === "locker_finder"
+    || /locker/i.test(list.name || "")
+    || (list.leads || []).some(isLockerFinderLead);
+}
+
+const lockerFinderExportColumns = [
+  ["company", "Location name"],
+  ["jobTitle", "Industry"],
+  ["location", "Address"],
+  ["postcode", "Postcode / Eircode"],
+  ["manualDirectDial", "Phone"],
+  ["website", "Website"],
+  ["hours", "Hours"],
+  ["googlePlaceId", "Google Place ID"],
+  ["lat", "Latitude"],
+  ["lng", "Longitude"],
+  ["hostFitScore", "Host fit score"],
+  ["notes", "Notes"],
+];
+
+function lockerFinderExportRows(leads = []) {
+  return leads.map(lead => {
+    const notes = lead.notes || "";
+    return {
+      ...lead,
+      postcode: lead.postcode || parseLockerLeadNoteValue(notes, "Postcode/Eircode"),
+      website: lead.website || parseLockerLeadNoteValue(notes, "Website"),
+      hours: parseLockerLeadNoteValue(notes, "Hours"),
+      hostFitScore: parseLockerLeadNoteValue(notes, "Host fit score"),
+    };
+  });
+}
+
+function exportLockerFinderListCsv(list = {}, leads = [], requestedFilename = "") {
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const filename = sanitizeExportFilename(requestedFilename, `${list.name || "locker-finder-list"}-${timestamp}`, "csv");
+  const rows = lockerFinderExportRows(leads);
+  const titleRows = [
+    ["PaceOpsIQ - Locker Finder List"],
+    [`List: ${list.name || "Locker Finder"}`],
+    [`Exported: ${timestamp}`],
+    [],
+  ].map(row => row.map(csvEscape).join(","));
+  const header = lockerFinderExportColumns.map(([, label]) => csvEscape(label)).join(",");
+  const csvRows = rows.map(row => lockerFinderExportColumns.map(([key]) => csvEscape(row[key])).join(","));
+  downloadTextFile(filename, "text/csv;charset=utf-8", [...titleRows, header, ...csvRows].join("\n"));
+}
+
+function exportLockerFinderListExcel(list = {}, leads = [], requestedFilename = "") {
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const filename = sanitizeExportFilename(requestedFilename, `${list.name || "locker-finder-list"}-${timestamp}`, "xls");
+  const rows = lockerFinderExportRows(leads);
+  const escapeHtml = value => String(exportCellValue(value))
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+  const titleRows = [
+    ["PaceOpsIQ - Locker Finder List"],
+    [`List: ${list.name || "Locker Finder"}`],
+    [`Exported: ${timestamp}`],
+    [],
+  ].map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("");
+  const header = `<tr>${lockerFinderExportColumns.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join("")}</tr>`;
+  const body = rows.map(row => (
+    `<tr>${lockerFinderExportColumns.map(([key]) => `<td>${escapeHtml(row[key])}</td>`).join("")}</tr>`
+  )).join("");
+  downloadTextFile(filename, "application/vnd.ms-excel;charset=utf-8", `<table><tbody>${titleRows}${header}${body}</tbody></table>`);
+}
+
+function exportLockerFinderLocations(locations = [], format = "csv", requestedFilename = "") {
+  const leads = (locations || []).filter(Boolean).map(lockerLocationToLead);
+  if (format === "xls") {
+    exportLockerFinderListExcel({ name: "Locker Finder Selected Locations" }, leads, requestedFilename);
+    return;
+  }
+  exportLockerFinderListCsv({ name: "Locker Finder Selected Locations" }, leads, requestedFilename);
+}
+
+const companyExportColumns = [
+  ["name", "Company"],
+  ["domain", "Domain"],
+  ["industry", "Industry"],
+  ["location", "Location"],
+  ["employees", "Employees"],
+  ["stage", "Stage"],
+  ["status", "Status"],
+  ["value", "Pipeline value"],
+  ["owner", "Owner"],
+  ["lastActivity", "Last activity"],
+  ["nextAction", "Next action"],
+  ["insight", "Insight"],
+];
+
+function defaultCsvFilename(base) {
+  const timestamp = new Date().toISOString().slice(0, 10);
+  return sanitizeExportFilename(`${base || "export"}-${timestamp}`, "export", "csv");
+}
+
+function exportCompaniesCsv(companies, requestedFilename = "") {
+  const filename = sanitizeExportFilename(requestedFilename, defaultCsvFilename("companies"), "csv");
+  const header = companyExportColumns.map(([, label]) => csvEscape(label)).join(",");
+  const rows = companies.map(company => companyExportColumns.map(([key]) => csvEscape(company[key])).join(","));
+  downloadTextFile(filename, "text/csv;charset=utf-8", [header, ...rows].join("\n"));
 }
 
 function userNamesForIds(userIds, workspaceUsers) {
@@ -6371,6 +7659,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
   const selectedCampaigns = campaigns.filter(campaign => contactListCampaignIds.includes(campaign.id));
   const selectedCampaignUserIds = selectedCampaigns.flatMap(campaign => Array.isArray(campaign.memberIds) ? campaign.memberIds : []);
   const contactListEffectiveAssignedUserIds = [...new Set([...contactListAssignedUserIds, ...selectedCampaignUserIds].filter(Boolean))];
+  const exportableContacts = selectedContacts.length ? selectedContacts : filteredLeadLookupResults;
 
   function getLookupDraft(contact) {
     return leadLookupDrafts[contact.id] || contact;
@@ -6415,8 +7704,8 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       location: normalizeLookupValue(contact.location),
       linkedinProfileUrl: normalizeLinkedinUrl(contact.linkedinProfileUrl),
       manualEmail: normalizeEmail(contact.manualEmail),
-      manualMobile: normalizeLookupValue(contact.manualMobile),
-      manualDirectDial: normalizeLookupValue(contact.manualDirectDial),
+      manualMobile: normalizePhoneFieldValue(contact.manualMobile),
+      manualDirectDial: normalizePhoneFieldValue(contact.manualDirectDial),
       notes: normalizeLookupValue(contact.notes),
       dataSource: contact.dataSource || "manual",
       sourceNote: contact.sourceNote || "Saved from Contacts",
@@ -6436,6 +7725,12 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
     setContactListStatus("idle");
     setContactListError("");
     setSaveListOpen(true);
+  }
+
+  function exportContactsCsv() {
+    if (!exportableContacts.length) return;
+    const base = selectedContacts.length ? "selected-contacts" : "matching-contacts";
+    exportCognismResults(exportableContacts.map(contactToLead), "csv", [], defaultLeadExportFilename(base, "csv"));
   }
 
   async function saveSelectedContactsAsList() {
@@ -6528,6 +7823,10 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
         title="Contacts"
         description="Search, filter, copy, and open saved contacts from a spreadsheet-style CRM contact list."
       >
+        <button className="secondary-button" type="button" onClick={exportContactsCsv} disabled={!exportableContacts.length}>
+          <FileText size={16} />
+          {selectedContacts.length ? "Export selected CSV" : "Export matching CSV"}
+        </button>
         <button className="primary-button" type="button" onClick={openContactListSave} disabled={!selectedContacts.length}>
           <ListFilter size={16} />
           Save lead list
@@ -6932,6 +8231,11 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
   const selectedLeadEntries = displayedLeadEntries.filter(({ leadId }) => selectedLeadIds.includes(leadId));
   const selectedLeads = selectedLeadEntries.map(({ lead }) => lead);
   const exportableListLeads = selectedLeads.length ? selectedLeads : displayedLeads;
+  const selectedListLooksLocker = selectedList ? isLockerFinderList(selectedList) : false;
+  const lockerFinderExportSourceLeads = selectedLeads.length ? selectedLeads : displayedLeads;
+  const lockerFinderExportLeads = selectedListLooksLocker
+    ? lockerFinderExportSourceLeads
+    : lockerFinderExportSourceLeads.filter(isLockerFinderLead);
   const exportScopeText = selectedLeads.length ? `${selectedLeads.length} selected` : "All visible";
   const accessUserIds = selectedList ? (accessDrafts[selectedList.id] || selectedList.assignedUserIds || []) : [];
   const selectedListNameDraft = selectedList ? (listNameDrafts[selectedList.id] ?? selectedList.name) : "";
@@ -6987,6 +8291,11 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
       confirmLabel: "Export",
       onConfirm: filename => exportCognismResults(exportableListLeads, format, assignedUsers, filename),
     });
+  }
+
+  function exportLockerFinderCsv() {
+    if (!selectedList || !lockerFinderExportLeads.length) return;
+    exportLockerFinderListCsv(selectedList, lockerFinderExportLeads);
   }
 
   function requestListHubSpotExport() {
@@ -7453,6 +8762,10 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                   <button className="secondary-button" type="button" onClick={() => requestListExport("csv")} disabled={!exportableListLeads.length}>
                     <FileText size={16} />
                     {selectedLeads.length ? "Export selected CSV" : "Export CSV"}
+                  </button>
+                  <button className="secondary-button" type="button" onClick={exportLockerFinderCsv} disabled={!lockerFinderExportLeads.length}>
+                    <Download size={16} />
+                    {selectedLeads.length ? "Export selected locker CSV" : "Export locker CSV"}
                   </button>
                   <button className="secondary-button" type="button" onClick={() => requestListExport("xls")} disabled={!exportableListLeads.length}>
                     <FileText size={16} />
@@ -8635,7 +9948,13 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     for (const lead of leads) {
       const validationError = validateLeadManualFields(lead);
       if (validationError) {
-        setError(validationError);
+        const leadLabel = describeLeadForValidation(lead);
+        const invalidValue = validationError.startsWith("Manual mobile")
+          ? normalizeLookupValue(lead.manualMobile)
+          : validationError.startsWith("Manual direct dial")
+            ? normalizeLookupValue(lead.manualDirectDial)
+            : "";
+        setError(invalidValue ? `${validationError} ${leadLabel} has "${invalidValue}".` : `${validationError} Check ${leadLabel}.`);
         return false;
       }
       const conflicts = findPotentialContactConflicts(lead, contactDatabase);
@@ -9805,6 +11124,713 @@ const integrationCredentialForms = [
   },
 ];
 
+const lockerFinderIndustries = [
+  { id: "convenience_store", label: "Convenience stores", weight: 96 },
+  { id: "gas_station", label: "Petrol stations", weight: 94 },
+  { id: "supermarket", label: "Supermarkets", weight: 86 },
+  { id: "train_station", label: "Train stations", weight: 84 },
+  { id: "parking", label: "Car parks", weight: 78 },
+  { id: "shopping_mall", label: "Retail parks", weight: 76 },
+  { id: "store", label: "Retail stores", weight: 70 },
+  { id: "bar", label: "Pubs", weight: 66 },
+];
+
+const lockerFinderSeedLocations = [
+  {
+    id: "demo-london-01",
+    name: "Crescent Convenience",
+    industry: "Convenience stores",
+    placeType: "convenience_store",
+    address: "182 Camden Road, London",
+    city: "London",
+    country: "United Kingdom",
+    postcode: "NW1 9HG",
+    phone: "+44 20 7946 0142",
+    website: "https://example.com/crescent-convenience",
+    lat: 51.5429,
+    lng: -0.1398,
+    hours: "Open 06:00-23:00",
+    photo: "https://images.unsplash.com/photo-1604719312566-8912e9227c6a?auto=format&fit=crop&w=640&q=80",
+    score: 94,
+    footfall: "High",
+    access: "Street-facing frontage",
+    fit: "Strong outdoor candidate near dense residential streets.",
+  },
+  {
+    id: "demo-london-02",
+    name: "Mile End Service Station",
+    industry: "Petrol stations",
+    placeType: "gas_station",
+    address: "A11 Mile End Road, London",
+    city: "London",
+    country: "United Kingdom",
+    postcode: "E1 4UJ",
+    phone: "+44 20 7946 0228",
+    website: "https://example.com/mile-end-service-station",
+    lat: 51.5217,
+    lng: -0.0447,
+    hours: "Open 24 hours",
+    photo: "https://images.unsplash.com/photo-1545558014-8692077e9b5c?auto=format&fit=crop&w=640&q=80",
+    score: 91,
+    footfall: "Very high",
+    access: "Forecourt access",
+    fit: "24/7 forecourt profile fits Quadient-style locker hosting.",
+  },
+  {
+    id: "demo-london-03",
+    name: "Southbank Market Local",
+    industry: "Supermarkets",
+    placeType: "supermarket",
+    address: "88 Stamford Street, London",
+    city: "London",
+    country: "United Kingdom",
+    postcode: "SE1 9LX",
+    phone: "+44 20 7946 0339",
+    website: "https://example.com/southbank-market-local",
+    lat: 51.5067,
+    lng: -0.1061,
+    hours: "Open 07:00-22:00",
+    photo: "https://images.unsplash.com/photo-1578916171728-46686eac8d58?auto=format&fit=crop&w=640&q=80",
+    score: 86,
+    footfall: "High",
+    access: "Retail frontage",
+    fit: "Good commuter and residential mix, confirm exterior space.",
+  },
+  {
+    id: "demo-london-04",
+    name: "Kings Cross Station Retail",
+    industry: "Train stations",
+    placeType: "train_station",
+    address: "Euston Road, London",
+    city: "London",
+    country: "United Kingdom",
+    postcode: "N1C 4TB",
+    phone: "+44 20 7946 0441",
+    website: "https://example.com/kings-cross-retail",
+    lat: 51.532,
+    lng: -0.1233,
+    hours: "Open 05:00-01:00",
+    photo: "https://images.unsplash.com/photo-1517732306149-e8f829eb588a?auto=format&fit=crop&w=640&q=80",
+    score: 82,
+    footfall: "Very high",
+    access: "Transport hub",
+    fit: "Excellent density; likely requires estate or operator approval.",
+  },
+  {
+    id: "demo-dublin-01",
+    name: "Docklands Express",
+    industry: "Convenience stores",
+    placeType: "convenience_store",
+    address: "North Wall Quay, Dublin",
+    city: "Dublin",
+    country: "Ireland",
+    postcode: "D01 F5P2",
+    phone: "+353 1 555 0140",
+    website: "https://example.ie/docklands-express",
+    lat: 53.3482,
+    lng: -6.2385,
+    hours: "Open 07:00-23:00",
+    photo: "https://images.unsplash.com/photo-1534723452862-4c874018d66d?auto=format&fit=crop&w=640&q=80",
+    score: 89,
+    footfall: "High",
+    access: "Street-facing frontage",
+    fit: "Useful dense office and apartment catchment; validate loading access.",
+  },
+];
+
+function lockerProspectKey(location) {
+  return location.placeId || location.id || `${location.name}-${location.postcode}`;
+}
+
+function industryLabelForType(type) {
+  return lockerFinderIndustries.find(industry => industry.id === type)?.label || titleCase(type || "Retail");
+}
+
+function lockerHostFit(location = {}) {
+  const score = Number(location.score || 0);
+  if (score >= 90) return { label: "High priority", tone: "success", reason: "Strong host category" };
+  if (score >= 80) return { label: "Good prospect", tone: "accent", reason: "Worth calling" };
+  if (score >= 70) return { label: "Review", tone: "warning", reason: "Check space and access" };
+  return { label: "Low signal", tone: "neutral", reason: "Needs manual review" };
+}
+
+function googleEarthCoordinateUrl(location = {}) {
+  const lat = Number(location.lat);
+  const lng = Number(location.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return "";
+  return `https://earth.google.com/web/search/${encodeURIComponent(`${lat.toFixed(6)},${lng.toFixed(6)}`)}`;
+}
+
+function lockerLocationToLead(location = {}) {
+  const website = normalizeLookupValue(location.website);
+  const phone = normalizeLookupValue(location.phone);
+  const postcode = normalizeLookupValue(location.postcode || location.eircode);
+  const address = [location.address, postcode].map(normalizeLookupValue).filter(Boolean).join(", ");
+  return {
+    contactName: "",
+    company: normalizeLookupValue(location.name) || "Unnamed location",
+    jobTitle: normalizeLookupValue(location.industry || industryLabelForType(location.placeType)) || "Locker host prospect",
+    location: address || [location.city, location.country].map(normalizeLookupValue).filter(Boolean).join(", "),
+    linkedinProfileUrl: "",
+    manualEmail: "",
+    manualMobile: "",
+    manualDirectDial: phone,
+    notes: [
+      website ? `Website: ${website}` : "",
+      location.googleMapsUri ? `Google Maps: ${location.googleMapsUri}` : "",
+      location.placeId ? `Google Place ID: ${location.placeId}` : "",
+      location.hours ? `Hours: ${location.hours}` : "",
+      `Industry: ${location.industry || industryLabelForType(location.placeType)}`,
+      postcode ? `Postcode/Eircode: ${postcode}` : "",
+      Number.isFinite(Number(location.lat)) && Number.isFinite(Number(location.lng)) ? `Coordinates: ${location.lat}, ${location.lng}` : "",
+      Number(location.score) ? `Host fit score: ${location.score}` : "",
+    ].filter(Boolean).join("\n"),
+    dataSource: "google_places_location",
+    sourceNote: "Saved from Locker Finder",
+    googlePlaceId: location.placeId || "",
+    website,
+    placeType: location.placeType || "",
+    industry: location.industry || "",
+    postcode,
+    lat: location.lat,
+    lng: location.lng,
+  };
+}
+
+function createLockerSearchResults({ city, country, postcode, selectedTypes }) {
+  const cityQuery = String(city || "").trim().toLowerCase();
+  const countryQuery = String(country || "").trim().toLowerCase();
+  const postcodeQuery = String(postcode || "").trim().toLowerCase();
+  const selectedTypeSet = new Set(selectedTypes);
+  const matchingSeeds = lockerFinderSeedLocations.filter(location => {
+    const cityMatches = !cityQuery || location.city.toLowerCase().includes(cityQuery) || cityQuery.includes(location.city.toLowerCase());
+    const countryMatches = !countryQuery || location.country.toLowerCase().includes(countryQuery) || countryQuery.includes("uk") || countryQuery.includes("ireland");
+    const postcodeMatches = !postcodeQuery || location.postcode.toLowerCase().startsWith(postcodeQuery.slice(0, 3));
+    const typeMatches = !selectedTypeSet.size || selectedTypeSet.has(location.placeType);
+    return cityMatches && countryMatches && postcodeMatches && typeMatches;
+  });
+  const seeds = matchingSeeds.length ? matchingSeeds : lockerFinderSeedLocations.filter(location => !selectedTypeSet.size || selectedTypeSet.has(location.placeType));
+  return seeds.map((location, index) => ({
+    ...location,
+    placeId: `mock-${location.id}`,
+    distance: `${(0.4 + index * 0.7).toFixed(1)} mi`,
+    source: "Demo data",
+    status: "New prospect",
+  }));
+}
+
+function LockerMap({ locations = [], activeLocationId = "", selectedLocationIds = [], savedKeys = new Set(), onSelectLocation, onToggleLocation }) {
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const markerLayerRef = useRef(null);
+  const lastBoundsSignatureRef = useRef("");
+  const selectedLocationSet = useMemo(() => new Set(selectedLocationIds), [selectedLocationIds]);
+  const locationsSignature = useMemo(() => locations
+    .map(location => `${location.id}:${location.lat}:${location.lng}`)
+    .join("|"), [locations]);
+  const savedKeySignature = useMemo(() => [...savedKeys].sort().join("|"), [savedKeys]);
+
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) return;
+    mapRef.current = L.map(mapContainerRef.current, {
+      zoomControl: true,
+      scrollWheelZoom: true,
+      attributionControl: true,
+    }).setView([51.5074, -0.1278], 12);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(mapRef.current);
+    markerLayerRef.current = L.layerGroup().addTo(mapRef.current);
+
+    return () => {
+      mapRef.current?.remove();
+      mapRef.current = null;
+      markerLayerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    window.setTimeout(() => mapRef.current?.invalidateSize(), 0);
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current || !markerLayerRef.current) return;
+    markerLayerRef.current.clearLayers();
+    const validLocations = locations.filter(location => Number.isFinite(Number(location.lat)) && Number.isFinite(Number(location.lng)));
+    const bounds = [];
+
+    validLocations.forEach(location => {
+      const latLng = [Number(location.lat), Number(location.lng)];
+      bounds.push(latLng);
+      const isActive = location.id === activeLocationId;
+      const isSelected = selectedLocationSet.has(location.id);
+      const isSaved = savedKeys.has(lockerProspectKey(location));
+      const marker = L.marker(latLng, {
+        icon: L.divIcon({
+          className: "",
+          html: `<span class="locker-leaflet-marker ${isActive ? "active" : ""} ${isSelected ? "selected" : ""} ${isSaved ? "saved" : ""}"><span>${Number(location.score || 0) || ""}</span></span>`,
+          iconSize: [38, 46],
+          iconAnchor: [19, 42],
+        }),
+        title: location.name,
+      });
+      marker.on("click", () => {
+        onSelectLocation?.(location.id);
+        onToggleLocation?.(location.id);
+      });
+      marker.bindPopup(`<strong>${location.name || "Location"}</strong><br>${location.postcode || location.address || ""}`);
+      marker.addTo(markerLayerRef.current);
+    });
+
+    if (locationsSignature !== lastBoundsSignatureRef.current) {
+      lastBoundsSignatureRef.current = locationsSignature;
+      if (bounds.length > 1) {
+        mapRef.current.fitBounds(bounds, { padding: [32, 32], maxZoom: 14 });
+      } else if (bounds.length === 1) {
+        mapRef.current.setView(bounds[0], 14);
+      }
+    }
+  }, [activeLocationId, locations, locationsSignature, onSelectLocation, onToggleLocation, savedKeySignature, savedKeys, selectedLocationSet]);
+
+  return (
+    <div className="locker-map-canvas">
+      <div ref={mapContainerRef} className="locker-real-map" />
+    </div>
+  );
+}
+
+function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppendToLeadList, onOpenLeadLists }) {
+  const [searchValues, setSearchValues] = useState({
+    city: "London",
+    country: "United Kingdom",
+    postcode: "",
+    customIndustry: "",
+  });
+  const [selectedTypes, setSelectedTypes] = useState(["convenience_store", "gas_station", "supermarket", "train_station"]);
+  const [results, setResults] = useState(() => createLockerSearchResults({
+    city: "London",
+    country: "United Kingdom",
+    postcode: "",
+    selectedTypes: ["convenience_store", "gas_station", "supermarket", "train_station"],
+  }));
+  const [activeLocationId, setActiveLocationId] = useState(results[0]?.id || "");
+  const [searchStatus, setSearchStatus] = useState("demo");
+  const [searchError, setSearchError] = useState("");
+  const [resultSource, setResultSource] = useState("Demo data");
+  const autoSearchStartedRef = useRef(false);
+  const [targetLeadListId, setTargetLeadListId] = useState("");
+  const [createLeadListMode, setCreateLeadListMode] = useState(false);
+  const [newLeadListName, setNewLeadListName] = useState("");
+  const [selectedLocationIds, setSelectedLocationIds] = useState([]);
+  const [lockerExportFormat, setLockerExportFormat] = useState("csv");
+  const [copiedCoordinateKey, setCopiedCoordinateKey] = useState("");
+  const [leadListSaveStatus, setLeadListSaveStatus] = useState("idle");
+  const [leadListSaveError, setLeadListSaveError] = useState("");
+  const activeLocation = results.find(location => location.id === activeLocationId) || results[0] || null;
+  const selectedLocations = results.filter(location => selectedLocationIds.includes(location.id));
+  const savedPlaceIds = useMemo(() => new Set((leadLists || [])
+    .flatMap(list => list.leads || [])
+    .map(lead => lead.googlePlaceId)
+    .filter(Boolean)), [leadLists]);
+  const savedKeys = useMemo(() => new Set(results
+    .filter(location => savedPlaceIds.has(location.placeId))
+    .map(lockerProspectKey)), [results, savedPlaceIds]);
+  const filteredProspectCount = results.length;
+  const averageScore = filteredProspectCount
+    ? Math.round(results.reduce((sum, location) => sum + Number(location.score || 0), 0) / filteredProspectCount)
+    : 0;
+  const hasSearchCategory = selectedTypes.length > 0 || String(searchValues.customIndustry || "").trim().length > 0;
+
+  const executeSearch = useCallback(async (values = searchValues, types = selectedTypes, { silent = false } = {}) => {
+    setSearchStatus("searching");
+    setSearchError("");
+    const customIndustryQueries = String(values.customIndustry || "")
+      .split(",")
+      .map(value => value.trim())
+      .filter(Boolean);
+    if (!types.length && !customIndustryQueries.length) {
+      setResults([]);
+      setActiveLocationId("");
+      setResultSource("No category selected");
+      setSearchStatus("idle");
+      setSearchError(silent ? "" : "Choose at least one industry filter or enter a custom industry.");
+      return;
+    }
+    try {
+      const response = await fetch("/api/google-places/search", {
+        method: "POST",
+        headers: await buildApiHeaders(),
+        body: JSON.stringify({
+          city: values.city,
+          country: values.country,
+          postcode: values.postcode,
+          placeTypes: types,
+          customIndustryQueries,
+        }),
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || "Google Places search failed.");
+      const nextResults = Array.isArray(payload.places) ? payload.places : [];
+      setResults(nextResults);
+      setActiveLocationId(nextResults[0]?.id || "");
+      setSelectedLocationIds([]);
+      setResultSource("Google Places");
+      setSearchStatus("ready");
+    } catch (error) {
+      const nextResults = createLockerSearchResults({ ...values, selectedTypes: types });
+      setResults(nextResults);
+      setActiveLocationId(nextResults[0]?.id || "");
+      setSelectedLocationIds([]);
+      setResultSource("Demo data");
+      setSearchError(silent ? "" : error?.message || "Google Places is not connected yet.");
+      setSearchStatus("demo");
+    }
+  }, [searchValues, selectedTypes]);
+
+  useEffect(() => {
+    if (autoSearchStartedRef.current) return;
+    autoSearchStartedRef.current = true;
+    executeSearch(searchValues, selectedTypes, { silent: true });
+  }, [executeSearch, searchValues, selectedTypes]);
+
+  async function runSearch(event) {
+    event.preventDefault();
+    await executeSearch(searchValues, selectedTypes);
+  }
+
+  function toggleType(type) {
+    setSelectedTypes(current => current.includes(type)
+      ? current.filter(item => item !== type)
+      : [...current, type]);
+  }
+
+  const toggleLocationSelection = useCallback((locationId) => {
+    setSelectedLocationIds(current => current.includes(locationId)
+      ? current.filter(id => id !== locationId)
+      : [...current, locationId]);
+  }, []);
+
+  async function saveLocationsToLeadList(locations) {
+    const cleanLocations = (locations || []).filter(Boolean);
+    if (!cleanLocations.length) return;
+    const leads = cleanLocations.map(lockerLocationToLead);
+    const existingList = leadLists.find(list => list.id === targetLeadListId) || null;
+    const listName = normalizeLookupValue(newLeadListName);
+    if (cleanLocations.length === 1 && !existingList) {
+      setLeadListSaveError("Choose an existing lead list before saving one location.");
+      return;
+    }
+    if (!existingList && !createLeadListMode) {
+      setLeadListSaveError("Choose the lead list to add these locations to, or click New list and enter a name.");
+      return;
+    }
+    if (createLeadListMode && !listName) {
+      setLeadListSaveError("Enter a lead list name before creating a new list.");
+      return;
+    }
+    setLeadListSaveStatus("saving");
+    setLeadListSaveError("");
+    try {
+      if (existingList) {
+        await onAppendToLeadList({ leadList: existingList, leads });
+      } else {
+        await onSaveLeadList({
+          name: listName,
+          assignedUserIds: [],
+          leads,
+          filters: {
+            source: "locker_finder",
+            city: searchValues.city,
+            country: searchValues.country,
+            postcode: searchValues.postcode,
+            customIndustry: searchValues.customIndustry,
+            placeTypes: selectedTypes,
+            clientId: activeClient?.id !== "none" ? activeClient?.id || "" : "",
+          },
+        });
+        setNewLeadListName("");
+      }
+      setSelectedLocationIds([]);
+      setLeadListSaveStatus("saved");
+      window.setTimeout(() => setLeadListSaveStatus("idle"), 2500);
+    } catch (error) {
+      setLeadListSaveStatus("idle");
+      setLeadListSaveError(error?.message || "Could not save locations to lead list.");
+    }
+  }
+
+  function exportSelectedLocationsCsv() {
+    if (!selectedLocations.length) return;
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const extension = lockerExportFormat === "xls" ? "xls" : "csv";
+    const citySlug = sanitizeExportFilename(searchValues.city || "locker-finder", "locker-finder", extension).replace(/\.(csv|xls)$/i, "");
+    exportLockerFinderLocations(selectedLocations, lockerExportFormat, `${citySlug}-selected-locker-locations-${timestamp}.${extension}`);
+  }
+
+  async function copyCoordinate(key, value) {
+    const copyValue = Number.isFinite(Number(value)) ? Number(value).toFixed(6) : "";
+    if (!copyValue) return;
+    try {
+      await navigator.clipboard?.writeText(copyValue);
+      setCopiedCoordinateKey(key);
+      window.setTimeout(() => setCopiedCoordinateKey(""), 1200);
+    } catch {
+      setCopiedCoordinateKey("");
+    }
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Locker Finder"
+        title="Parcel locker location scout"
+        description="Find convenience-led host locations for Quadient Parcel Pending outreach, then save the strongest places to a call list."
+      >
+        <StatusBadge tone={resultSource === "Google Places" ? "success" : "neutral"}>
+          {resultSource === "Google Places" ? "Google Places live" : "Demo mode"}
+        </StatusBadge>
+      </PageHeader>
+
+      <section className="locker-hero">
+        <div>
+          <span className="locker-hero-icon"><Earth size={24} /></span>
+          <div>
+            <h2>Map-led host discovery</h2>
+            <p>Search target cities, segment by host industry, inspect place data, and save call-ready prospects with postcode or eircode included.</p>
+          </div>
+        </div>
+        <div className="locker-hero-stats">
+          <span><strong>{filteredProspectCount}</strong><small>Map results</small></span>
+          <span><strong>{averageScore}</strong><small>Avg host fit</small></span>
+          <span><strong>{savedPlaceIds.size}</strong><small>In lead lists</small></span>
+        </div>
+      </section>
+
+      <form className="locker-search-panel" onSubmit={runSearch}>
+        <label>
+          <span>City</span>
+          <input value={searchValues.city} onChange={event => setSearchValues(current => ({ ...current, city: event.target.value }))} placeholder="London" />
+        </label>
+        <label>
+          <span>Country</span>
+          <input value={searchValues.country} onChange={event => setSearchValues(current => ({ ...current, country: event.target.value }))} placeholder="United Kingdom" />
+        </label>
+        <label>
+          <span>Postcode / Eircode area</span>
+          <input value={searchValues.postcode} onChange={event => setSearchValues(current => ({ ...current, postcode: event.target.value }))} placeholder="NW1, SE1, D01" />
+        </label>
+        <label>
+          <span>Custom industry / location type</span>
+          <input value={searchValues.customIndustry} onChange={event => setSearchValues(current => ({ ...current, customIndustry: event.target.value }))} placeholder="Gyms, laundrettes, universities" />
+        </label>
+        <button className="primary-button" type="submit" disabled={!hasSearchCategory || searchStatus === "searching"}>
+          {searchStatus === "searching" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Search size={16} />}
+          {searchStatus === "searching" ? "Searching" : "Search places"}
+        </button>
+      </form>
+      {searchError ? (
+        <div className="locker-api-note">
+          <strong>{hasSearchCategory ? "Search notice." : "Choose a category."}</strong>
+          <span>{searchError}</span>
+        </div>
+      ) : null}
+
+      <div className="locker-type-strip" aria-label="Host industry filters">
+        {lockerFinderIndustries.map(industry => (
+          <button
+            key={industry.id}
+            className={selectedTypes.includes(industry.id) ? "active" : ""}
+            type="button"
+            onClick={() => toggleType(industry.id)}
+          >
+            {industry.label}
+          </button>
+        ))}
+      </div>
+
+      <section className="locker-list-target-panel">
+        <div>
+          <label>
+            <span>Save to lead list</span>
+            <select value={targetLeadListId} onChange={event => setTargetLeadListId(event.target.value)} disabled={createLeadListMode}>
+              <option value="">Choose lead list</option>
+              {leadLists.map(list => <option key={list.id} value={list.id}>{list.name}</option>)}
+            </select>
+          </label>
+          {createLeadListMode ? (
+            <label>
+              <span>New list name</span>
+              <input value={newLeadListName} onChange={event => setNewLeadListName(event.target.value)} placeholder="Enter lead list name" />
+            </label>
+          ) : null}
+        </div>
+        <div className="locker-list-target-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => {
+              setCreateLeadListMode(value => !value);
+              setTargetLeadListId("");
+              setLeadListSaveError("");
+            }}
+          >
+            <Plus size={16} />
+            {createLeadListMode ? "Use existing list" : "New list"}
+          </button>
+          <button className="secondary-button" type="button" onClick={onOpenLeadLists}>
+            <ListFilter size={16} />
+            Open Lead Lists
+          </button>
+        </div>
+      </section>
+      {leadListSaveError ? (
+        <div className="form-error">{leadListSaveError}</div>
+      ) : leadListSaveStatus === "saved" ? (
+        <div className="form-success">Saved to Lead Lists.</div>
+      ) : null}
+
+      <div className="locker-workspace">
+        <section className="locker-map-panel" aria-label="Candidate map">
+          <div className="locker-map-toolbar">
+            <div>
+              <strong>{searchValues.city || "Target city"}</strong>
+              <span>{searchValues.country || "Country"} candidate map</span>
+              <small>{resultSource}</small>
+            </div>
+            <button className="secondary-button" type="button" onClick={() => setSelectedLocationIds(results.map(location => location.id))} disabled={!results.length}>
+              Select all
+            </button>
+            <button className="secondary-button" type="button" onClick={() => setSelectedLocationIds([])} disabled={!selectedLocationIds.length}>
+              Clear
+            </button>
+            <button className="secondary-button" type="button" onClick={() => saveLocationsToLeadList(selectedLocations)} disabled={!selectedLocations.length || leadListSaveStatus === "saving"}>
+              <CheckCircle2 size={16} />
+              Save selected ({selectedLocations.length})
+            </button>
+            <button className="secondary-button" type="button" onClick={() => saveLocationsToLeadList(results)} disabled={!results.length || leadListSaveStatus === "saving"}>
+              <CheckCircle2 size={16} />
+              {leadListSaveStatus === "saving" ? "Saving" : "Save all to list"}
+            </button>
+            <label className="locker-export-format">
+              <span>Export</span>
+              <select value={lockerExportFormat} onChange={event => setLockerExportFormat(event.target.value)}>
+                <option value="csv">CSV</option>
+                <option value="xls">Excel</option>
+              </select>
+            </label>
+            <button className="secondary-button locker-export-button" type="button" onClick={exportSelectedLocationsCsv} disabled={!selectedLocations.length}>
+              <Download size={16} />
+              Export saved list
+            </button>
+          </div>
+          <LockerMap
+            locations={results}
+            activeLocationId={activeLocation?.id || ""}
+            selectedLocationIds={selectedLocationIds}
+            savedKeys={savedKeys}
+            onSelectLocation={setActiveLocationId}
+            onToggleLocation={toggleLocationSelection}
+          />
+          {!results.length ? (
+            <div className="locker-map-empty">
+              <strong>No location category selected</strong>
+              <span>Pick an industry filter or type a custom location type, then search again.</span>
+            </div>
+          ) : null}
+        </section>
+
+        <aside className="locker-detail-panel">
+          {activeLocation ? (
+            <>
+              {activeLocation.photo ? (
+                <img src={activeLocation.photo} alt="" />
+              ) : (
+                <div className="locker-photo-placeholder">
+                  <Building2 size={26} />
+                </div>
+              )}
+              <div className="locker-detail-content">
+                <div className="locker-detail-heading">
+                  <div>
+                    <span className="eyebrow">{activeLocation.industry}</span>
+                    <h2>{activeLocation.name}</h2>
+                    <p>{activeLocation.address}, {activeLocation.postcode}</p>
+                  </div>
+                </div>
+                <div className={`locker-host-fit ${lockerHostFit(activeLocation).tone}`}>
+                  <div>
+                    <span>Host Fit</span>
+                    <strong>{lockerHostFit(activeLocation).label}</strong>
+                    <small>{lockerHostFit(activeLocation).reason}</small>
+                  </div>
+                  <b>{activeLocation.score || "-"}</b>
+                </div>
+                <dl className="locker-place-facts">
+                  <div><dt>Phone</dt><dd>{activeLocation.phone}</dd></div>
+                  <div><dt>Website</dt><dd>{activeLocation.website ? activeLocation.website.replace(/^https?:\/\//, "") : "Needed"}</dd></div>
+                  <div><dt>Hours</dt><dd>{activeLocation.hours}</dd></div>
+                  <div><dt>Postcode / Eircode</dt><dd>{activeLocation.postcode}</dd></div>
+                  <div>
+                    <dt>Latitude</dt>
+                    <dd className="locker-coordinate-value">
+                      <span>{Number.isFinite(Number(activeLocation.lat)) ? Number(activeLocation.lat).toFixed(6) : "Needed"}</span>
+                      {Number.isFinite(Number(activeLocation.lat)) ? (
+                        <button className="copy-inline-button" type="button" title="Copy latitude" aria-label="Copy latitude" onClick={() => copyCoordinate("lat", activeLocation.lat)}>
+                          {copiedCoordinateKey === "lat" ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                        </button>
+                      ) : null}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Longitude</dt>
+                    <dd className="locker-coordinate-value">
+                      <span>{Number.isFinite(Number(activeLocation.lng)) ? Number(activeLocation.lng).toFixed(6) : "Needed"}</span>
+                      {Number.isFinite(Number(activeLocation.lng)) ? (
+                        <button className="copy-inline-button" type="button" title="Copy longitude" aria-label="Copy longitude" onClick={() => copyCoordinate("lng", activeLocation.lng)}>
+                          {copiedCoordinateKey === "lng" ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                        </button>
+                      ) : null}
+                    </dd>
+                  </div>
+                </dl>
+                <div className="locker-detail-actions">
+                  <button className="secondary-button" type="button" onClick={() => toggleLocationSelection(activeLocation.id)}>
+                    <CheckCircle2 size={16} />
+                    {selectedLocationIds.includes(activeLocation.id) ? "Selected" : "Select"}
+                  </button>
+                  <a className="secondary-button" href={`tel:${String(activeLocation.phone || "").replace(/\s+/g, "")}`}>
+                    <Phone size={16} />
+                    Call
+                  </a>
+                  <a className="secondary-button" href={activeLocation.website || "#"} target="_blank" rel="noreferrer">
+                    <ExternalLink size={16} />
+                    Website
+                  </a>
+                  {googleEarthCoordinateUrl(activeLocation) ? (
+                    <a className="secondary-button locker-earth-button" href={googleEarthCoordinateUrl(activeLocation)} target="_blank" rel="noreferrer">
+                      <Earth size={16} />
+                      Earth
+                    </a>
+                  ) : null}
+                  <button className="primary-button" type="button" onClick={() => saveLocationsToLeadList([activeLocation])} disabled={savedKeys.has(lockerProspectKey(activeLocation)) || leadListSaveStatus === "saving"}>
+                    <Plus size={16} />
+                    {savedKeys.has(lockerProspectKey(activeLocation)) ? "In Lead Lists" : "Save to list"}
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="empty-state">Run a search to inspect matching host locations.</div>
+          )}
+        </aside>
+      </div>
+
+    </>
+  );
+}
+
 function SettingsPage({
   isDark,
   onThemeToggle,
@@ -10512,6 +12538,7 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
         : await supabase.auth.signUp({
           ...credentials,
           options: {
+            emailRedirectTo: window.location.origin,
             data: {
               first_name: derivedProfile.firstName,
               last_name: derivedProfile.lastName,
@@ -10701,7 +12728,7 @@ function HomePage({ isDark, onThemeToggle, onAuthenticate, user, onBackToWorkspa
   );
 }
 
-function RightDrawer({ open, activeView, selectedAccount, activeCampaign, isDark, onThemeToggle, onOpenHome, onLogout, loggingOut }) {
+function RightDrawer({ open, isDark, onThemeToggle, onOpenHome, onLogout, loggingOut }) {
   if (!open) return null;
 
   return (
@@ -10729,30 +12756,6 @@ function RightDrawer({ open, activeView, selectedAccount, activeCampaign, isDark
             {loggingOut ? "Signing out" : "Log out"}
           </button>
         </div>
-      </section>
-      <section>
-        <span className="eyebrow">Context</span>
-        <h2>{selectedAccount?.name || activeCampaign.name}</h2>
-        <p>{selectedAccount?.insight || activeCampaign.nextAction}</p>
-      </section>
-      <section>
-        <span className="eyebrow">Suggested next step</span>
-        <div className="drawer-task">
-          <CheckCircle2 size={16} />
-          <span>{selectedAccount?.nextAction || "Review campaign companies before the next call block"}</span>
-        </div>
-      </section>
-      <section>
-        <span className="eyebrow">Data gaps</span>
-        <ul className="drawer-list">
-          <li>Confirm buying committee roles</li>
-          <li>Validate current CRM ownership</li>
-          <li>Map product, UX, and design stakeholders</li>
-        </ul>
-      </section>
-      <section>
-        <span className="eyebrow">Current page</span>
-        <p>{activeView.replace("-", " ")}</p>
       </section>
     </aside>
   );
@@ -10825,7 +12828,7 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
     case "campaign":
       return { clientId, name: "", channel: "Research-led outbound", status: "active", nextAction: "Define company focus and first call block", memberIds: [], imageUrl: "", imagePath: "", imageName: "" };
     case "campaign-company":
-      return { clientId, campaignId: context.campaignId || "", mode: "existing", search: "", selectedCompanyIds: [], name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || "Lead In", status: "New", nextAction: "Map buying committee", insight: "" };
+      return { clientId, campaignId: context.campaignId || "", mode: "existing", search: "", selectedCompanyIds: [], importRows: [], name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || "Lead In", status: "New", nextAction: "Map buying committee", insight: "" };
     case "account":
       return { clientId, name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || "Lead In", status: "New", nextAction: "Map buying committee", insight: "" };
     case "contact":
@@ -10834,8 +12837,6 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
       return { accountId, contactId, stage: "lead", value: "0", due: "Today", owner: "Workspace user" };
     case "call":
       return { contactId, outcome: "Connected", notes: "" };
-    case "research":
-      return { accountId, title: "Company research brief", summary: "", dataGap: "Buying committee validation" };
     case "file":
       return { name: "", source: "CSV import", objectType: "accounts", rows: "0" };
     case "team":
@@ -10860,7 +12861,6 @@ function getWorkflowTitle(type) {
     contact: "Add contact",
     deal: "New deal",
     call: "Log call outcome",
-    research: "Queue research",
     file: "Add source file",
     team: "Invite teammate",
     audit: "Audit model",
@@ -10874,8 +12874,8 @@ function getWorkflowPrerequisite(type, data) {
   if (type === "campaign-company" && !data.campaigns.length) {
     return { message: "Create a campaign first. Companies are added from inside a campaign.", nextType: "campaign", nextLabel: "Create campaign" };
   }
-  if (["contact", "deal", "research"].includes(type) && !data.accounts.length) {
-    return { message: "Add a company first. Contacts, deals, and research need a company to attach to.", nextType: data.clients.length ? "account" : "client", nextLabel: data.clients.length ? "Add company" : "Create client account" };
+  if (["contact", "deal"].includes(type) && !data.accounts.length) {
+    return { message: "Add a company first. Contacts and deals need a company to attach to.", nextType: data.clients.length ? "account" : "client", nextLabel: data.clients.length ? "Add company" : "Create client account" };
   }
   if (type === "call" && !data.contacts.length) {
     return { message: "Add a contact first. Calls need a contact record.", nextType: data.accounts.length ? "contact" : data.clients.length ? "account" : "client", nextLabel: data.accounts.length ? "Add contact" : data.clients.length ? "Add company" : "Create client account" };
@@ -10909,6 +12909,10 @@ function WorkflowModal({
   const [submitStatus, setSubmitStatus] = useState("idle");
   const [submitError, setSubmitError] = useState("");
   const [pendingClientRemoval, setPendingClientRemoval] = useState(null);
+  const campaignCompanyImportInputRef = useRef(null);
+  const [campaignCompanyImportDraft, setCampaignCompanyImportDraft] = useState(null);
+  const [campaignCompanyImportStatus, setCampaignCompanyImportStatus] = useState("idle");
+  const [campaignCompanyImportError, setCampaignCompanyImportError] = useState("");
   const draftImageRecordIdRef = useRef(makeId("image-record"));
   const [accountTouchedFields, setAccountTouchedFields] = useState({
     domain: false,
@@ -11099,6 +13103,57 @@ function WorkflowModal({
     update("selectedCompanyIds", Array.from(selectedIds));
   }
 
+  function mappedCampaignCompanyImportRows(draft = campaignCompanyImportDraft) {
+    if (!draft) return [];
+    return dedupeCompanyImportRows(draft.rawRows.map(row => ({
+      companyName: importCellValue(row, draft.columnMap.companyName),
+      domain: importCellValue(row, draft.columnMap.domain),
+      industry: importCellValue(row, draft.columnMap.industry),
+      location: importCellValue(row, draft.columnMap.location),
+      employees: importCellValue(row, draft.columnMap.employees),
+      value: importCellValue(row, draft.columnMap.value),
+      stage: importCellValue(row, draft.columnMap.stage),
+      status: importCellValue(row, draft.columnMap.status),
+      nextAction: importCellValue(row, draft.columnMap.nextAction),
+      insight: importCellValue(row, draft.columnMap.insight),
+      sourceFile: draft.sourceFile,
+      sourceSheet: draft.sourceSheet,
+    })));
+  }
+
+  function syncCampaignCompanyImportRows(draft) {
+    update("importRows", mappedCampaignCompanyImportRows(draft));
+  }
+
+  async function handleCampaignCompanyImportFile(file) {
+    if (!file) return;
+    setCampaignCompanyImportStatus("loading");
+    setCampaignCompanyImportError("");
+    try {
+      const draft = await parseCompanyImportMappingFile(file);
+      setCampaignCompanyImportDraft(draft);
+      syncCampaignCompanyImportRows(draft);
+      setCampaignCompanyImportStatus("done");
+    } catch (error) {
+      setCampaignCompanyImportDraft(null);
+      update("importRows", []);
+      setCampaignCompanyImportStatus("idle");
+      setCampaignCompanyImportError(error.message || "Could not read this file.");
+    }
+  }
+
+  function updateCampaignCompanyImportColumn(field, columnIndex) {
+    const nextDraft = {
+      ...campaignCompanyImportDraft,
+      columnMap: {
+        ...campaignCompanyImportDraft.columnMap,
+        [field]: Number(columnIndex),
+      },
+    };
+    setCampaignCompanyImportDraft(nextDraft);
+    syncCampaignCompanyImportRows(nextDraft);
+  }
+
   function renderFields() {
     const fieldType = workflow.type.startsWith("edit-") ? workflow.type.replace("edit-", "") : workflow.type;
 
@@ -11264,17 +13319,98 @@ function WorkflowModal({
               >
                 New company
               </button>
+              <button
+                className={values.mode === "import" ? "active" : ""}
+                type="button"
+                role="tab"
+                aria-selected={values.mode === "import"}
+                onClick={() => update("mode", "import")}
+              >
+                Import CSV
+              </button>
             </div>
             {values.mode !== "new" ? (
+              values.mode === "import" ? (
+              <div className="campaign-company-import">
+                <div className="company-import-toolbar">
+                  <input
+                    ref={campaignCompanyImportInputRef}
+                    className="visually-hidden"
+                    type="file"
+                    accept=".csv,.xlsx"
+                    onChange={event => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      handleCampaignCompanyImportFile(file);
+                    }}
+                  />
+                  <button className="secondary-button" type="button" onClick={() => campaignCompanyImportInputRef.current?.click()} disabled={campaignCompanyImportStatus === "loading"}>
+                    {campaignCompanyImportStatus === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Upload size={16} />}
+                    {campaignCompanyImportStatus === "loading" ? "Reading file" : campaignCompanyImportDraft ? "Replace file" : "Choose CSV"}
+                  </button>
+                  <StatusBadge>{campaignCompanyImportDraft?.sourceFile || "No file selected"}</StatusBadge>
+                  <StatusBadge tone={values.importRows.length ? "success" : "neutral"}>{values.importRows.length} mapped rows</StatusBadge>
+                </div>
+                {campaignCompanyImportError ? <div className="form-error">{campaignCompanyImportError}</div> : null}
+                {campaignCompanyImportDraft ? (
+                  <>
+                    <div className="company-import-mapping-grid">
+                      {companyImportFieldOptions.map(([field, label, required]) => (
+                        <label key={field} className="form-field">
+                          <span>{label}{required ? " *" : ""}</span>
+                          <select value={campaignCompanyImportDraft.columnMap[field]} onChange={event => updateCampaignCompanyImportColumn(field, event.target.value)}>
+                            <option value="-1">Do not import</option>
+                            {campaignCompanyImportDraft.headers.map((header, index) => (
+                              <option key={`${field}-${index}`} value={index}>{header}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+                    <div className="table-wrap company-import-preview">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Company</th>
+                            <th>Domain</th>
+                            <th>Industry</th>
+                            <th>Location</th>
+                            <th>Source</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {values.importRows.length ? values.importRows.slice(0, 8).map(row => (
+                            <tr key={`${row.companyName}-${row.domain}-${row.sourceFile}`}>
+                              <td>{row.companyName}</td>
+                              <td>{row.domain || "No domain"}</td>
+                              <td>{row.industry || "Unspecified"}</td>
+                              <td>{row.location || "Unspecified"}</td>
+                              <td>{row.sourceSheet || row.sourceFile}</td>
+                            </tr>
+                          )) : (
+                            <tr>
+                              <td colSpan="5" className="empty-table-cell">Choose the company name column before saving.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="modal-helper-text">Review the mapped columns and preview before pressing Save. Nothing is imported until Save is confirmed.</p>
+                  </>
+                ) : (
+                  <EmptyState icon={Upload} title="No import file selected" text="Choose a CSV or Excel file, map the columns, then save to add companies to this campaign." />
+                )}
+              </div>
+              ) : (
               <>
                 <FormField label="Search CRM companies">
                   <input value={values.search} onChange={event => update("search", event.target.value)} placeholder="Search by company, domain, industry, or location" autoFocus />
                 </FormField>
-                <div className="campaign-user-picker">
+                <div className="campaign-user-picker campaign-company-picker">
                   {matchingCompanies.length ? matchingCompanies.map(company => {
                     const selected = selectedCompanyIds.includes(company.id);
                     return (
-                      <label key={company.id} className={`campaign-user-option ${selected ? "selected" : ""}`}>
+                      <label key={company.id} className={`campaign-user-option campaign-company-option ${selected ? "selected" : ""}`}>
                         <input
                           type="checkbox"
                           checked={selected}
@@ -11291,6 +13427,7 @@ function WorkflowModal({
                   }) : <EmptyState icon={BriefcaseBusiness} title="No matching companies" text="Try another search or add a new company." />}
                 </div>
               </>
+              )
             ) : (
               <>
                 <FormField label="Company name">
@@ -11498,25 +13635,6 @@ function WorkflowModal({
             </FormField>
           </>
         );
-      case "research":
-        return (
-          <>
-            <FormField label="Company">
-              <select value={values.accountId} onChange={event => update("accountId", event.target.value)}>
-                {accountOptions()}
-              </select>
-            </FormField>
-            <FormField label="Research title">
-              <input value={values.title} onChange={event => update("title", event.target.value)} />
-            </FormField>
-            <FormField label="Summary">
-              <textarea value={values.summary} onChange={event => update("summary", event.target.value)} placeholder="Summarise the research angle or question" />
-            </FormField>
-            <FormField label="Data gap">
-              <input value={values.dataGap} onChange={event => update("dataGap", event.target.value)} placeholder="Buying committee validation" />
-            </FormField>
-          </>
-        );
       case "file":
         return (
           <>
@@ -11576,7 +13694,7 @@ function WorkflowModal({
       <div className="modal-backdrop" role="presentation" onMouseDown={event => {
         if (event.target === event.currentTarget) onClose();
       }}>
-        <form className="workflow-modal" onSubmit={submit}>
+        <form className={`workflow-modal ${workflow.type === "campaign-company" ? "campaign-company-modal" : ""}`} onSubmit={submit}>
           <div className="modal-header">
             <div>
               <span className="eyebrow">Workflow</span>
@@ -11772,12 +13890,13 @@ export default function App() {
   }
 
   async function loadAuthenticatedUser(nextUser) {
+    let organizationId = null;
     try {
-      const organizationId = await ensureWorkspace(nextUser);
+      organizationId = await ensureWorkspace(nextUser);
       const currentWorkspaceUser = mapAuthUserToWorkspaceUser(nextUser);
-      const [syncedCrmData, workspaceUsers, nextLeadLists, nextLeadContactDatabase, nextPrivateContactNotes, nextAircallData, nextAdminSettings] = await Promise.all([
-        loadSyncedCrmData(nextUser.id, organizationId),
-        loadWorkspaceUsers(organizationId),
+      const workspaceUsers = await loadWorkspaceUsers(organizationId);
+      const [syncedCrmData, nextLeadLists, nextLeadContactDatabase, nextPrivateContactNotes, nextAircallData, nextAdminSettings] = await Promise.all([
+        loadSyncedCrmData(nextUser.id, organizationId, workspaceUsers),
         loadLeadLists(organizationId).catch(error => {
           console.error("Could not load lead lists", error);
           setLeadListsError(error.message || "Could not load lead lists.");
@@ -11802,11 +13921,14 @@ export default function App() {
         }),
       ]);
       const normalizedAdminSettings = normalizeAdminSettings(nextAdminSettings.settings);
+      const mergedWorkspaceUsers = stripTestWorkspaceAccount(mergeWorkspaceUsers(workspaceUsers, currentWorkspaceUser));
       const nextCrmData = {
-        ...refreshCrmData(syncedCrmData),
-        workspaceUsers: stripTestWorkspaceAccount(mergeWorkspaceUsers(workspaceUsers, currentWorkspaceUser)),
+        ...syncedCrmData,
+        workspaceUsers: mergedWorkspaceUsers,
       };
-      const currentWorkspaceRecord = workspaceUsers.find(workspaceUser => workspaceUser.id === nextUser.id) || currentWorkspaceUser;
+      const currentWorkspaceRecord = workspaceUsers.find(workspaceUser => workspaceUser.id === nextUser.id)
+        || await loadCurrentWorkspaceUser(organizationId, nextUser)
+        || currentWorkspaceUser;
       const nextUserWithProfile = {
         ...nextUser,
         crm_profile: {
@@ -11817,16 +13939,17 @@ export default function App() {
           currencyCode: normalizeCurrencyCode(currentWorkspaceRecord?.currencyCode),
         },
       };
-      setCrmData(nextCrmData);
+      setCrmData(refreshCrmData(nextCrmData));
       setLeadLists(nextLeadLists);
       setLeadContactDatabase(nextLeadContactDatabase);
       setPrivateContactNotes(nextPrivateContactNotes);
       setAircallData(nextAircallData);
+      const resolvedRole = normalizeRoleKey(nextAdminSettings.role || currentWorkspaceRecord?.roleKey || currentWorkspaceRecord?.role || "member");
       setAdminSettingsState({
         settings: normalizedAdminSettings,
-        role: nextAdminSettings.role || "member",
-        isAdmin: Boolean(nextAdminSettings.isAdmin),
-        isOrgAdmin: Boolean(nextAdminSettings.isOrgAdmin),
+        role: resolvedRole,
+        isAdmin: Boolean(nextAdminSettings.isAdmin) || ADMIN_ROLES.has(resolvedRole),
+        isOrgAdmin: Boolean(nextAdminSettings.isOrgAdmin) || ORG_ADMIN_ROLES.has(resolvedRole),
       });
       loadIntegrationCredentialsStatus().catch(error => {
         console.error("Could not load integration credential status", error);
@@ -11852,30 +13975,39 @@ export default function App() {
       setLeadListsError("");
     } catch (error) {
       console.error("Could not load synced CRM data", error);
+      const fallbackWorkspaceUser = organizationId
+        ? await loadCurrentWorkspaceUser(organizationId, nextUser).catch(() => mapAuthUserToWorkspaceUser(nextUser))
+        : mapAuthUserToWorkspaceUser(nextUser);
+      const fallbackRole = normalizeRoleKey(fallbackWorkspaceUser.roleKey || fallbackWorkspaceUser.role || "member");
       const emptyData = refreshCrmData(createInitialCrmData());
       setCrmData({
         ...emptyData,
-        workspaceUsers: stripTestWorkspaceAccount(mergeWorkspaceUsers([], mapAuthUserToWorkspaceUser(nextUser))),
+        workspaceUsers: stripTestWorkspaceAccount(mergeWorkspaceUsers([], fallbackWorkspaceUser)),
       });
-      setDataOrgId(null);
+      setDataOrgId(organizationId);
       setLeadLists([]);
       setLeadContactDatabase([]);
       setPrivateContactNotes({});
       setAircallData({ users: [], calls: [], dailyStats: [] });
       setIntegrationCredentials({ providers: {} });
-      setAdminSettingsState({ settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false, isOrgAdmin: false });
+      setAdminSettingsState({
+        settings: DEFAULT_ADMIN_SETTINGS,
+        role: fallbackRole,
+        isAdmin: ADMIN_ROLES.has(fallbackRole),
+        isOrgAdmin: ORG_ADMIN_ROLES.has(fallbackRole),
+      });
       setDataUserId(nextUser.id);
       setUser({
         ...nextUser,
         crm_profile: {
-          firstName: nextUser.user_metadata?.first_name || "",
-          lastName: nextUser.user_metadata?.last_name || "",
-          displayName: nextUser.user_metadata?.display_name || "",
-          aircallUserId: nextUser.user_metadata?.aircallUserId || "",
-          currencyCode: "GBP",
+          firstName: fallbackWorkspaceUser.firstName || nextUser.user_metadata?.first_name || "",
+          lastName: fallbackWorkspaceUser.lastName || nextUser.user_metadata?.last_name || "",
+          displayName: fallbackWorkspaceUser.name || nextUser.user_metadata?.display_name || "",
+          aircallUserId: fallbackWorkspaceUser.aircallUserId || nextUser.user_metadata?.aircallUserId || "",
+          currencyCode: fallbackWorkspaceUser.currencyCode || "GBP",
         },
       });
-      setCurrencyCode("GBP");
+      setCurrencyCode(fallbackWorkspaceUser.currencyCode || "GBP");
     } finally {
       setAuthReady(true);
       setLoggingOut(false);
@@ -11917,7 +14049,7 @@ export default function App() {
       },
     } : current);
     setCurrencyCode(nextProfile.currencyCode || normalizedCurrencyCode);
-    setCrmData(current => ({
+    setCrmData(current => refreshCrmData({
       ...current,
       workspaceUsers: (current.workspaceUsers || []).map(workspaceUser => workspaceUser.id === user.id
         ? {
@@ -12002,7 +14134,7 @@ export default function App() {
           ...roleAccessState(adminSettingsState.role),
         };
         setAdminSettingsState(nextState);
-        setCrmData(current => ({
+        setCrmData(current => refreshCrmData({
           ...current,
           workspaceUsers: stripTestWorkspaceAccount(current.workspaceUsers || []),
         }));
@@ -12024,7 +14156,7 @@ export default function App() {
       isOrgAdmin: Boolean(payload.isOrgAdmin),
     };
     setAdminSettingsState(nextState);
-    setCrmData(current => ({
+    setCrmData(current => refreshCrmData({
       ...current,
       workspaceUsers: stripTestWorkspaceAccount(current.workspaceUsers || []),
     }));
@@ -12088,7 +14220,7 @@ export default function App() {
     }
 
     const updatedUser = payload.user || {};
-    setCrmData(current => ({
+    setCrmData(current => refreshCrmData({
       ...current,
       workspaceUsers: (current.workspaceUsers || []).map(workspaceUser => {
         if (workspaceUser.id !== updatedUser.id) return workspaceUser;
@@ -12238,7 +14370,7 @@ export default function App() {
     const leadsWithSavedContacts = [];
 
     for (const lead of leads) {
-      if (!leadHasPaceOpsData(lead) && lead.dataSource !== "manual") {
+      if (!shouldPersistLeadToContactDatabase(lead) && lead.dataSource !== "manual") {
         leadsWithSavedContacts.push(lead);
         continue;
       }
@@ -12275,7 +14407,7 @@ export default function App() {
     const nextLeads = [];
 
     for (const lead of leads) {
-      if (!leadHasPaceOpsData(lead) && lead.dataSource !== "manual") {
+      if (!shouldPersistLeadToContactDatabase(lead) && lead.dataSource !== "manual") {
         nextLeads.push(lead);
         continue;
       }
@@ -12399,19 +14531,15 @@ export default function App() {
     workspaceUsers: realWorkspaceUsers,
   };
   const effectiveWorkspaceUser = effectiveWorkspaceUserForSession(user, realWorkspaceUsers, normalizedAdminSettings);
-  const effectiveAccessState = effectiveAccessStateForSession(adminSettingsState, normalizedAdminSettings);
+  const effectiveAccessState = effectiveAccessStateForSession(adminSettingsState, normalizedAdminSettings, effectiveWorkspaceUser);
   const visibleCrmData = {
     ...scopeCrmDataForWorkspaceUser(crmDataWithoutTestAccount, effectiveWorkspaceUser, effectiveAccessState),
     workspaceUsers,
   };
   const { clients, campaigns, accounts, contacts } = visibleCrmData;
-  const activeClient = activeClientId === "none"
-    ? emptyClient
-    : clients.find(client => client.id === activeClientId) || clients[0] || emptyClient;
+  const activeClient = clients.find(client => client.id === activeClientId) || clients[0] || emptyClient;
   const activeClientCampaigns = activeClient.id !== "none" ? campaigns.filter(campaign => campaign.clientId === activeClient.id) : [];
-  const activeCampaign = activeCampaignId === "none"
-    ? emptyCampaign
-    : activeClientCampaigns.find(campaign => campaign.id === activeCampaignId) || activeClientCampaigns[0] || emptyCampaign;
+  const activeCampaign = activeClientCampaigns.find(campaign => campaign.id === activeCampaignId) || activeClientCampaigns[0] || emptyCampaign;
   const selectedAccount = selectedAccountId
     ? accounts.find(account => account.id === selectedAccountId) || null
     : null;
@@ -12436,8 +14564,8 @@ export default function App() {
   function currentNavigationState() {
     return {
       activeView,
-      activeClientId,
-      activeCampaignId,
+      activeClientId: activeClient.id,
+      activeCampaignId: activeCampaign.id,
       selectedAccountId,
       selectedContactId,
     };
@@ -12838,6 +14966,27 @@ export default function App() {
     }));
   }
 
+  async function handleUpdateMeetingAssignment(meeting, updates = {}) {
+    if (!effectiveAccessState.isAdmin) throw new Error("Admin access is required to assign meetings.");
+    const savedMeeting = await updateRelationalMeetingAssignment(dataOrgId, meeting, updates);
+    if (!savedMeeting) return;
+    const owner = (crmData.workspaceUsers || []).find(user => user.id === savedMeeting.ownerUserId);
+    const bookedBy = (crmData.workspaceUsers || []).find(user => user.id === savedMeeting.bookedByUserId);
+    updateData(current => refreshCrmData({
+      ...current,
+      meetings: (current.meetings || []).map(item => item.id === savedMeeting.id ? { ...item, ...savedMeeting } : item),
+      activities: [
+        makeActivity("Meeting", `Meeting assignment updated: ${savedMeeting.title}`, "Workspace", effectiveWorkspaceUser?.name || "Workspace user", {
+          clientId: savedMeeting.clientId,
+          campaignId: savedMeeting.campaignId,
+          owner: owner?.name || "",
+          bookedBy: bookedBy?.name || "",
+        }),
+        ...current.activities,
+      ],
+    }));
+  }
+
   function handleLogCall({ contactId, outcome }) {
     if (!contactId) return;
     updateData(current => {
@@ -12865,19 +15014,19 @@ export default function App() {
     setSelectedContactId(contactId);
   }
 
-  function handleGenerateResearchScripts() {
+  function handleGenerateResearchScripts(accountId = "") {
     updateData(current => {
       const clientAccounts = activeClient.id !== "none" ? current.accounts.filter(account => account.clientId === activeClient.id) : current.accounts;
-      const account = clientAccounts[0] || current.accounts[0];
-      const contextName = activeCampaign.id !== "none" ? activeCampaign.name : activeClient.name;
+      const account = clientAccounts.find(item => item.id === accountId) || current.accounts.find(item => item.id === accountId) || clientAccounts[0] || current.accounts[0];
+      const contextName = account?.name || (activeCampaign.id !== "none" ? activeCampaign.name : activeClient.name);
       const signal = account?.insight || activeCampaign.nextAction || activeClient.health || "a new research signal";
       const clientId = activeClient.id !== "none" ? activeClient.id : current.clients[0]?.id || "";
       const campaignId = activeCampaign.id !== "none" ? activeCampaign.id : "";
       const scripts = [
-        { channel: "Call opener", body: `Hi, this is PaceOps. I was looking at ${contextName} and noticed ${signal}. Is now a bad time for one quick question?` },
+        { channel: "Gatekeeper", body: `Hi, this is PaceOps. I am trying to reach whoever owns ${signal} at ${contextName}. Is that best with IT, operations, or another team?` },
+        { channel: "Primary buyer", body: `Hi, this is PaceOps. I was reviewing ${contextName} and noticed ${signal}. Is now a bad time for one quick question about how that is being handled?` },
         { channel: "Voicemail", body: `Hi, this is PaceOps. I found a relevant angle for ${contextName} around ${signal}. I will send a short note as well.` },
         { channel: "Email", body: `Subject: ${contextName} research angle\n\nI noticed ${signal}. Is this owned by your team, or should I speak with someone else?` },
-        { channel: "Objection handling", body: "If timing is the issue, ask what would need to change for this to become worth revisiting." },
       ].map(item => ({
         id: makeId("script"),
         clientId,
@@ -12898,27 +15047,89 @@ export default function App() {
     });
   }
 
-  function handleMoveScript(scriptId, stage) {
+  function handleSaveResearchScript(script) {
+    updateData(current => {
+      const account = current.accounts.find(item => item.id === script.accountId);
+      const nextScript = {
+        ...script,
+        id: script.id || makeId("script"),
+        clientId: script.clientId || account?.clientId || "",
+        campaignId: script.campaignId || (activeCampaign.id !== "none" ? activeCampaign.id : ""),
+        accountId: script.accountId || account?.id || "",
+        title: script.title?.trim() || "Untitled script",
+        channel: script.channel?.trim() || "General",
+        body: script.body?.trim() || "",
+        stage: script.stage || "drafts",
+        createdAt: script.createdAt || new Date().toISOString(),
+      };
+      const exists = (current.scriptItems || []).some(item => item.id === nextScript.id);
+      return {
+        ...current,
+        scriptItems: exists
+          ? (current.scriptItems || []).map(item => item.id === nextScript.id ? nextScript : item)
+          : [nextScript, ...(current.scriptItems || [])],
+        activities: [makeActivity("Script", `Saved script for ${account?.name || "company"}`, account?.name || "Research"), ...current.activities],
+      };
+    });
+  }
+
+  function handleDeleteResearchScript(scriptId) {
     updateData(current => ({
       ...current,
-      scriptItems: (current.scriptItems || []).map(script => script.id === scriptId ? { ...script, stage } : script),
+      scriptItems: (current.scriptItems || []).filter(script => script.id !== scriptId),
     }));
   }
 
-  function handleGenerateReport(timeframe = "This week") {
-    updateData(current => {
-      const clientId = activeClient.id !== "none" ? activeClient.id : "";
-      const clientContactIds = new Set(current.contacts.filter(contact => !clientId || contact.clientId === clientId).map(contact => contact.id));
-      const scopedCalls = current.activities.filter(activity => activity.type === "Call" && (!clientContactIds.size || clientContactIds.has(activity.contactId)));
-      const scopedInsights = (current.callInsights || []).filter(insight => !clientContactIds.size || clientContactIds.has(insight.contactId));
-      const report = buildWeeklyReport({ calls: scopedCalls, insights: scopedInsights, client: activeClient, campaign: activeCampaign, timeframe });
+  async function handleSaveActionNote(note) {
+    const account = crmData.accounts.find(item => item.id === note.accountId || item.id === note.companyId);
+    const fallbackNote = {
+      ...note,
+      id: note.id || makeId("action-note"),
+      clientId: note.clientId || account?.clientId || "",
+      accountId: note.accountId || note.companyId || account?.id || "",
+      companyId: note.companyId || note.accountId || account?.id || "",
+      account: account?.name || note.account || "",
+      title: normalizeLookupValue(note.title) || "Action note",
+      body: normalizeLookupValue(note.body),
+      status: note.status || "open",
+      actionType: note.actionType || "general",
+      source: normalizeLookupValue(note.source),
+      contactIds: Array.isArray(note.contactIds) ? note.contactIds : [],
+      updatedAt: new Date().toISOString(),
+      createdAt: note.createdAt || new Date().toISOString(),
+    };
 
+    if (!fallbackNote.body) throw new Error("Action note needs a note body.");
+
+    const savedNote = dataOrgId
+      ? await saveRelationalActionNote(dataOrgId, fallbackNote, user?.id || effectiveWorkspaceUser?.id || "")
+      : fallbackNote;
+    const nextNote = {
+      ...fallbackNote,
+      ...savedNote,
+      accountId: savedNote?.accountId || fallbackNote.accountId,
+      companyId: savedNote?.companyId || fallbackNote.companyId,
+      account: account?.name || fallbackNote.account,
+    };
+
+    updateData(current => {
+      const exists = (current.actionNotes || []).some(item => item.id === nextNote.id || item.id === note.id);
       return {
         ...current,
-        weeklyReports: [report, ...(current.weeklyReports || [])],
-        activities: [makeActivity("Report", `Weekly analysis generated: ${report.title}`, activeClient.name || "Workspace"), ...current.activities],
+        actionNotes: exists
+          ? (current.actionNotes || []).map(item => (item.id === nextNote.id || item.id === note.id) ? nextNote : item)
+          : [nextNote, ...(current.actionNotes || [])],
+        activities: [makeActivity("Research", `Action note saved: ${nextNote.title}`, account?.name || "Research"), ...current.activities],
       };
     });
+  }
+
+  async function handleDeleteActionNote(noteId) {
+    if (dataOrgId) await deleteRelationalActionNote(dataOrgId, noteId);
+    updateData(current => ({
+      ...current,
+      actionNotes: (current.actionNotes || []).filter(note => note.id !== noteId),
+    }));
   }
 
   function handleAddLeadToCrmContacts(lead) {
@@ -12989,6 +15200,7 @@ export default function App() {
         directDial: directDialNumber,
         owner: "Workspace user",
         status: "New",
+        stage: pipelineStageIdForValue("lead", crmData.pipelineStages || pipelineColumns),
         lastTouch: "Added from Contacts",
       };
 
@@ -13007,17 +15219,97 @@ export default function App() {
     });
   }
 
-  function handleMoveDeal(dealId, stage) {
-    updateData(current => {
-      const deal = current.deals.find(item => item.id === dealId);
-      if (!deal || deal.stage === stage) return current;
-      const column = (current.pipelineStages || pipelineColumns).find(item => item.id === stage);
-      return {
+  async function handleMovePipelineItem(type, id, stage) {
+    const normalizedStage = pipelineStageIdForValue(stage, crmData.pipelineStages || pipelineColumns);
+    const column = (crmData.pipelineStages || pipelineColumns).find(item => item.id === normalizedStage);
+
+    if (type === "company") {
+      const account = crmData.accounts.find(item => item.id === id);
+      if (!account || account.stage === normalizedStage) return;
+      await updateRelationalCompanyPipelineStage(dataOrgId, account, normalizedStage);
+      updateData(current => ({
         ...current,
-        deals: current.deals.map(item => item.id === dealId ? { ...item, stage } : item),
-        activities: [makeActivity("Pipeline", `${deal.account} moved to ${column?.name || stage}`, deal.account), ...current.activities],
+        accounts: current.accounts.map(item => item.id === id ? { ...item, stage: normalizedStage, customFields: { ...(item.customFields || {}), ui_stage: normalizedStage } } : item),
+        activities: [makeActivity("Pipeline", `${account.name} moved to ${column?.name || normalizedStage}`, account.name), ...current.activities],
+      }));
+      return;
+    }
+
+    if (type === "contact") {
+      const contact = crmData.contacts.find(item => item.id === id);
+      if (!contact || contact.stage === normalizedStage) return;
+      await updateRelationalContactPipelineStage(dataOrgId, contact, normalizedStage);
+      updateData(current => ({
+        ...current,
+        contacts: current.contacts.map(item => item.id === id ? { ...item, stage: normalizedStage, customFields: { ...(item.customFields || {}), pipeline_stage: normalizedStage } } : item),
+        activities: [makeActivity("Pipeline", `${contact.name} moved to ${column?.name || normalizedStage}`, contact.account || contact.company || "Workspace"), ...current.activities],
+      }));
+    }
+  }
+
+  async function handleImportClientCompanies(client, rows = []) {
+    if (!effectiveAccessState.isAdmin) throw new Error("Admin access is required to import companies.");
+    if (!supabase || !dataOrgId) throw new Error("Database connection is required to import companies.");
+    if (!UUID_PATTERN.test(String(client?.id || ""))) throw new Error("Open a database-backed client account before importing companies.");
+
+    const existingKeys = new Set(crmData.accounts
+      .filter(account => account.clientId === client.id)
+      .flatMap(account => [
+        normalizeLookupValue(account.name).toLowerCase(),
+        normalizeLookupValue(account.domain).toLowerCase(),
+      ])
+      .filter(Boolean));
+    const newAccounts = [];
+    let skippedCount = 0;
+
+    for (const row of rows) {
+      const name = normalizeLookupValue(row.companyName || row.name);
+      if (!name) {
+        skippedCount += 1;
+        continue;
+      }
+      const domain = normalizeLookupValue(row.domain);
+      const duplicateKey = [name.toLowerCase(), domain.toLowerCase()].find(key => key && existingKeys.has(key));
+      if (duplicateKey) {
+        skippedCount += 1;
+        continue;
+      }
+
+      const accountDraft = {
+        clientId: client.id,
+        name,
+        domain: domain || "No domain",
+        industry: normalizeLookupValue(row.industry) || "Unspecified",
+        location: normalizeLookupValue(row.location) || "Unspecified",
+        employees: normalizeLookupValue(row.employees) || "Unknown",
+        value: parseImportNumber(row.value),
+        stage: normalizeLookupValue(row.stage) || crmData.pipelineStages?.[0]?.name || "Lead In",
+        status: normalizeLookupValue(row.status) || "New",
+        nextAction: normalizeLookupValue(row.nextAction) || "Map buying committee",
+        insight: normalizeLookupValue(row.insight) || `Imported from ${row.sourceFile || "CSV"}.`,
+        scripts: null,
       };
-    });
+      const persistedCompany = await createRelationalCompany(dataOrgId, accountDraft);
+      const account = {
+        ...accountDraft,
+        id: persistedCompany.id,
+        owner: "Workspace user",
+        lastActivity: "Imported just now",
+      };
+      newAccounts.push(account);
+      existingKeys.add(name.toLowerCase());
+      if (domain) existingKeys.add(domain.toLowerCase());
+    }
+
+    if (newAccounts.length) {
+      updateData(current => ({
+        ...current,
+        accounts: [...newAccounts, ...current.accounts],
+        activities: [makeActivity("Import", `${newAccounts.length} companies imported to ${client.name}`, client.name), ...current.activities],
+      }));
+    }
+
+    return { addedCount: newAccounts.length, skippedCount };
   }
 
   function handleUpdatePipelineStages(stages) {
@@ -13052,7 +15344,7 @@ export default function App() {
       const campaignCompanyIds = new Set(Array.isArray(campaign.companyIds) ? campaign.companyIds : []);
       const selectedCompanyIds = (Array.isArray(values.selectedCompanyIds) ? values.selectedCompanyIds : [])
         .filter(companyId => UUID_PATTERN.test(String(companyId)) && !campaignCompanyIds.has(companyId));
-      let newAccount = null;
+      const newAccounts = [];
 
       if (values.mode === "new") {
         const accountName = normalizeLookupValue(values.name);
@@ -13076,7 +15368,7 @@ export default function App() {
             insight: values.insight || "Research signal will be added by the team.",
             scripts: null,
           });
-          newAccount = {
+          const newAccount = {
             id: persistedCompany.id,
             clientId: campaign.clientId,
             name: accountName,
@@ -13093,7 +15385,58 @@ export default function App() {
             insight: values.insight || "Research signal will be added by the team.",
             scripts: null,
           };
+          newAccounts.push(newAccount);
           selectedCompanyIds.push(newAccount.id);
+        }
+      } else if (values.mode === "import") {
+        const importRows = Array.isArray(values.importRows) ? values.importRows : [];
+        if (!importRows.length) throw new Error("Import a file and confirm the column mapping before saving.");
+        const existingKeys = new Set(crmData.accounts.flatMap(account => [
+          normalizeLookupValue(account.name).toLowerCase(),
+          normalizeLookupValue(account.domain).toLowerCase(),
+        ]).filter(Boolean));
+
+        for (const row of importRows) {
+          const accountName = normalizeLookupValue(row.companyName || row.name);
+          if (!accountName) continue;
+          const domain = normalizeLookupValue(row.domain);
+          const duplicate = crmData.accounts.find(account => {
+            const accountNameKey = normalizeLookupValue(account.name).toLowerCase();
+            const accountDomainKey = normalizeLookupValue(account.domain).toLowerCase();
+            return accountNameKey === accountName.toLowerCase() || (domain && accountDomainKey === domain.toLowerCase());
+          });
+          if (duplicate) {
+            if (UUID_PATTERN.test(String(duplicate.id))) selectedCompanyIds.push(duplicate.id);
+            continue;
+          }
+          const duplicateKey = [accountName.toLowerCase(), domain.toLowerCase()].find(key => key && existingKeys.has(key));
+          if (duplicateKey) continue;
+
+          const accountDraft = {
+            clientId: campaign.clientId,
+            name: accountName,
+            domain: domain || "No domain",
+            industry: normalizeLookupValue(row.industry) || "Unspecified",
+            location: normalizeLookupValue(row.location) || "Unspecified",
+            employees: normalizeLookupValue(row.employees) || "Unknown",
+            value: parseImportNumber(row.value),
+            stage: normalizeLookupValue(row.stage) || crmData.pipelineStages?.[0]?.name || "Lead In",
+            status: normalizeLookupValue(row.status) || "New",
+            nextAction: normalizeLookupValue(row.nextAction) || "Map buying committee",
+            insight: normalizeLookupValue(row.insight) || `Imported from ${row.sourceFile || "CSV"}.`,
+            scripts: null,
+          };
+          const persistedCompany = await createRelationalCompany(dataOrgId, accountDraft);
+          const account = {
+            ...accountDraft,
+            id: persistedCompany.id,
+            owner: "Workspace user",
+            lastActivity: "Imported just now",
+          };
+          newAccounts.push(account);
+          selectedCompanyIds.push(account.id);
+          existingKeys.add(accountName.toLowerCase());
+          if (domain) existingKeys.add(domain.toLowerCase());
         }
       }
 
@@ -13103,7 +15446,7 @@ export default function App() {
 
       updateData(current => ({
         ...current,
-        accounts: newAccount ? [newAccount, ...current.accounts] : current.accounts,
+        accounts: newAccounts.length ? [...newAccounts, ...current.accounts] : current.accounts,
         campaigns: current.campaigns.map(item => {
           if (item.id !== campaign.id) return item;
           const companyIds = [...new Set([...(Array.isArray(item.companyIds) ? item.companyIds : []), ...uniqueCompanyIds])];
@@ -13128,6 +15471,12 @@ export default function App() {
       const creatorMemberIds = effectiveWorkspaceUser?.id && UUID_PATTERN.test(String(effectiveWorkspaceUser.id)) && !effectiveWorkspaceUser.isTestAccount
         ? [effectiveWorkspaceUser.id]
         : [];
+      const persistableUserIds = uniqueIds([
+        ...(crmData.workspaceUsers || [])
+          .filter(workspaceUser => !workspaceUser.isTestAccount)
+          .map(workspaceUser => workspaceUser.id),
+        ...creatorMemberIds,
+      ]).filter(id => UUID_PATTERN.test(String(id || "")));
       const persistedClient = await createRelationalClient(dataOrgId, user?.id, {
         name: values.name.trim() || "Untitled client",
         workspace: values.workspace.trim() || "Prospecting workspace",
@@ -13138,20 +15487,28 @@ export default function App() {
         imagePath: values.imagePath || "",
         imageName: values.imageName || "",
       });
-      await replaceRelationalClientMembers(dataOrgId, persistedClient.id, creatorMemberIds, creatorMemberIds);
-      values = { ...values, id: persistedClient.id, memberIds: creatorMemberIds };
+        await replaceRelationalClientMembers(dataOrgId, persistedClient.id, creatorMemberIds, persistableUserIds);
+      values = {
+        ...values,
+        id: persistedClient.id,
+        ownerId: persistedClient.owner_id || user?.id || "",
+        owner: formatWorkspaceOwnerLabel(effectiveWorkspaceUser, values.owner || "Workspace user"),
+        memberIds: creatorMemberIds,
+      };
     }
 
     if (type === "campaign") {
       const clientId = values.clientId || crmData.clients[0]?.id || "";
       if (!UUID_PATTERN.test(String(clientId))) throw new Error("Create or select a database-backed client account before saving a campaign.");
-      const persistableUserIds = (crmData.workspaceUsers || [])
-        .filter(workspaceUser => !workspaceUser.isTestAccount)
-        .map(workspaceUser => workspaceUser.id)
-        .filter(id => UUID_PATTERN.test(String(id || "")));
       const creatorMemberIds = effectiveWorkspaceUser?.id && UUID_PATTERN.test(String(effectiveWorkspaceUser.id)) && !effectiveWorkspaceUser.isTestAccount
         ? [effectiveWorkspaceUser.id]
         : [];
+      const persistableUserIds = uniqueIds([
+        ...(crmData.workspaceUsers || [])
+          .filter(workspaceUser => !workspaceUser.isTestAccount)
+          .map(workspaceUser => workspaceUser.id),
+        ...creatorMemberIds,
+      ]).filter(id => UUID_PATTERN.test(String(id || "")));
       const campaignMemberIds = [...new Set([...(Array.isArray(values.memberIds) ? values.memberIds : []), ...creatorMemberIds])];
       const persistedCampaign = await createRelationalCampaign(dataOrgId, {
         clientId,
@@ -13446,7 +15803,8 @@ export default function App() {
             name: values.name.trim() || "Untitled client",
             workspace: values.workspace.trim() || "Prospecting workspace",
             status: "Active",
-            owner: "Workspace user",
+            owner: values.owner || "Workspace user",
+            ownerId: values.ownerId || "",
             accounts: 0,
             contacts: 0,
             health: "Needs setup",
@@ -13584,6 +15942,7 @@ export default function App() {
             directDial: values.directDial,
             owner: "Workspace user",
             status: values.status || "New",
+            stage: pipelineStageIdForValue("lead", current.pipelineStages || pipelineColumns),
             lastTouch: "Created just now",
           };
           setSelectedAccountId(account.id);
@@ -13620,37 +15979,6 @@ export default function App() {
             ...current,
             deals: [deal, ...current.deals],
             activities: [makeActivity("Deal", `Deal created for ${account.name}`, account.name), ...current.activities],
-          };
-        }
-        case "research": {
-          const account = current.accounts.find(item => item.id === values.accountId);
-          if (!account) return current;
-          const researchItem = {
-            id: makeId("research"),
-            accountId: account.id,
-            clientId: account.clientId,
-            campaignId: activeCampaignId,
-            account: account.name,
-            title: values.title || "Company research brief",
-            summary: values.summary,
-            dataGap: values.dataGap,
-            status: "Queued",
-            createdAt: "Just now",
-          };
-          setSelectedAccountId(account.id);
-          setActiveView("research");
-          return {
-            ...current,
-            researchItems: [researchItem, ...current.researchItems],
-            accounts: current.accounts.map(item => item.id === account.id
-              ? {
-                ...item,
-                insight: values.summary || item.insight,
-                lastActivity: "Research queued just now",
-                nextAction: values.dataGap || item.nextAction,
-              }
-              : item),
-            activities: [makeActivity("Research", `${researchItem.title} queued`, account.name), ...current.activities],
           };
         }
         case "file": {
@@ -13729,6 +16057,8 @@ export default function App() {
             onManageClientAccount={handleUpdateClientMembership}
             onOpenAircallUser={openAircallForUser}
             onDeleteMeeting={handleDeleteMeeting}
+            onUpdateMeetingAssignment={handleUpdateMeetingAssignment}
+            onImportCompanies={handleImportClientCompanies}
             currentUserId={effectiveWorkspaceUser?.id || ""}
             canManageCrmRecords={canManageCrmRecords}
           />
@@ -13736,12 +16066,12 @@ export default function App() {
       case "campaigns":
         return <CampaignsPage activeClient={activeClient} onOpenCampaign={openCampaign} onEditCampaign={editCampaign} onNewCampaign={() => openWorkflow("campaign", { clientId: activeClient.id })} onImport={() => openWorkflow("file", { returnTo: "campaigns" })} canManageCrmRecords={canManageCrmRecords} />;
       case "campaign-detail":
-        return <CampaignDetailPage campaign={activeCampaign} aircallData={aircallData} onNavigate={openView} onOpenClient={openClient} onOpenAccount={openAccount} onOpenContact={openContact} onEditCampaign={editCampaign} onManageCampaignMembers={handleUpdateCampaignMembership} onAddCompany={(campaign) => openWorkflow("campaign-company", { clientId: campaign.clientId, campaignId: campaign.id })} onOpenAircallUser={openAircallForUser} onDeleteMeeting={handleDeleteMeeting} currentUserId={effectiveWorkspaceUser?.id || ""} canManageCrmRecords={canManageCrmRecords} />;
+        return <CampaignDetailPage campaign={activeCampaign} aircallData={aircallData} onNavigate={openView} onOpenClient={openClient} onOpenAccount={openAccount} onOpenContact={openContact} onEditCampaign={editCampaign} onManageCampaignMembers={handleUpdateCampaignMembership} onAddCompany={(campaign) => openWorkflow("campaign-company", { clientId: campaign.clientId, campaignId: campaign.id })} onOpenAircallUser={openAircallForUser} onDeleteMeeting={handleDeleteMeeting} onUpdateMeetingAssignment={handleUpdateMeetingAssignment} currentUserId={effectiveWorkspaceUser?.id || ""} canManageCrmRecords={canManageCrmRecords} />;
       case "accounts":
         return <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} canManageCrmRecords={canManageCrmRecords} />;
       case "account-detail":
         return selectedAccount
-          ? <AccountDetailPage account={selectedAccount} onOpenContact={openContact} onEditAccount={editAccount} onQueueResearch={(accountId) => openWorkflow("research", { accountId })} onNewContact={(accountId) => openWorkflow("contact", { accountId })} onNewDeal={(accountId) => openWorkflow("deal", { accountId })} canManageCrmRecords={canManageCrmRecords} />
+          ? <AccountDetailPage account={selectedAccount} onOpenContact={openContact} onEditAccount={editAccount} onNewContact={(accountId) => openWorkflow("contact", { accountId })} onNewDeal={(accountId) => openWorkflow("deal", { accountId })} canManageCrmRecords={canManageCrmRecords} />
           : <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} canManageCrmRecords={canManageCrmRecords} />;
       case "contacts":
       case "lead-lookup":
@@ -13760,6 +16090,8 @@ export default function App() {
             onSavePrivateNote={handleSavePrivateContactNote}
             onLogCall={handleLogCall}
             onRemoveContact={handleRemoveContact}
+            onDeleteMeeting={handleDeleteMeeting}
+            onUpdateMeetingAssignment={handleUpdateMeetingAssignment}
             canDeleteContacts={canDeleteContacts}
             canManageCrmRecords={canManageCrmRecords}
           />
@@ -13771,9 +16103,13 @@ export default function App() {
       case "aircall":
         return <AircallDashboardPage aircallData={aircallData} workspaceUsers={workspaceUsers} contacts={contacts} onOpenContact={openContact} canSync={effectiveAccessState.isAdmin} onSyncAircall={handleSyncAircall} onBookMeeting={handleBookMeeting} currentUserId={effectiveWorkspaceUser?.id || ""} currentAircallUserId={effectiveWorkspaceUser?.aircallUserId || ""} selectedAircallUserId={selectedAircallUserId} isAdmin={effectiveAccessState.isAdmin} />;
       case "pipeline":
-        return <PipelinePage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onMoveDeal={handleMoveDeal} onNewDeal={(accountId) => openWorkflow("deal", accountId ? { accountId } : {})} onUpdateStages={handleUpdatePipelineStages} />;
+        if (!effectiveAccessState.isAdmin) return <DashboardPage activeClient={activeClient} activeCampaign={activeCampaign} onNavigate={openView} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
+        return <PipelinePage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onOpenContact={openContact} onMovePipelineItem={handleMovePipelineItem} onUpdateStages={handleUpdatePipelineStages} onSaveActionNote={handleSaveActionNote} onDeleteActionNote={handleDeleteActionNote} />;
       case "research":
-        return <ResearchPage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onAddSource={() => openWorkflow("file", { returnTo: "research" })} onQueueResearch={(accountId) => openWorkflow("research", accountId ? { accountId } : {})} onGenerateScripts={handleGenerateResearchScripts} onMoveScript={handleMoveScript} onGenerateReport={handleGenerateReport} />;
+        if (!effectiveAccessState.isAdmin) return <DashboardPage activeClient={activeClient} activeCampaign={activeCampaign} onNavigate={openView} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
+        return <ResearchPage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onEditAccount={editAccount} onAddSource={() => openWorkflow("file", { returnTo: "research" })} onGenerateScripts={handleGenerateResearchScripts} onSaveScript={handleSaveResearchScript} onDeleteScript={handleDeleteResearchScript} onSaveActionNote={handleSaveActionNote} onDeleteActionNote={handleDeleteActionNote} />;
+      case "locker-finder":
+        return <LockerFinderPage activeClient={activeClient} leadLists={leadLists} onSaveLeadList={handleSaveLeadList} onAppendToLeadList={handleAppendToLeadList} onOpenLeadLists={() => openView("lead-lists")} />;
       // Calls workspace disabled:
       // case "calls":
       //   return <CallsPage onOpenContact={openContact} onLogCall={handleLogCall} onStartCallBlock={() => openWorkflow("call")} />;
@@ -13802,6 +16138,8 @@ export default function App() {
             activeClient={activeClient}
             activeCampaign={activeCampaign}
             onNavigate={openView}
+            currentUserId={effectiveWorkspaceUser?.id || ""}
+            isAdmin={effectiveAccessState.isAdmin}
           />
         );
     }
@@ -13811,7 +16149,7 @@ export default function App() {
     <CrmDataContext.Provider value={visibleCrmData}>
       <CurrencyContext.Provider value={currencyContextValue}>
         <div className={`crm-app ${isDark ? "dark" : "light"}`}>
-        <Sidebar activeView={activeView} onNavigate={navigatePrimary} />
+        <Sidebar activeView={activeView} onNavigate={navigatePrimary} isAdmin={effectiveAccessState.isAdmin} />
         <div className="workspace">
           <TopBar
             canGoBack={viewHistory.length > 0}
@@ -13835,9 +16173,6 @@ export default function App() {
             </main>
             <RightDrawer
               open={drawerOpen}
-              activeView={activeView}
-              selectedAccount={selectedAccount}
-              activeCampaign={activeCampaign}
               isDark={isDark}
               onThemeToggle={() => setIsDark(value => !value)}
               onOpenHome={() => setShowHomePage(true)}

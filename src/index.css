@@ -7319,9 +7319,14 @@ textarea::placeholder {
 
 .app-loading-card {
   display: grid;
+  place-items: center;
   gap: 6px;
   color: var(--text);
   text-align: center;
+}
+
+.app-loading-card .button-spinner {
+  margin: 0 auto;
 }
 
 .app-loading-card strong {

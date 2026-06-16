@@ -5338,15 +5338,15 @@ function IntentResearchPage({
   onPromoteCompanyPeople,
 }) {
   const [form, setForm] = useState({
-    range: "90",
+    range: "365",
     customStart: "",
     customEnd: "",
     eventTypes: ["funding"],
-    geography: "",
-    industry: "",
-    sourceTypes: [],
-    query: "",
-    structuredJson: "",
+    geography: "Israel",
+    industry: "Cyber Security, AI, SaaS",
+    sourceTypes: ["api"],
+    query: israelCyberAiSampleQuery,
+    structuredJson: israelCyberAiSampleJson,
   });
   const [includeSeen, setIncludeSeen] = useState(false);
   const [filters, setFilters] = useState({ status: "new", eventType: "", date: "", confidence: "", existing: "" });
@@ -5376,6 +5376,21 @@ function IntentResearchPage({
     setForm(current => ({
       ...current,
       sourceTypes: current.sourceTypes.includes(type) ? current.sourceTypes.filter(item => item !== type) : [...current.sourceTypes, type],
+    }));
+  }
+
+  function loadIsraelCyberAiSample() {
+    setForm(current => ({
+      ...current,
+      range: "365",
+      customStart: "",
+      customEnd: "",
+      eventTypes: ["funding"],
+      geography: "Israel",
+      industry: "Cyber Security, AI, SaaS",
+      sourceTypes: ["api"],
+      query: israelCyberAiSampleQuery,
+      structuredJson: israelCyberAiSampleJson,
     }));
   }
 
@@ -5439,7 +5454,7 @@ function IntentResearchPage({
       </PageHeader>
       <div className="intent-research-layout">
         <section className="panel intent-research-form-panel">
-          <div className="panel-header"><div><span className="eyebrow">Research job</span><h2>Run new research</h2></div><StatusBadge>Source agnostic</StatusBadge></div>
+          <div className="panel-header"><div><span className="eyebrow">Research job</span><h2>Run new research</h2></div><button className="secondary-button small-button" type="button" onClick={loadIsraelCyberAiSample}>Load Israel Cyber + AI sample</button></div>
           <form className="intent-research-form" onSubmit={submitRun}>
             <label className="form-field intent-query-field"><span>Research brief</span><textarea value={form.query} onChange={event => updateForm("query", event.target.value)} placeholder="Find recently funded B2B software companies in the UK hiring RevOps or customer operations leaders." /></label>
             <div className="intent-brief-row">
@@ -7770,6 +7785,100 @@ const intentSources = ["Crunchbase", "LinkedIn", "Apollo", "Clay", "Manual", "Ot
 const intentEventStatuses = ["new", "reviewed", "rejected", "promoted"];
 const intentEventTypes = ["funding", "hiring", "expansion", "leadership_change", "acquisition", "partnership", "product_launch"];
 const intentSourceTypes = ["news", "vc_page", "company_blog", "press_release", "rss", "manual_url", "api", "other"];
+const israelCyberAiSampleEvents = [
+  {
+    company_name: "LayerX",
+    company_domain: "layerxsecurity.com",
+    company_website: "https://www.layerxsecurity.com",
+    company_linkedin_url: "https://www.linkedin.com/company/layerx-security",
+    event_type: "funding",
+    event_date: "2025-04-28",
+    title: "LayerX raises Series A funding",
+    summary: "LayerX provides a browser security platform that turns any browser into a secure and manageable workspace for enterprise users.",
+    funding_amount: "$11,000,000",
+    funding_currency: "USD",
+    funding_round: "Series A",
+    investors: [],
+    source_name: "Israel Cyber + AI sample",
+    source_url: "https://www.layerxsecurity.com",
+    confidence_score: 88,
+    people: [],
+  },
+  {
+    company_name: "Oligo Security",
+    company_domain: "oligo.security",
+    company_website: "https://www.oligo.security",
+    company_linkedin_url: "https://www.linkedin.com/company/oligo-security",
+    event_type: "funding",
+    event_date: "2025-01-29",
+    title: "Oligo Security raises Series B funding",
+    summary: "Oligo is a runtime security platform for applications, cloud services, workloads, AI applications, and AI agents.",
+    funding_amount: "$50,000,000",
+    funding_currency: "USD",
+    funding_round: "Series B",
+    investors: [],
+    source_name: "Israel Cyber + AI sample",
+    source_url: "https://www.oligo.security",
+    confidence_score: 90,
+    people: [],
+  },
+  {
+    company_name: "DeepKeep",
+    company_domain: "deepkeep.ai",
+    company_website: "https://www.deepkeep.ai",
+    company_linkedin_url: "https://www.linkedin.com/company/deepkeep",
+    event_type: "funding",
+    event_date: "2025-11-05",
+    title: "DeepKeep receives grant funding",
+    summary: "DeepKeep delivers AI security and trustworthiness controls across the AI lifecycle, including usage control, AI firewall, red teaming, and model scanning.",
+    funding_amount: "€2,500,000",
+    funding_currency: "EUR",
+    funding_round: "Grant",
+    investors: [],
+    source_name: "Israel Cyber + AI sample",
+    source_url: "https://www.deepkeep.ai",
+    confidence_score: 82,
+    people: [],
+  },
+  {
+    company_name: "Cynomi",
+    company_domain: "cynomi.com",
+    company_website: "https://www.cynomi.com",
+    company_linkedin_url: "https://www.linkedin.com/company/cynomi",
+    event_type: "funding",
+    event_date: "2025-04-23",
+    title: "Cynomi raises Series B funding",
+    summary: "Cynomi provides an AI-driven platform that automates risk and compliance assessments for virtual CISO and MSP workflows.",
+    funding_amount: "$37,000,000",
+    funding_currency: "USD",
+    funding_round: "Series B",
+    investors: [],
+    source_name: "Israel Cyber + AI sample",
+    source_url: "https://www.cynomi.com",
+    confidence_score: 86,
+    people: [],
+  },
+  {
+    company_name: "Lasso Security",
+    company_domain: "lasso.security",
+    company_website: "https://www.lasso.security",
+    company_linkedin_url: "https://www.linkedin.com/company/lasso-security",
+    event_type: "funding",
+    event_date: "2025-10-30",
+    title: "Lasso Security raises convertible note funding",
+    summary: "Lasso Security helps organizations adopt the GenAI era safely with security for applications, agents, and employees.",
+    funding_amount: "$10,000,000",
+    funding_currency: "USD",
+    funding_round: "Convertible Note",
+    investors: [],
+    source_name: "Israel Cyber + AI sample",
+    source_url: "https://www.lasso.security",
+    confidence_score: 84,
+    people: [],
+  },
+];
+const israelCyberAiSampleQuery = "Find active Israel-based companies in Cyber Security, Artificial Intelligence, or SaaS with funding between $1M and $10M. Focus on funding events and net-new buying signals.";
+const israelCyberAiSampleJson = JSON.stringify(israelCyberAiSampleEvents, null, 2);
 
 const intentCompanyColumnMap = {
   name: ["company", "company name", "account", "account name", "organisation", "organization", "name"],

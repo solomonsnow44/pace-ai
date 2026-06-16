@@ -490,7 +490,7 @@ const navItems = [
   { id: "clients", label: "Client Accounts", icon: Building2 },
   { id: "campaigns", label: "Campaigns", icon: Megaphone },
   { id: "contacts", label: "Contacts", icon: Contact, highlight: true },
-  { id: "intent-research", label: "Intent Research", icon: Database, highlight: true },
+  { id: "intent-research", label: "Intent Research", icon: Database, highlight: true, orgAdminOnly: true },
   { id: "cognism", label: "Lead Finder", icon: CognismLogoIcon, logo: cognismLogoUrl, highlight: true },
   { id: "lead-lists", label: "Lead Lists", icon: ListFilter, highlight: true },
   { id: "pipeline", label: "Pipeline", icon: KanbanSquare },
@@ -2280,6 +2280,11 @@ function roleAccessState(role) {
   };
 }
 
+function canAccessWorkspaceView(view, accessState = {}) {
+  if (view === "intent-research") return Boolean(accessState.isOrgAdmin);
+  return true;
+}
+
 function mapLeadListRecord(record) {
   return {
     id: record.id,
@@ -3279,7 +3284,7 @@ function PageHeader({ title, eyebrow, description, children }) {
   );
 }
 
-function Sidebar({ activeView, onNavigate, isAdmin = false }) {
+function Sidebar({ activeView, onNavigate, isAdmin = false, isOrgAdmin = false }) {
   return (
     <aside className="sidebar" aria-label="Primary navigation">
       <div className="sidebar-brand">
@@ -3288,7 +3293,7 @@ function Sidebar({ activeView, onNavigate, isAdmin = false }) {
         </button>
       </div>
       <nav className="sidebar-nav">
-        {navItems.map(item => {
+        {navItems.filter(item => !item.orgAdminOnly || isOrgAdmin).map(item => {
           const Icon = item.icon;
           const disabled = item.adminOnly && !isAdmin;
           return (
@@ -5331,6 +5336,7 @@ function IntentResearchPage({
   crmData,
   error = "",
   onRunResearch,
+  onResetTestData,
   onUpdateEventStatus,
   onPromoteEventCompany,
   onLinkEventCompany,
@@ -5342,24 +5348,61 @@ function IntentResearchPage({
     customStart: "",
     customEnd: "",
     eventTypes: ["funding"],
-    geography: "Israel",
-    industry: "Cyber Security, AI, SaaS",
+    geography: "",
+    industry: "",
     sourceTypes: ["api"],
-    query: israelCyberAiSampleQuery,
-    structuredJson: israelCyberAiSampleJson,
+    query: "",
+    structuredJson: "",
+  });
+  const [savedFilters, setSavedFilters] = useState({
+    locations: [],
+    operatingStatuses: [],
+    categories: [],
+    fundingRanges: [],
+    fundingStages: [],
+    headcounts: [],
   });
   const [includeSeen, setIncludeSeen] = useState(false);
   const [filters, setFilters] = useState({ status: "new", eventType: "", date: "", confidence: "", existing: "" });
-  const [selectedEventId, setSelectedEventId] = useState(intentData.events[0]?.id || "");
+  const [selectedEventId, setSelectedEventId] = useState(() => intentData.events[0]?.id || "");
+  const [selectedIntentPeopleIds, setSelectedIntentPeopleIds] = useState([]);
+  const [activeIntentSection, setActiveIntentSection] = useState("intent-overview");
   const [message, setMessage] = useState(error);
   const [running, setRunning] = useState(false);
-  const selectedEvent = intentData.events.find(event => event.id === selectedEventId) || intentData.events[0] || null;
-  const eventPeople = selectedEvent ? intentData.people.filter(person => person.intentEventId === selectedEvent.id) : [];
+  const [intentCountryLibrary, setIntentCountryLibrary] = useState(null);
+  const sourceEvents = intentData.events;
+  const selectedEvent = sourceEvents.find(event => event.id === selectedEventId) || sourceEvents[0] || null;
+  const selectedEventIsPersisted = Boolean(selectedEvent?.id && !String(selectedEvent.id).startsWith("sample-"));
+  const selectedProfile = selectedEvent?.rawData || {};
+  const persistedPeople = selectedEventIsPersisted
+    ? intentData.people.filter(person => person.intentEventId === selectedEvent.id)
+    : [];
+  const profilePeople = selectedProfile.key_people || selectedProfile.people || [];
+  const eventPeople = selectedEvent
+    ? (persistedPeople.length ? persistedPeople : profilePeople.map((person, index) => ({
+      id: `${selectedEvent.id}-person-${index}`,
+      name: person.name || "",
+      title: person.title || "",
+      linkedinUrl: person.linkedin_url || person.linkedinUrl || "",
+      department: person.department || "",
+      seniority: person.seniority || "",
+      source: person.source || "Sample",
+      pastRole: person.past_role || person.pastRole || "",
+      boardDate: person.board_date || person.boardDate || "",
+      imageUrl: person.image_url || person.imageUrl || person.photo_url || person.photoUrl || person.avatar_url || person.avatarUrl || "",
+      rawData: person.rawData || person.raw_data || person,
+    })))
+    : [];
+  const selectedIntentPeople = eventPeople.filter(person => selectedIntentPeopleIds.includes(person.id));
 
   useEffect(() => {
-    if (!selectedEventId && intentData.events.length) setSelectedEventId(intentData.events[0].id);
-    if (selectedEventId && !intentData.events.some(event => event.id === selectedEventId)) setSelectedEventId(intentData.events[0]?.id || "");
-  }, [intentData.events, selectedEventId]);
+    if (!selectedEventId && sourceEvents.length) setSelectedEventId(sourceEvents[0].id);
+    if (selectedEventId && !sourceEvents.some(event => event.id === selectedEventId)) setSelectedEventId(sourceEvents[0]?.id || "");
+  }, [sourceEvents, selectedEventId]);
+
+  useEffect(() => {
+    setSelectedIntentPeopleIds([]);
+  }, [selectedEvent?.id]);
 
   function updateForm(field, value) {
     setForm(current => ({ ...current, [field]: value }));
@@ -5379,19 +5422,46 @@ function IntentResearchPage({
     }));
   }
 
-  function loadIsraelCyberAiSample() {
+  function toggleSavedFilter(group, value) {
+    setSavedFilters(current => {
+      const selected = new Set(current[group] || []);
+      if (value === "All") {
+        return { ...current, [group]: selected.has("All") ? [] : ["All"] };
+      }
+      selected.delete("All");
+      if (selected.has(value)) selected.delete(value);
+      else selected.add(value);
+      return { ...current, [group]: [...selected] };
+    });
+  }
+
+  function resetIntentResearchForm() {
+    const nextFilters = {
+      locations: [],
+      operatingStatuses: [],
+      categories: [],
+      fundingRanges: [],
+      fundingStages: [],
+      headcounts: [],
+    };
+    setSavedFilters(nextFilters);
     setForm(current => ({
       ...current,
       range: "365",
       customStart: "",
       customEnd: "",
       eventTypes: ["funding"],
-      geography: "Israel",
-      industry: "Cyber Security, AI, SaaS",
+      geography: "",
+      industry: "",
       sourceTypes: ["api"],
-      query: israelCyberAiSampleQuery,
-      structuredJson: israelCyberAiSampleJson,
+      query: "",
+      structuredJson: "",
     }));
+  }
+
+  function savedFilterSummary(group) {
+    const values = savedFilters[group] || [];
+    return values.length ? values.join(", ") : "Any";
   }
 
   function dateRange() {
@@ -5416,13 +5486,25 @@ function IntentResearchPage({
         const parsed = JSON.parse(form.structuredJson);
         structuredEvents = Array.isArray(parsed) ? parsed : Array.isArray(parsed.events) ? parsed.events : [parsed];
       }
+      if (!structuredEvents.length) {
+        setMessage("No research connector is connected yet. These filters are ready, but the app needs a web/API extractor to return companies before results can appear.");
+        return;
+      }
       const result = await onRunResearch({
-        query: form.query,
+        query: [
+          form.query || "Intent research",
+          `Geography: ${normalizeLookupValue(form.geography) || "Any"}`,
+          `Status: ${savedFilterSummary("operatingStatuses")}`,
+          `Industry/ICP: ${normalizeLookupValue(form.industry) || savedFilterSummary("categories")}`,
+          `Funding range: ${savedFilterSummary("fundingRanges")}`,
+          `Funding stage: ${savedFilterSummary("fundingStages")}`,
+          `Headcount: ${savedFilterSummary("headcounts")}`,
+        ].join(" | "),
         dateRangeStart: range.start,
         dateRangeEnd: range.end,
         eventTypes: form.eventTypes,
-        geography: form.geography,
-        industry: form.industry,
+        geography: normalizeLookupValue(form.geography),
+        industry: normalizeLookupValue(form.industry) || savedFilterSummary("categories"),
         sourceFilter: form.sourceTypes,
         events: structuredEvents,
       });
@@ -5434,7 +5516,24 @@ function IntentResearchPage({
     }
   }
 
-  const visibleEvents = intentData.events.filter(event => {
+  async function resetIsraelCyberAiTest() {
+    setMessage("");
+    setRunning(true);
+    try {
+      await onResetTestData?.();
+      resetIntentResearchForm();
+      setIncludeSeen(false);
+      setFilters({ status: "new", eventType: "", date: "", confidence: "", existing: "" });
+      setSelectedEventId("");
+      setMessage("Research reset. Enter your criteria in the left sidebar, then press Run.");
+    } catch (resetError) {
+      setMessage(resetError.message || "Could not reset intent research test data.");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const visibleEvents = sourceEvents.filter(event => {
     if (!includeSeen && event.status !== "new") return false;
     if (filters.status && event.status !== filters.status) return false;
     if (filters.eventType && event.eventType !== filters.eventType) return false;
@@ -5446,85 +5545,586 @@ function IntentResearchPage({
   });
 
   const companyDuplicates = selectedEvent ? findIntentEventCompanyDuplicates(selectedEvent, crmData.accounts || []) : [];
+  const selectedCategories = selectedProfile.categories
+    || selectedProfile.category_list
+    || savedFilters.categories
+    || [];
+  const selectedLocation = selectedProfile.location || savedFilterSummary("locations");
+  const selectedHeadcount = selectedProfile.employee_range || selectedProfile.headcount || savedFilterSummary("headcounts");
+  const selectedGrowthScore = selectedProfile.growth_score || selectedProfile.growthScore || Math.min(99, Math.max(72, Number(selectedEvent?.confidenceScore || 84) + 5));
+  const selectedHeatScore = selectedProfile.heat_score || selectedProfile.heatScore || Math.min(99, Math.max(65, Number(selectedEvent?.confidenceScore || 78) - 8));
+  const selectedCbRank = selectedProfile.cb_rank || selectedProfile.cbRank || selectedProfile.rank || "New";
+  const selectedFounded = selectedProfile.founded || selectedProfile.founded_on || "Unknown";
+  const selectedDescription = selectedProfile.description || selectedEvent?.summary || "External buying signal staged for review before promotion into the CRM.";
+  const selectedTotalFunding = selectedProfile.total_funding || selectedProfile.totalFunding || selectedEvent?.fundingAmount || "Not disclosed";
+  const selectedLatestFunding = selectedProfile.latest_funding || selectedProfile.latestFunding || selectedEvent?.fundingAmount || "Not disclosed";
+  const selectedLatestFundingDate = selectedProfile.latest_funding_date || selectedProfile.latestFundingDate || selectedEvent?.eventDate || "";
+  const fundingRounds = selectedProfile.funding_rounds || selectedProfile.fundingRounds || [];
+  const details = selectedProfile.details || {};
+  const products = selectedProfile.products || [];
+  const competitors = selectedProfile.competitors || [];
+  const newsItems = selectedProfile.news || [];
+  const technology = selectedProfile.technology || [];
+  const lists = selectedProfile.lists || [];
+  const sourceCoverage = selectedProfile.source_coverage || selectedProfile.sourceCoverage || [];
+  const selectedLogoUrl = selectedProfile.logo_url || selectedProfile.logoUrl || (selectedEvent?.companyDomain ? `https://logo.clearbit.com/${extractDomain(selectedEvent.companyDomain)}` : "");
+  const geographyCountryOptions = useMemo(() => {
+    const query = normalizeLookupValue(form.geography).toLowerCase();
+    return (intentCountryLibrary?.Country?.getAllCountries?.() || [])
+      .filter(country => !query || country.name.toLowerCase().includes(query) || country.isoCode.toLowerCase().includes(query))
+      .slice(0, 30);
+  }, [form.geography, intentCountryLibrary]);
+  const intentSectionLinks = [
+    ["Overview", "intent-overview"],
+    ["Predictions & Insights", "intent-predictions-insights"],
+    ["Growth Outlook", "intent-predictions-insights"],
+    ["Financials", "intent-financials"],
+    ["Sources", "intent-sources"],
+    ["People", "intent-people"],
+    ["Profiles & Contacts", "intent-people"],
+    ["Financial Details", "intent-financial-details"],
+    ["Market Intelligence", "intent-market-intelligence"],
+    ["News", "intent-news"],
+    ["Technology", "intent-technology"],
+    ["Lists Featuring This Company", "intent-lists-featuring-this-company"],
+    ["Frequently Asked Questions", "intent-frequently-asked-questions"],
+  ];
+
+  useEffect(() => {
+    const ids = [...new Set(intentSectionLinks.map(([, id]) => id))];
+    const sections = ids.map(id => document.getElementById(id)).filter(Boolean);
+    if (!sections.length) return undefined;
+    const observer = new IntersectionObserver(entries => {
+      const visible = entries
+        .filter(entry => entry.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (visible?.target?.id) setActiveIntentSection(visible.target.id);
+    }, { rootMargin: "-18% 0px -62% 0px", threshold: [0.12, 0.3, 0.55] });
+    sections.forEach(section => observer.observe(section));
+    return () => observer.disconnect();
+  }, [selectedEvent?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    import("country-state-city")
+      .then(module => {
+        if (!cancelled) setIntentCountryLibrary(module);
+      })
+      .catch(() => {
+        if (!cancelled) setIntentCountryLibrary(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function jumpToIntentSection(event, targetId) {
+    event.preventDefault();
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    setActiveIntentSection(targetId);
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function intentPersonImageUrl(person = {}) {
+    return person.imageUrl
+      || person.image_url
+      || person.photoUrl
+      || person.photo_url
+      || person.avatarUrl
+      || person.avatar_url
+      || person.rawData?.image_url
+      || person.rawData?.photo_url
+      || person.rawData?.avatar_url
+      || "";
+  }
+
+  function buildIntentPersonLinkedInUrl(person = {}) {
+    if (person.linkedinUrl) return normalizeLinkedinUrl(person.linkedinUrl);
+    const keywords = encodeURIComponent([
+      person.name,
+      selectedEvent?.companyName,
+      person.title,
+    ].map(normalizeLookupValue).filter(Boolean).join(" "));
+    return `https://www.linkedin.com/search/results/people/?keywords=${keywords}`;
+  }
+
+  function splitIntentPersonName(person = {}) {
+    const fullName = normalizeLookupValue(person.name || person.fullName || person.full_name);
+    const firstName = normalizeLookupValue(person.firstName || person.first_name);
+    const lastName = normalizeLookupValue(person.lastName || person.last_name);
+    if (firstName || lastName) return { firstName, lastName, fullName: fullName || [firstName, lastName].filter(Boolean).join(" ") };
+    const parts = fullName.split(/\s+/).filter(Boolean);
+    return {
+      firstName: parts[0] || "",
+      lastName: parts.length > 1 ? parts.slice(1).join(" ") : "",
+      fullName,
+    };
+  }
+
+  function makeIntentPeopleExportRow(person = {}) {
+    const names = splitIntentPersonName(person);
+    return {
+      companyName: selectedEvent?.companyName || person.companyName || "",
+      companyDomain: selectedEvent?.companyDomain || person.companyDomain || "",
+      companyWebsite: selectedEvent?.companyWebsite || "",
+      intentEventId: selectedEvent?.id || person.intentEventId || "",
+      intentEventType: selectedEvent?.eventType || "",
+      intentEventDate: selectedEvent?.eventDate || "",
+      intentEventTitle: selectedEvent?.title || "",
+      firstName: names.firstName,
+      lastName: names.lastName,
+      fullName: names.fullName,
+      title: person.title || "",
+      linkedinUrl: person.linkedinUrl || "",
+      email: person.email || "",
+      phone: person.phone || "",
+      department: person.department || "",
+      seniority: person.seniority || "",
+      source: person.source || selectedEvent?.sourceName || "",
+      sourceUrl: selectedEvent?.sourceUrl || "",
+      status: person.status || "new",
+      confidenceScore: person.rawData?.confidence_score || person.confidenceScore || selectedEvent?.confidenceScore || "",
+    };
+  }
+
+  function exportIntentPeopleCsv(people = eventPeople) {
+    if (!people.length || !selectedEvent) return;
+    const header = intentPeopleExportColumns.map(([, label]) => csvEscape(label)).join(",");
+    const rows = people.map(person => {
+      const row = makeIntentPeopleExportRow(person);
+      return intentPeopleExportColumns.map(([key]) => csvEscape(row[key])).join(",");
+    });
+    downloadTextFile(defaultCsvFilename(`${selectedEvent.companyName || "intent"}-people-enrichment`), "text/csv;charset=utf-8", [header, ...rows].join("\n"));
+  }
+
+  function toggleIntentPersonSelection(personId) {
+    setSelectedIntentPeopleIds(current => current.includes(personId) ? current.filter(id => id !== personId) : [...current, personId]);
+  }
+
+  function toggleAllIntentPeople() {
+    setSelectedIntentPeopleIds(current => current.length === eventPeople.length ? [] : eventPeople.map(person => person.id));
+  }
+
+  function renderIntentLogo(name, url, className = "intent-cb-logo") {
+    return (
+      <span className={className}>
+        {url ? <img src={url} alt={`${name || "Company"} logo`} onError={event => event.currentTarget.closest(`.${className}`)?.classList.add("image-failed")} /> : null}
+        <span>{accountInitial(name || "I")}</span>
+      </span>
+    );
+  }
 
   return (
-    <>
-      <PageHeader eyebrow="Intent/Staging" title="Intent Research" description="Research external buying signals, dedupe previously seen events, then explicitly promote only approved records.">
-        <StatusBadge tone="accent">{visibleEvents.length} visible</StatusBadge>
-      </PageHeader>
-      <div className="intent-research-layout">
-        <section className="panel intent-research-form-panel">
-          <div className="panel-header"><div><span className="eyebrow">Research job</span><h2>Run new research</h2></div><button className="secondary-button small-button" type="button" onClick={loadIsraelCyberAiSample}>Load Israel Cyber + AI sample</button></div>
-          <form className="intent-research-form" onSubmit={submitRun}>
-            <label className="form-field intent-query-field"><span>Research brief</span><textarea value={form.query} onChange={event => updateForm("query", event.target.value)} placeholder="Find recently funded B2B software companies in the UK hiring RevOps or customer operations leaders." /></label>
-            <div className="intent-brief-row">
-              <label className="form-field"><span>Date range</span><select value={form.range} onChange={event => updateForm("range", event.target.value)}><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 6 months</option><option value="365">Last 1 year</option><option value="custom">Custom</option></select></label>
-              {form.range === "custom" ? <label className="form-field"><span>Start</span><input type="date" value={form.customStart} onChange={event => updateForm("customStart", event.target.value)} /></label> : null}
-              {form.range === "custom" ? <label className="form-field"><span>End</span><input type="date" value={form.customEnd} onChange={event => updateForm("customEnd", event.target.value)} /></label> : null}
-              <label className="form-field"><span>Geography</span><input value={form.geography} onChange={event => updateForm("geography", event.target.value)} placeholder="UK, Ireland, EMEA" /></label>
-              <label className="form-field"><span>Industry</span><input value={form.industry} onChange={event => updateForm("industry", event.target.value)} placeholder="Cybersecurity or SaaS" /></label>
+    <div className="intent-cb-page">
+      <header className="intent-cb-topbar">
+        <div className="intent-cb-brand">
+          <Database size={22} />
+          <span>Intent Research</span>
+        </div>
+        <div className="intent-cb-top-actions">
+          <label className="toggle-row"><input type="checkbox" checked={includeSeen} onChange={event => setIncludeSeen(event.target.checked)} />Include previously seen</label>
+          <button className="secondary-button" type="button" onClick={resetIsraelCyberAiTest} disabled={running}>Reset</button>
+          <button className="primary-button" type="button" onClick={submitRun} disabled={running}>
+            {running ? <LoaderCircle className="button-spinner" size={16} /> : <Search size={16} />}
+            {running ? "Running" : "Run research"}
+          </button>
+        </div>
+      </header>
+
+      {message || error ? <div className={`form-success ${(message || error).toLowerCase().includes("could not") ? "warning" : ""}`}>{message || error}</div> : null}
+
+      <div className="intent-cb-shell">
+        <aside className="intent-cb-sidebar">
+          <form className="intent-cb-builder" onSubmit={submitRun}>
+            <div>
+              <span className="eyebrow">Run Research</span>
+              <h3>Find new intent</h3>
             </div>
-            <div className="intent-chip-section">
-              <div className="intent-section-label">
-                <span>Signals</span>
-                <small>{form.eventTypes.length || "No"} selected</small>
+            <label>
+              <span>Geography</span>
+              <input list="intent-country-options" value={form.geography} onChange={event => updateForm("geography", event.target.value)} placeholder="Country, region, city" />
+              <datalist id="intent-country-options">
+                {geographyCountryOptions.map(country => <option key={country.isoCode} value={country.name}>{country.isoCode}</option>)}
+              </datalist>
+            </label>
+            <label>
+              <span>Industry / ICP</span>
+              <input value={form.industry} onChange={event => updateForm("industry", event.target.value)} placeholder="Cyber Security, AI, SaaS" />
+            </label>
+            <label>
+              <span>Date range</span>
+              <select value={form.range} onChange={event => updateForm("range", event.target.value)}>
+                <option value="30">Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="180">Last 6 months</option>
+                <option value="365">Last 1 year</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            {form.range === "custom" ? (
+              <div className="intent-cb-builder-split">
+                <label><span>Start</span><input type="date" value={form.customStart} onChange={event => updateForm("customStart", event.target.value)} /></label>
+                <label><span>End</span><input type="date" value={form.customEnd} onChange={event => updateForm("customEnd", event.target.value)} /></label>
               </div>
-              <div className="intent-chip-row">
-                {intentEventTypes.map(type => <button key={type} className={`intent-chip ${form.eventTypes.includes(type) ? "selected" : ""}`} type="button" onClick={() => toggleEventType(type)}>{titleCase(type.replaceAll("_", " "))}</button>)}
+            ) : null}
+            <div className="intent-cb-builder-group">
+              <span>Funding stage</span>
+              <div className="intent-cb-filter-options">
+                {intentSavedSearchFilters.fundingStages.map(value => (
+                  <button key={value} className={savedFilters.fundingStages?.includes(value) ? "selected" : ""} type="button" onClick={() => toggleSavedFilter("fundingStages", value)}>{value}</button>
+                ))}
               </div>
             </div>
-            <details className="intent-advanced-options">
-              <summary>Advanced sources and test extraction</summary>
-              <div className="intent-chip-section">
-                <div className="intent-section-label">
-                  <span>Sources</span>
-                  <small>{form.sourceTypes.length ? `${form.sourceTypes.length} selected` : "All sources"}</small>
-                </div>
-                <div className="intent-chip-row">
-                  {intentSourceTypes.map(type => <button key={type} className={`intent-chip ${form.sourceTypes.includes(type) ? "selected" : ""}`} type="button" onClick={() => toggleSourceType(type)}>{titleCase(type.replaceAll("_", " "))}</button>)}
-                </div>
+            <div className="intent-cb-builder-group">
+              <span>Funding range</span>
+              <div className="intent-cb-filter-options">
+                {intentSavedSearchFilters.fundingRanges.map(value => (
+                  <button key={value} className={savedFilters.fundingRanges?.includes(value) ? "selected" : ""} type="button" onClick={() => toggleSavedFilter("fundingRanges", value)}>{value}</button>
+                ))}
               </div>
-              <label className="form-field"><span>Structured extraction JSON</span><textarea value={form.structuredJson} onChange={event => updateForm("structuredJson", event.target.value)} placeholder='Paste extracted events JSON. Future OpenAI/web extraction will fill this automatically.' /></label>
-            </details>
-            <div className="intent-form-actions">
-              <button className="primary-button" type="submit" disabled={running}>{running ? <LoaderCircle className="button-spinner" size={16} /> : <Search size={16} />}{running ? "Running" : "Run research"}</button>
+            </div>
+            <div className="intent-cb-builder-actions">
+              <button className="primary-button" type="submit" disabled={running}>
+                {running ? <LoaderCircle className="button-spinner" size={16} /> : <Search size={16} />}
+                {running ? "Running" : "Run"}
+              </button>
+              <button className="secondary-button" type="button" onClick={resetIsraelCyberAiTest} disabled={running}>Reset</button>
             </div>
           </form>
-          {message || error ? <div className={`form-success ${(message || error).toLowerCase().includes("could not") ? "warning" : ""}`}>{message || error}</div> : null}
-        </section>
-        <section className="panel intent-run-history-panel">
-          <div className="panel-header"><div><span className="eyebrow">Memory</span><h2>Run history</h2></div><StatusBadge>{intentData.runs.length}</StatusBadge></div>
-          <div className="compact-list">
-            {intentData.runs.length ? intentData.runs.slice(0, 8).map(run => <article key={run.id} className="compact-list-item"><div><strong>{run.query || "Intent research run"}</strong><span>{new Date(run.createdAt).toLocaleString()} - {run.status}</span></div><StatusBadge>{run.newInserted} new / {run.duplicatesSkipped} skipped</StatusBadge></article>) : <EmptyState icon={Clock} title="No research runs" text="Run history appears after the first intent research job." />}
+          <nav className="intent-cb-nav">
+            {intentSectionLinks.map(([item, target]) => (
+              <a key={`${target}-${item}`} className={activeIntentSection === target ? "active" : ""} href={`#${target}`} onClick={event => jumpToIntentSection(event, target)}>{item}</a>
+            ))}
+          </nav>
+          <details className="intent-cb-filter-drawer">
+            <summary>More filters</summary>
+            <div className="intent-cb-filters">
+              {[
+                ["operatingStatuses", "Status"],
+                ["categories", "Categories"],
+                ["headcounts", "Employees"],
+              ].map(([group, label]) => (
+                <section key={group}>
+                  <div className="intent-cb-filter-title">
+                    <span>{label}</span>
+                    <small>{savedFilterSummary(group)}</small>
+                  </div>
+                  <div className="intent-cb-filter-options">
+                    {intentSavedSearchFilters[group].map(value => (
+                      <button key={value} className={savedFilters[group]?.includes(value) ? "selected" : ""} type="button" onClick={() => toggleSavedFilter(group, value)}>{value}</button>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </details>
+        </aside>
+
+        <main className="intent-cb-main">
+          {selectedEvent ? (
+          <>
+          <section className="intent-cb-profile-hero">
+            {renderIntentLogo(selectedEvent?.companyName || "Intent Company", selectedLogoUrl)}
+            <div className="intent-cb-profile-copy">
+              <div className="intent-cb-title-row">
+                <h1>{selectedEvent?.companyName || "Intent Company"}</h1>
+                <div className="intent-cb-scores">
+                  <span>Growth Score <strong>{selectedGrowthScore}</strong></span>
+                  <span>CB Rank <strong>{selectedCbRank}</strong></span>
+                  <span>Heat Score <strong>{selectedHeatScore}</strong></span>
+                </div>
+              </div>
+              <p>{selectedDescription}</p>
+              <div className="intent-cb-meta-row">
+                <span>Founded {selectedFounded}</span>
+                <span>{selectedProfile.ownership || "Private"}</span>
+                <span>{selectedEvent?.fundingRound || selectedProfile.last_round || "Venture - Series Unknown"}</span>
+                <span>{selectedLocation}</span>
+                <span>{selectedHeadcount}</span>
+                {selectedEvent?.companyWebsite ? <a href={selectedEvent.companyWebsite} target="_blank" rel="noreferrer">{extractDomain(selectedEvent.companyWebsite)}</a> : null}
+              </div>
+              {selectedEvent ? (
+                <div className="intent-cb-source-line">
+                  <span>Intent/Staging</span>
+                  <span>Sources: {(sourceCoverage.length ? sourceCoverage : [{ name: selectedEvent?.sourceName || "Research source" }]).map(source => source.name).filter(Boolean).slice(0, 3).join(", ")}</span>
+                </div>
+              ) : null}
+              <div className="intent-cb-tag-row">
+                {(Array.isArray(selectedCategories) ? selectedCategories : [selectedCategories]).slice(0, 7).map(category => <span key={category}>{category}</span>)}
+              </div>
+            </div>
+          </section>
+
+          <div className="intent-cb-content-grid">
+            <section className="intent-cb-results-card">
+              <div className="intent-cb-section-head">
+                <div><span className="eyebrow">Results</span><h2>{visibleEvents.length} companies</h2></div>
+                <select value={filters.eventType} onChange={event => setFilters(current => ({ ...current, eventType: event.target.value }))}>
+                  <option value="">All signals</option>
+                  {intentEventTypes.map(type => <option key={type} value={type}>{titleCase(type.replaceAll("_", " "))}</option>)}
+                </select>
+              </div>
+              <div className="intent-cb-result-list">
+                {visibleEvents.map(event => (
+                  <button key={event.id} type="button" className={selectedEvent?.id === event.id ? "selected" : ""} onClick={() => setSelectedEventId(event.id)}>
+                    {renderIntentLogo(event.companyName, event.rawData?.logo_url || (event.companyDomain ? `https://logo.clearbit.com/${extractDomain(event.companyDomain)}` : ""), "intent-cb-result-logo")}
+                    <span>
+                      <strong>{event.companyName}</strong>
+                      <small>{[event.fundingRound, event.fundingAmount, event.eventDate].filter(Boolean).join(" • ")}</small>
+                    </span>
+                    <em>{event.confidenceScore || 80}</em>
+                  </button>
+                ))}
+                {!visibleEvents.length ? <div className="intent-cb-empty-results">No current intent results. Enter criteria in the left sidebar and run research.</div> : null}
+              </div>
+            </section>
+
+            <section className="intent-cb-overview" id="intent-overview">
+              <div className="intent-cb-section-head">
+                <div><span className="eyebrow">Overview</span><h2>Company Signal</h2></div>
+                <StatusBadge tone={selectedEvent?.status === "promoted" ? "success" : "accent"}>{titleCase(selectedEvent?.status || "new")}</StatusBadge>
+              </div>
+              <div className="intent-cb-metric-row">
+                <div><span>Total Funding</span><strong>{selectedTotalFunding}</strong><small>{selectedLatestFunding} {selectedEvent?.fundingRound || "Funding"} raised {selectedLatestFundingDate}</small></div>
+                <div><span>Growth Score</span><strong>{selectedGrowthScore}</strong><small>{selectedProfile.growth_delta || "-7 pts"} in past quarter</small></div>
+                <div><span>Heat Score</span><strong>{selectedHeatScore}</strong><small>{selectedProfile.heat_delta || "-37 pts"} in past quarter</small></div>
+              </div>
+              <div className="intent-cb-two-column">
+                <div>
+                  <h3>Funding Rounds</h3>
+                  <div className="intent-cb-mini-list">
+                    {(fundingRounds.length ? fundingRounds.slice(0, 3) : [{ date: selectedEvent?.eventDate, round: selectedEvent?.fundingRound, amount: selectedEvent?.fundingAmount, title: selectedEvent?.title }]).map((round, index) => (
+                      <article key={`${round.round}-${index}`}>
+                        <strong>{round.round || "Funding Round"}</strong>
+                        <span>{[round.amount, round.date].filter(Boolean).join(" in ")}</span>
+                        {round.lead ? <small>Led by {round.lead}</small> : null}
+                      </article>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h3>Key People</h3>
+                  <div className="intent-cb-mini-list">
+                    {eventPeople.slice(0, 2).map(person => (
+                      <article key={`overview-${person.id}`}>
+                        <strong>{person.name}: {person.title}</strong>
+                        {person.pastRole ? <span>Past Role: {person.pastRole}</span> : null}
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="intent-cb-action-row">
+                {companyDuplicates.length ? <button className="secondary-button" type="button" onClick={() => onLinkEventCompany(selectedEvent, companyDuplicates[0])} disabled={!selectedEventIsPersisted}>Link existing company</button> : null}
+                <button className="secondary-button" type="button" onClick={() => onUpdateEventStatus(selectedEvent, "reviewed")} disabled={!selectedEventIsPersisted}>Mark reviewed</button>
+                <button className="secondary-button danger-button" type="button" onClick={() => onUpdateEventStatus(selectedEvent, "rejected")} disabled={!selectedEventIsPersisted}>Reject</button>
+                <button className="primary-button" type="button" disabled={!selectedEventIsPersisted || selectedEvent?.promotedCompanyId} onClick={() => onPromoteEventCompany(selectedEvent)}>Push to CRM</button>
+              </div>
+            </section>
+
+            <section className="intent-cb-card" id="intent-predictions-insights">
+              <div className="intent-cb-section-head"><div><span className="eyebrow">Predictions & Insights</span><h2>Growth Outlook</h2></div></div>
+              <div className="intent-cb-insight-grid">
+                <article><span>Growth Insight</span><strong>{selectedProfile.growth_outlook || "Growing"}</strong><small>Top factor: {selectedProfile.growth_factor || "Recently Raised Funding"}</small></article>
+                <article><span>Future Growth</span><strong>{selectedProfile.future_growth || "Very Likely"}</strong><small>Updated {selectedProfile.growth_updated || "May 18, 2025"}</small></article>
+                <article><span>Notable Event</span><strong>{selectedProfile.notable_event_type || selectedEvent?.eventType || "Funding"}</strong><small>{selectedProfile.notable_event || selectedEvent?.title}</small></article>
+              </div>
+            </section>
+
+            <section className="intent-cb-card" id="intent-financials">
+              <div className="intent-cb-section-head"><div><span className="eyebrow">Financials</span><h2>Funding Rounds</h2></div></div>
+              {(fundingRounds.length ? fundingRounds : [{ date: selectedEvent?.eventDate, round: selectedEvent?.fundingRound, amount: selectedEvent?.fundingAmount, title: selectedEvent?.title }]).map((round, index) => (
+                <div className="intent-cb-funding-row" key={`${round.date}-${round.round}-${index}`}>
+                  <span>{round.date || "Date unknown"}</span>
+                  <strong>{round.round || "Funding Round"}</strong>
+                  <em>{round.amount || "Not disclosed"}</em>
+                  <small>{round.lead ? `Led by ${round.lead}` : round.title || ""}</small>
+                </div>
+              ))}
+            </section>
+
+            <section className="intent-cb-card" id="intent-sources">
+              <div className="intent-cb-section-head">
+                <div><span className="eyebrow">Sources</span><h2>Source Coverage</h2></div>
+                <StatusBadge>{(sourceCoverage.length || 1)} checked</StatusBadge>
+              </div>
+              <div className="intent-cb-source-grid">
+                {(sourceCoverage.length ? sourceCoverage : [{ name: selectedEvent?.sourceName || "Intent source", type: "Source", url: selectedEvent?.sourceUrl, detail: selectedEvent?.title || "Primary signal source" }]).map(source => (
+                  <article key={`${source.name}-${source.detail}`}>
+                    <div>
+                      <span>{source.type || "Source"}</span>
+                      <strong>{source.name}</strong>
+                      <small>{source.detail}</small>
+                    </div>
+                    {source.url ? <a href={source.url} target="_blank" rel="noreferrer"><ExternalLink size={15} /> Open</a> : null}
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="intent-cb-card" id="intent-people">
+              <div className="intent-cb-section-head">
+                <div><span className="eyebrow">People</span><h2>Profiles & Contacts</h2></div>
+                <div className="intent-people-actions">
+                  <button className="secondary-button" type="button" onClick={() => exportIntentPeopleCsv(eventPeople)} disabled={!eventPeople.length}><Download size={15} /> Export all</button>
+                  <button className="secondary-button" type="button" onClick={() => exportIntentPeopleCsv(selectedIntentPeople)} disabled={!selectedIntentPeople.length}><Download size={15} /> Export selected</button>
+                  <button className="primary-button" type="button" onClick={() => onPromoteCompanyPeople(selectedEvent, selectedIntentPeople.length ? selectedIntentPeople : eventPeople)} disabled={!selectedEventIsPersisted || !eventPeople.length}><Contact size={15} /> Add {selectedIntentPeople.length ? "selected" : "all"} to Contacts</button>
+                </div>
+              </div>
+              <div className="intent-cb-research-note">
+                <ExternalLink size={17} />
+                <span>Export staged people for enrichment. Missing fields are left blank for Clay, Apollo, or manual enrichment.</span>
+              </div>
+              <div className="intent-cb-people-stats">
+                <div><span>Headcount</span><strong>{selectedHeadcount}</strong></div>
+                <div><span>Employee Profiles</span><strong>{eventPeople.filter(person => !/board/i.test(person.title || "")).length}</strong></div>
+                <div><span>Selected</span><strong>{selectedIntentPeople.length}</strong></div>
+              </div>
+              {eventPeople.length ? (
+                <label className="intent-select-all-row">
+                  <input type="checkbox" checked={selectedIntentPeopleIds.length === eventPeople.length} onChange={toggleAllIntentPeople} />
+                  <span>{selectedIntentPeopleIds.length === eventPeople.length ? "Clear selection" : "Select all people from this company"}</span>
+                </label>
+              ) : null}
+              <div className="intent-cb-people-grid">
+                {eventPeople.length ? eventPeople.map(person => (
+                  <article key={person.id}>
+                    <input className="intent-person-select" type="checkbox" checked={selectedIntentPeopleIds.includes(person.id)} onChange={() => toggleIntentPersonSelection(person.id)} aria-label={`Select ${person.name || "person"}`} />
+                    <span className="intent-cb-person-photo">
+                      {intentPersonImageUrl(person) ? <img src={intentPersonImageUrl(person)} alt={person.name || "Person"} onError={event => event.currentTarget.closest(".intent-cb-person-photo")?.classList.add("image-failed")} /> : null}
+                      <span>{accountInitial(person.name || "P")}</span>
+                    </span>
+                    <div>
+                      <strong>{person.name || "Unknown person"}</strong>
+                      <small>{person.title || "Executive"}</small>
+                      {person.pastRole ? <small>Past Role: {person.pastRole}</small> : null}
+                      {person.boardDate ? <small>{person.boardDate}</small> : null}
+                      <div className="intent-cb-person-actions">
+                        <a
+                          className={person.linkedinUrl ? "intent-linkedin-action" : "intent-linkedin-action intent-linkedin-search"}
+                          href={buildIntentPersonLinkedInUrl(person)}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={person.linkedinUrl ? `Open ${person.name || "person"} on LinkedIn` : `Search LinkedIn for ${person.name || "this person"}`}
+                        >
+                          {person.linkedinUrl ? <ExternalLink size={15} /> : <Search size={14} />}
+                          {person.linkedinUrl ? "LinkedIn" : "Search LinkedIn"}
+                        </a>
+                        <button type="button" onClick={() => onPromotePerson(person, selectedEvent)} disabled={!selectedEventIsPersisted || person.promotedContactId}>Promote</button>
+                      </div>
+                    </div>
+                  </article>
+                )) : <p>No key people extracted yet.</p>}
+              </div>
+            </section>
+
+            <section className="intent-cb-card" id="intent-financial-details">
+              <div className="intent-cb-section-head"><div><span className="eyebrow">Financial Details</span><h2>Company Details</h2></div></div>
+              <div className="intent-cb-detail-grid">
+                {Object.entries(details).map(([label, value]) => (
+                  <div key={label}><span>{label}</span><strong>{Array.isArray(value) ? value.join(", ") : value}</strong></div>
+                ))}
+              </div>
+              <h3>About the Company</h3>
+              <p>{selectedProfile.about || selectedDescription}</p>
+              {products.length ? (
+                <div className="intent-cb-product-table">
+                  {products.map(product => (
+                    <article key={product.name}><strong>{product.name}</strong><span>{product.description}</span></article>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+
+            <section className="intent-cb-card" id="intent-market-intelligence">
+              <div className="intent-cb-section-head"><div><span className="eyebrow">Market Intelligence</span><h2>Competitors</h2></div></div>
+              <div className="intent-cb-competitor-grid">
+                {competitors.map(competitor => (
+                  <article key={competitor.name}>
+                    <span className="intent-cb-result-logo">{accountInitial(competitor.name)}</span>
+                    <strong>{competitor.name}</strong>
+                    <small>{competitor.shared || "Shared market"}</small>
+                    <em>{competitor.funding || "N/A"}</em>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="intent-cb-card" id="intent-news">
+              <div className="intent-cb-section-head">
+                <div><span className="eyebrow">News</span><h2>News and Press</h2></div>
+                <StatusBadge>{newsItems.length || 1} sources</StatusBadge>
+              </div>
+              <div className="intent-cb-news-list">
+                {(newsItems.length ? newsItems : [{ date: selectedEvent?.eventDate, source: selectedEvent?.sourceName, title: selectedEvent?.title, url: selectedEvent?.sourceUrl }]).map(item => (
+                  <article key={`${item.date}-${item.title}`}>
+                    <div className="intent-cb-news-date">
+                      <span>News</span>
+                      <strong>{item.date}</strong>
+                    </div>
+                    <div className="intent-cb-news-copy">
+                      <span>{item.source}</span>
+                      <strong>{item.title}</strong>
+                    </div>
+                    {item.url ? <a href={item.url} target="_blank" rel="noreferrer"><ExternalLink size={15} /> View source</a> : null}
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="intent-cb-card" id="intent-technology">
+              <div className="intent-cb-section-head"><div><span className="eyebrow">Technology</span><h2>Company Signals</h2></div></div>
+              <div className="intent-cb-signal-grid">
+                {technology.map(item => (
+                  <article key={item.label}>
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                    <small>{item.note}</small>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="intent-cb-card" id="intent-lists-featuring-this-company">
+              <div className="intent-cb-section-head">
+                <div><span className="eyebrow">Lists Featuring This Company</span><h2>Relevant Lists</h2></div>
+                <a href="#intent-lists-featuring-this-company">View all</a>
+              </div>
+              <div className="intent-cb-list-grid">
+                {lists.map(item => <article key={item.name}><strong>{item.name}</strong><span>{item.meta}</span></article>)}
+              </div>
+            </section>
+
+            <section className="intent-cb-card" id="intent-frequently-asked-questions">
+              <div className="intent-cb-section-head"><div><span className="eyebrow">Frequently Asked Questions</span><h2>Company FAQs</h2></div></div>
+              <div className="intent-cb-faq-list">
+                <article><strong>Where is {selectedEvent?.companyName}'s headquarters?</strong><span>{selectedLocation}</span></article>
+                <article><strong>Who invested in {selectedEvent?.companyName}?</strong><span>{(selectedEvent?.investors || selectedProfile.investors || []).slice(0, 5).join(", ") || "Investors unavailable"}</span></article>
+                <article><strong>When was the last funding round?</strong><span>{selectedEvent?.companyName} closed its last funding round on {selectedLatestFundingDate || selectedEvent?.eventDate} from a {selectedEvent?.fundingRound || "funding"} round.</span></article>
+                <article><strong>How much funding has {selectedEvent?.companyName} raised to date?</strong><span>{selectedTotalFunding}</span></article>
+              </div>
+            </section>
           </div>
-        </section>
+          </>
+          ) : (
+            <section className="intent-empty-workbench">
+              <div>
+                <span className="eyebrow">Intent workbench</span>
+                <h2>Run a search to stage companies for enrichment</h2>
+                <p>Results will appear here as intent records. From each company you can review source evidence, export staged people for Clay or Apollo, and promote approved people into Contacts.</p>
+              </div>
+              <div className="intent-empty-grid">
+                <article><Search size={18} /><strong>1. Search</strong><span>Use the left filters for geography, ICP, funding stage, range, and event type.</span></article>
+                <article><Users size={18} /><strong>2. Extract people</strong><span>Store first name, last name, title, LinkedIn URL, department, seniority, and source.</span></article>
+                <article><Download size={18} /><strong>3. Export/enrich</strong><span>Download a CSV with missing fields blank so Clay or Apollo can enrich it.</span></article>
+                <article><Contact size={18} /><strong>4. Promote</strong><span>Add selected people or all people from a company to Contacts only after review.</span></article>
+              </div>
+            </section>
+          )}
+        </main>
       </div>
-      <section className="panel">
-        <div className="panel-header"><div><span className="eyebrow">Net-new by default</span><h2>Intent events</h2></div><label className="toggle-row"><input type="checkbox" checked={includeSeen} onChange={event => setIncludeSeen(event.target.checked)} />Include previously seen</label></div>
-        <div className="filter-bar intent-filter-bar">
-          <div><span>Status</span><select value={filters.status} onChange={event => setFilters(current => ({ ...current, status: event.target.value }))}><option value="">All</option>{intentEventStatuses.map(status => <option key={status} value={status}>{titleCase(status)}</option>)}</select></div>
-          <div><span>Event type</span><select value={filters.eventType} onChange={event => setFilters(current => ({ ...current, eventType: event.target.value }))}><option value="">All</option>{intentEventTypes.map(type => <option key={type} value={type}>{titleCase(type.replaceAll("_", " "))}</option>)}</select></div>
-          <div><span>Date since</span><input type="date" value={filters.date} onChange={event => setFilters(current => ({ ...current, date: event.target.value }))} /></div>
-          <div><span>Confidence min</span><input value={filters.confidence} onChange={event => setFilters(current => ({ ...current, confidence: event.target.value }))} placeholder="70" /></div>
-          <div><span>Already in DB</span><select value={filters.existing} onChange={event => setFilters(current => ({ ...current, existing: event.target.value }))}><option value="">All</option><option value="yes">Yes</option><option value="no">No</option></select></div>
-        </div>
-        {visibleEvents.length ? <div className="table-wrap"><table className="data-table intent-table"><thead><tr><th>Company</th><th>Signal</th><th>Source</th><th>Status</th><th>Confidence</th></tr></thead><tbody>{visibleEvents.map(event => <tr key={event.id} className={selectedEvent?.id === event.id ? "clickable-row active-row" : "clickable-row"} onClick={() => setSelectedEventId(event.id)}><td><RecordName name={event.companyName} meta={[event.companyDomain, event.companyWebsite].filter(Boolean).join(" - ") || "Intent/Staging"} /></td><td><strong>{titleCase(String(event.eventType || "other").replaceAll("_", " "))}</strong><small>{[event.eventDate, event.title].filter(Boolean).join(" - ")}</small></td><td>{event.sourceUrl ? <a href={event.sourceUrl} target="_blank" rel="noreferrer" onClick={click => click.stopPropagation()}>{event.sourceName || "Source"}</a> : event.sourceName || "Unknown"}</td><td><StatusBadge tone={event.status === "promoted" ? "success" : event.status === "rejected" ? "warning" : "accent"}>{titleCase(event.status)}</StatusBadge></td><td>{event.confidenceScore || "Not scored"}</td></tr>)}</tbody></table></div> : <EmptyState icon={Database} title="No net-new intent events" text="Run research or enable previously seen records to inspect older events." />}
-      </section>
-      {selectedEvent ? <section className="panel intent-detail-panel">
-        <div className="panel-header"><div><span className="eyebrow">Event detail</span><h2>{selectedEvent.title || selectedEvent.companyName}</h2></div><StatusBadge>{titleCase(selectedEvent.status)}</StatusBadge></div>
-        <div className="intent-stage-warning"><Database size={16} /><span>Intent/Staging record. Official company/contact data is unchanged until promotion.</span></div>
-        <p>{selectedEvent.summary || "No summary provided."}</p>
-        {companyDuplicates.length ? <div className="duplicate-warning"><strong>Possible company duplicate</strong>{companyDuplicates.slice(0, 3).map(company => <button key={company.id} className="secondary-button small-button" type="button" onClick={() => onLinkEventCompany(selectedEvent, company)}>Link to {company.name}</button>)}</div> : null}
-        <div className="intent-action-row">
-          <button className="secondary-button" type="button" onClick={() => onUpdateEventStatus(selectedEvent, "reviewed")}>Mark reviewed</button>
-          <button className="secondary-button danger-button" type="button" onClick={() => onUpdateEventStatus(selectedEvent, "rejected")}>Reject</button>
-          <button className="primary-button" type="button" disabled={selectedEvent.promotedCompanyId} onClick={() => onPromoteEventCompany(selectedEvent)}>Promote company</button>
-          <button className="secondary-button success-button" type="button" onClick={() => onPromoteCompanyPeople(selectedEvent, eventPeople)}>Promote company + selected people</button>
-        </div>
-        <div className="compact-list intent-people-list">{eventPeople.length ? eventPeople.map(person => <article key={person.id} className="compact-list-item"><div><strong>{person.name || person.email || "Unnamed person"}</strong><span>{[person.title, person.email, person.linkedinUrl].filter(Boolean).join(" - ")}</span></div><button className="secondary-button small-button" type="button" disabled={person.promotedContactId} onClick={() => onPromotePerson(person, selectedEvent)}>Promote to Contacts</button></article>) : <EmptyState icon={Users} title="No people extracted" text="People discovered with this signal will appear here." />}</div>
-        <details className="raw-data-viewer"><summary>Raw data</summary><pre>{JSON.stringify(selectedEvent.rawData || {}, null, 2)}</pre></details>
-      </section> : null}
-    </>
+    </div>
   );
 }
 
@@ -7785,101 +8385,36 @@ const intentSources = ["Crunchbase", "LinkedIn", "Apollo", "Clay", "Manual", "Ot
 const intentEventStatuses = ["new", "reviewed", "rejected", "promoted"];
 const intentEventTypes = ["funding", "hiring", "expansion", "leadership_change", "acquisition", "partnership", "product_launch"];
 const intentSourceTypes = ["news", "vc_page", "company_blog", "press_release", "rss", "manual_url", "api", "other"];
-const israelCyberAiSampleEvents = [
-  {
-    company_name: "LayerX",
-    company_domain: "layerxsecurity.com",
-    company_website: "https://www.layerxsecurity.com",
-    company_linkedin_url: "https://www.linkedin.com/company/layerx-security",
-    event_type: "funding",
-    event_date: "2025-04-28",
-    title: "LayerX raises Series A funding",
-    summary: "LayerX provides a browser security platform that turns any browser into a secure and manageable workspace for enterprise users.",
-    funding_amount: "$11,000,000",
-    funding_currency: "USD",
-    funding_round: "Series A",
-    investors: [],
-    source_name: "Israel Cyber + AI sample",
-    source_url: "https://www.layerxsecurity.com",
-    confidence_score: 88,
-    people: [],
-  },
-  {
-    company_name: "Oligo Security",
-    company_domain: "oligo.security",
-    company_website: "https://www.oligo.security",
-    company_linkedin_url: "https://www.linkedin.com/company/oligo-security",
-    event_type: "funding",
-    event_date: "2025-01-29",
-    title: "Oligo Security raises Series B funding",
-    summary: "Oligo is a runtime security platform for applications, cloud services, workloads, AI applications, and AI agents.",
-    funding_amount: "$50,000,000",
-    funding_currency: "USD",
-    funding_round: "Series B",
-    investors: [],
-    source_name: "Israel Cyber + AI sample",
-    source_url: "https://www.oligo.security",
-    confidence_score: 90,
-    people: [],
-  },
-  {
-    company_name: "DeepKeep",
-    company_domain: "deepkeep.ai",
-    company_website: "https://www.deepkeep.ai",
-    company_linkedin_url: "https://www.linkedin.com/company/deepkeep",
-    event_type: "funding",
-    event_date: "2025-11-05",
-    title: "DeepKeep receives grant funding",
-    summary: "DeepKeep delivers AI security and trustworthiness controls across the AI lifecycle, including usage control, AI firewall, red teaming, and model scanning.",
-    funding_amount: "€2,500,000",
-    funding_currency: "EUR",
-    funding_round: "Grant",
-    investors: [],
-    source_name: "Israel Cyber + AI sample",
-    source_url: "https://www.deepkeep.ai",
-    confidence_score: 82,
-    people: [],
-  },
-  {
-    company_name: "Cynomi",
-    company_domain: "cynomi.com",
-    company_website: "https://www.cynomi.com",
-    company_linkedin_url: "https://www.linkedin.com/company/cynomi",
-    event_type: "funding",
-    event_date: "2025-04-23",
-    title: "Cynomi raises Series B funding",
-    summary: "Cynomi provides an AI-driven platform that automates risk and compliance assessments for virtual CISO and MSP workflows.",
-    funding_amount: "$37,000,000",
-    funding_currency: "USD",
-    funding_round: "Series B",
-    investors: [],
-    source_name: "Israel Cyber + AI sample",
-    source_url: "https://www.cynomi.com",
-    confidence_score: 86,
-    people: [],
-  },
-  {
-    company_name: "Lasso Security",
-    company_domain: "lasso.security",
-    company_website: "https://www.lasso.security",
-    company_linkedin_url: "https://www.linkedin.com/company/lasso-security",
-    event_type: "funding",
-    event_date: "2025-10-30",
-    title: "Lasso Security raises convertible note funding",
-    summary: "Lasso Security helps organizations adopt the GenAI era safely with security for applications, agents, and employees.",
-    funding_amount: "$10,000,000",
-    funding_currency: "USD",
-    funding_round: "Convertible Note",
-    investors: [],
-    source_name: "Israel Cyber + AI sample",
-    source_url: "https://www.lasso.security",
-    confidence_score: 84,
-    people: [],
-  },
+const intentPeopleExportColumns = [
+  ["companyName", "company_name"],
+  ["companyDomain", "company_domain"],
+  ["companyWebsite", "company_website"],
+  ["intentEventId", "intent_event_id"],
+  ["intentEventType", "intent_event_type"],
+  ["intentEventDate", "intent_event_date"],
+  ["intentEventTitle", "intent_event_title"],
+  ["firstName", "first_name"],
+  ["lastName", "last_name"],
+  ["fullName", "full_name"],
+  ["title", "title"],
+  ["linkedinUrl", "linkedin_url"],
+  ["email", "email"],
+  ["phone", "phone"],
+  ["department", "department"],
+  ["seniority", "seniority"],
+  ["source", "source"],
+  ["sourceUrl", "source_url"],
+  ["status", "status"],
+  ["confidenceScore", "confidence_score"],
 ];
-const israelCyberAiSampleQuery = "Find active Israel-based companies in Cyber Security, Artificial Intelligence, or SaaS with funding between $1M and $10M. Focus on funding events and net-new buying signals.";
-const israelCyberAiSampleJson = JSON.stringify(israelCyberAiSampleEvents, null, 2);
-
+const intentSavedSearchFilters = {
+  locations: ["Israel", "Tel Aviv", "Herzliya", "Ramat Gan", "Jerusalem"],
+  operatingStatuses: ["Active", "Private", "For Profit"],
+  categories: ["Cyber Security", "Artificial Intelligence (AI)", "SaaS", "Enterprise Software", "Security", "Machine Learning"],
+  fundingRanges: ["Less than $1M", "$1M to $10M", "$10M to $50M", "$50M+", "All"],
+  fundingStages: ["Pre-Seed", "Seed", "Series A", "Series B", "Series C", "Late Stage Venture", "Grant", "Convertible Note", "M&A", "All"],
+  headcounts: ["1-10", "11-50", "51-100", "101-250", "251-500", "All"],
+};
 const intentCompanyColumnMap = {
   name: ["company", "company name", "account", "account name", "organisation", "organization", "name"],
   website: ["website", "web site", "domain", "company website", "url"],
@@ -15394,7 +15929,7 @@ export default function App() {
     const applyBrowserNavigation = event => {
       const navigation = event.state?.workspaceNavigation;
       if (navigation?.activeView) {
-        setActiveView(navigation.activeView);
+        setActiveView(canAccessWorkspaceView(navigation.activeView, effectiveAccessState) ? navigation.activeView : "dashboard");
         if (navigation.activeClientId) setActiveClientId(navigation.activeClientId);
         if (navigation.activeCampaignId) setActiveCampaignId(navigation.activeCampaignId);
         if (navigation.selectedAccountId) setSelectedAccountId(navigation.selectedAccountId);
@@ -15402,12 +15937,13 @@ export default function App() {
         return;
       }
 
-      setActiveView(readWorkspaceViewFromUrl() || "dashboard");
+      const requestedView = readWorkspaceViewFromUrl();
+      setActiveView(canAccessWorkspaceView(requestedView, effectiveAccessState) ? (requestedView || "dashboard") : "dashboard");
     };
 
     window.addEventListener("popstate", applyBrowserNavigation);
     return () => window.removeEventListener("popstate", applyBrowserNavigation);
-  }, [user?.id]);
+  }, [effectiveAccessState.isOrgAdmin, user?.id]);
 
   async function handleAuthenticatedUser(nextUser) {
     if (authLoadRef.current.userId === nextUser.id && authLoadRef.current.promise) {
@@ -15489,24 +16025,29 @@ export default function App() {
       setPrivateContactNotes(nextPrivateContactNotes);
       setAircallData(nextAircallData);
       const resolvedRole = normalizeRoleKey(nextAdminSettings.role || currentWorkspaceRecord?.roleKey || currentWorkspaceRecord?.role || "member");
+      const nextAccessState = {
+        isAdmin: Boolean(nextAdminSettings.isAdmin) || ADMIN_ROLES.has(resolvedRole),
+        isOrgAdmin: Boolean(nextAdminSettings.isOrgAdmin) || ORG_ADMIN_ROLES.has(resolvedRole),
+      };
       setAdminSettingsState({
         settings: normalizedAdminSettings,
         role: resolvedRole,
-        isAdmin: Boolean(nextAdminSettings.isAdmin) || ADMIN_ROLES.has(resolvedRole),
-        isOrgAdmin: Boolean(nextAdminSettings.isOrgAdmin) || ORG_ADMIN_ROLES.has(resolvedRole),
+        ...nextAccessState,
       });
       loadIntegrationCredentialsStatus().catch(error => {
         console.error("Could not load integration credential status", error);
       });
       const isFirstAuthenticatedLoad = !hasSavedUiState(nextUser.id);
       if (isFirstAuthenticatedLoad) {
-        setActiveView(readWorkspaceViewFromUrl() || "dashboard");
+        const urlView = readWorkspaceViewFromUrl();
+        setActiveView(canAccessWorkspaceView(urlView, nextAccessState) ? (urlView || "dashboard") : "dashboard");
         setSelectedAccountId(null);
         setSelectedContactId(null);
       } else {
         const uiState = loadUiState(nextUser.id);
         const urlView = readWorkspaceViewFromUrl();
-        if (urlView || uiState.activeView) setActiveView(urlView || uiState.activeView);
+        const requestedView = urlView || uiState.activeView;
+        if (requestedView) setActiveView(canAccessWorkspaceView(requestedView, nextAccessState) ? requestedView : "dashboard");
         if (uiState.activeClientId) setActiveClientId(uiState.activeClientId);
         if (uiState.activeCampaignId) setActiveCampaignId(uiState.activeCampaignId);
         if (uiState.selectedAccountId) setSelectedAccountId(uiState.selectedAccountId);
@@ -16119,6 +16660,7 @@ export default function App() {
   }
 
   function navigateTo(view, updates = {}, options = {}) {
+    if (!canAccessWorkspaceView(view, effectiveAccessState)) view = "dashboard";
     if (options.pushHistory !== false) {
       setViewHistory(current => [...current.slice(-9), currentNavigationState()]);
     }
@@ -16137,6 +16679,7 @@ export default function App() {
   }
 
   function navigatePrimary(view) {
+    if (!canAccessWorkspaceView(view, effectiveAccessState)) view = "dashboard";
     setViewHistory([]);
     writeWorkspaceHistory({
       ...currentNavigationState(),
@@ -16876,6 +17419,34 @@ export default function App() {
     if (!response.ok) throw new Error(payload.error || "Intent research failed.");
     await refreshIntentData();
     return payload;
+  }
+
+  async function handleResetIntentResearchTestData() {
+    if (!supabase || !dataOrgId) {
+      setIntentData({ sources: [], runs: [], events: [], people: [] });
+      return { cleared: true };
+    }
+    const existingEventIds = intentData.events.map(event => event.id).filter(Boolean);
+    if (existingEventIds.length) {
+      const { error: peopleError } = await supabase
+        .from("intent_people")
+        .delete()
+        .eq("organization_id", dataOrgId)
+        .in("intent_event_id", existingEventIds);
+      if (peopleError) throw peopleError;
+    }
+    const { error: eventsError } = await supabase
+      .from("intent_events")
+      .delete()
+      .eq("organization_id", dataOrgId);
+    if (eventsError) throw eventsError;
+    const { error: runsError } = await supabase
+      .from("intent_research_runs")
+      .delete()
+      .eq("organization_id", dataOrgId);
+    if (runsError) throw runsError;
+    setIntentData(current => ({ ...current, events: [], people: [] }));
+    return { cleared: true };
   }
 
   async function handleUpdateIntentEventStatus(event, status) {
@@ -17817,7 +18388,9 @@ export default function App() {
       case "lead-lookup":
         return <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} onSaveLeadList={handleSaveLeadList} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
       case "intent-research":
-        return <IntentResearchPage intentData={intentData} crmData={crmData} error={intentDataError} onRunResearch={handleRunIntentResearch} onUpdateEventStatus={handleUpdateIntentEventStatus} onPromoteEventCompany={handlePromoteIntentEventCompany} onLinkEventCompany={handleLinkIntentEventCompany} onPromotePerson={handlePromoteIntentPerson} onPromoteCompanyPeople={handlePromoteIntentCompanyPeople} />;
+        return effectiveAccessState.isOrgAdmin
+          ? <IntentResearchPage intentData={intentData} crmData={crmData} error={intentDataError} onRunResearch={handleRunIntentResearch} onResetTestData={handleResetIntentResearchTestData} onUpdateEventStatus={handleUpdateIntentEventStatus} onPromoteEventCompany={handlePromoteIntentEventCompany} onLinkEventCompany={handleLinkIntentEventCompany} onPromotePerson={handlePromoteIntentPerson} onPromoteCompanyPeople={handlePromoteIntentCompanyPeople} />
+          : <DashboardPage activeClient={activeClient} activeCampaign={activeCampaign} onNavigate={openView} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
       case "contact-detail":
         return selectedContact
           ? <ContactDetailPage
@@ -17890,7 +18463,7 @@ export default function App() {
     <CrmDataContext.Provider value={visibleCrmData}>
       <CurrencyContext.Provider value={currencyContextValue}>
         <div className={`crm-app ${isDark ? "dark" : "light"}`}>
-        <Sidebar activeView={activeView} onNavigate={navigatePrimary} isAdmin={effectiveAccessState.isAdmin} />
+        <Sidebar activeView={activeView} onNavigate={navigatePrimary} isAdmin={effectiveAccessState.isAdmin} isOrgAdmin={effectiveAccessState.isOrgAdmin} />
         <div className="workspace">
           <TopBar
             canGoBack={viewHistory.length > 0}

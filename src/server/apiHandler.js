@@ -856,6 +856,7 @@ async function searchGooglePlaces(input = {}) {
 
 async function runIntentResearchRoute(req, input = {}) {
   const user = await getAuthenticatedCrmUserWithOrganization(req);
+  assertOrgAdmin(user);
   const serviceClient = getServiceClient();
   return runIntentResearch({
     client: serviceClient,

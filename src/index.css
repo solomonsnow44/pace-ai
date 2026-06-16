@@ -859,7 +859,7 @@ textarea::placeholder {
 .aircall-filter-panel {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto minmax(190px, 240px);
+  grid-template-columns: minmax(180px, 1fr) minmax(0, auto) minmax(190px, 240px);
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
@@ -898,11 +898,82 @@ textarea::placeholder {
 .aircall-quick-filters {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--soft);
+}
+
+.aircall-custom-range {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.aircall-custom-range label,
+.aircall-report-controls label {
+  display: grid;
+  gap: 4px;
+}
+
+.aircall-custom-range span,
+.aircall-report-controls span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.aircall-custom-range input,
+.aircall-report-controls select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 7px 9px;
+  outline: none;
+}
+
+.aircall-report-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+
+.aircall-report-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.aircall-report-heading h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 18px;
+}
+
+.aircall-report-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.aircall-report-controls {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) minmax(160px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
 }
 
 .aircall-quick-filters button,
@@ -2936,31 +3007,144 @@ textarea::placeholder {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid var(--border);
-  padding: 10px 12px;
+  padding: 12px 14px;
 }
 
-.locker-map-toolbar > button {
+.locker-map-toolbar > .status-badge {
   flex: 0 0 auto;
 }
 
-.locker-map-toolbar > button.locker-export-button {
+.locker-map-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 82%, var(--soft));
+  padding: 10px 14px;
+}
+
+.locker-selection-actions,
+.locker-export-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.locker-selection-actions {
+  flex-wrap: wrap;
+}
+
+.locker-draw-tools {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.locker-draw-tools .secondary-button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.locker-colour-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  padding: 4px 7px;
+}
+
+.locker-color-swatch {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: var(--swatch-color);
+  box-shadow: 0 0 0 1px var(--border-strong);
+  cursor: pointer;
+}
+
+.locker-color-swatch.active {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.locker-export-button {
   border-color: rgba(12, 105, 200, 0.32);
   background: var(--accent-soft);
   color: var(--accent);
 }
 
-.locker-map-toolbar > button.locker-export-button:hover {
+.locker-export-button:hover {
   border-color: var(--accent);
   background: #d9ebff;
   color: var(--accent-hover);
 }
 
-.locker-export-format {
-  flex: 0 0 auto;
-  min-width: 126px;
+.locker-report-button {
+  border-color: rgba(12, 105, 200, 0.32);
+  color: var(--accent);
+}
+
+.locker-annotation-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+  padding: 12px 14px;
+}
+
+.locker-annotation-panel > div:first-child {
+  min-width: 210px;
   display: grid;
   gap: 3px;
-  padding: 6px 8px;
+}
+
+.locker-annotation-panel strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.locker-report-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent-soft) 28%, var(--card));
+  padding: 8px 12px;
+}
+
+.locker-report-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.locker-report-options input {
+  accent-color: var(--accent);
+}
+
+.locker-export-format {
+  flex: 0 0 auto;
+  min-width: 104px;
+  display: grid;
+  gap: 3px;
+  padding: 5px 8px;
   border: 1px solid rgba(12, 105, 200, 0.26);
   border-radius: 8px;
   background: var(--accent-soft);
@@ -3013,6 +3197,22 @@ textarea::placeholder {
   overflow: hidden;
   overscroll-behavior: contain;
   background: var(--soft);
+}
+
+.locker-map-canvas.drawing {
+  cursor: crosshair;
+}
+
+.locker-annotation-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 450;
+  pointer-events: none;
+  touch-action: none;
+}
+
+.locker-map-canvas.drawing .locker-annotation-canvas {
+  pointer-events: auto;
 }
 
 .crm-app.dark .locker-map-canvas {
@@ -3097,17 +3297,32 @@ textarea::placeholder {
 }
 
 .locker-leaflet-marker.active {
-  background: #16a34a;
-  box-shadow: 0 0 0 5px rgba(22, 163, 74, 0.18), 0 10px 22px rgba(15, 23, 42, 0.3);
+  border-color: #ffffff;
+  background: #16a34a !important;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.3);
 }
 
 .locker-leaflet-marker.selected {
-  background: #7c3aed;
-  box-shadow: 0 0 0 5px rgba(124, 58, 237, 0.22), 0 10px 22px rgba(15, 23, 42, 0.3);
+  border-color: #ffffff;
+  background: #7c3aed !important;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.3);
 }
 
 .locker-leaflet-marker.saved {
-  background: #f59e0b;
+  border-color: #ffffff;
+  background: #f59e0b !important;
+}
+
+.locker-leaflet-marker.active > span {
+  background: #14532d;
+}
+
+.locker-leaflet-marker.selected > span {
+  background: #4c1d95;
+}
+
+.locker-leaflet-marker.saved > span {
+  background: #92400e;
 }
 
 .locker-detail-panel {
@@ -7846,14 +8061,30 @@ textarea::placeholder {
   .locker-hero,
   .locker-hero > div:first-child,
   .locker-map-toolbar,
+  .locker-map-action-bar,
+  .locker-annotation-panel,
+  .locker-report-options,
   .locker-detail-heading {
     align-items: stretch;
   }
 
   .locker-hero > div:first-child,
   .locker-map-toolbar,
+  .locker-map-action-bar,
+  .locker-annotation-panel,
+  .locker-report-options,
   .locker-detail-heading {
     flex-direction: column;
+  }
+
+  .locker-selection-actions,
+  .locker-export-actions,
+  .locker-draw-tools {
+    width: 100%;
+  }
+
+  .locker-export-format {
+    flex: 1 1 120px;
   }
 
   .locker-hero-stats,
@@ -7871,6 +8102,8 @@ textarea::placeholder {
   .locker-search-panel .primary-button,
   .locker-list-target-panel .secondary-button,
   .locker-map-toolbar .secondary-button,
+  .locker-map-action-bar .secondary-button,
+  .locker-annotation-panel .secondary-button,
   .locker-detail-actions .secondary-button,
   .locker-detail-actions .primary-button {
     width: 100%;
@@ -8020,6 +8253,16 @@ textarea::placeholder {
 
   .aircall-filter-panel {
     grid-template-columns: 1fr;
+  }
+
+  .aircall-custom-range,
+  .aircall-report-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .aircall-report-heading {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .aircall-quick-filters {

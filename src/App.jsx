@@ -64,7 +64,9 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 const BRAND_IMAGE_BUCKET = "client-campaign-images";
+const PROFILE_IMAGE_BUCKET = "profile-images";
 const BRAND_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const PROFILE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const ALLOWED_EMAIL_DOMAIN = "paceops.com";
 const LEAD_FINDER_SEARCH_STATE_VERSION = 4;
 const LEAD_FINDER_DEBUG_CACHE_MAX_RECORDS = 250;
@@ -87,6 +89,7 @@ const TEST_WORKSPACE_USER = {
   status: "Test",
   aircallUserId: "7007007",
   currencyCode: "GBP",
+  avatarUrl: "",
   isTestAccount: true,
 };
 const ORG_ADMIN_ROLES = new Set(["platform_admin", "org_owner", "org_admin"]);
@@ -489,8 +492,8 @@ const navItems = [
   { id: "contacts", label: "Contacts", icon: Contact, highlight: true },
   { id: "cognism", label: "Lead Finder", icon: CognismLogoIcon, logo: cognismLogoUrl, highlight: true },
   { id: "lead-lists", label: "Lead Lists", icon: ListFilter, highlight: true },
-  { id: "pipeline", label: "Pipeline", icon: KanbanSquare, adminOnly: true },
-  { id: "research", label: "Research", icon: FileText, adminOnly: true },
+  { id: "pipeline", label: "Pipeline", icon: KanbanSquare },
+  { id: "research", label: "Research", icon: FileText },
   { id: "locker-finder", label: "Locker Finder", icon: Earth, highlight: true },
   { id: "integrations", label: "Integrations", icon: Plug, highlight: true },
   { id: "settings", label: "Settings", icon: Settings, highlight: true },
@@ -605,6 +608,39 @@ async function uploadBrandImage({ file, organizationId, entityType, recordId }) 
     imagePath: path,
     imageName: file.name || "Brand image",
   };
+}
+
+async function uploadProfileImage({ file, userId }) {
+  if (!supabase) throw new Error("Supabase is not configured for uploads.");
+  if (!UUID_PATTERN.test(String(userId || ""))) throw new Error("Sign in before uploading a profile image.");
+  if (!file) throw new Error("Choose an image file first.");
+  if (!String(file.type || "").startsWith("image/")) throw new Error("Choose a PNG, JPG, WebP, or GIF image.");
+  if (file.size > PROFILE_IMAGE_MAX_BYTES) throw new Error("Choose an image under 5 MB.");
+
+  const extension = extensionForImageFile(file);
+  const baseName = sanitizeStorageName(String(file.name || "profile").replace(/\.[^.]+$/, ""));
+  const path = `${userId}/${Date.now()}-${baseName}.${extension}`;
+  const { error } = await supabase.storage
+    .from(PROFILE_IMAGE_BUCKET)
+    .upload(path, file, {
+      cacheControl: "3600",
+      contentType: file.type || "image/png",
+      upsert: false,
+    });
+
+  if (error) throw error;
+  const { data } = supabase.storage.from(PROFILE_IMAGE_BUCKET).getPublicUrl(path);
+  return {
+    avatarUrl: data.publicUrl,
+    avatarPath: path,
+  };
+}
+
+function RecordAvatar({ name = "", imageUrl = "", size = "", className = "" }) {
+  const classes = ["record-avatar", size, imageUrl ? "record-avatar-image" : "", className].filter(Boolean).join(" ");
+  return imageUrl
+    ? <img className={classes} src={imageUrl} alt="" />
+    : <span className={classes}>{accountInitial(name)}</span>;
 }
 
 function cloneRecords(records) {
@@ -1500,7 +1536,7 @@ async function loadWorkspaceUsers(organizationId) {
   if (!supabase || !organizationId) return [];
   const { data, error } = await supabase
     .from("users")
-    .select("id,email,first_name,last_name,display_name,role,status,aircall_user_id,currency_code")
+    .select("id,email,first_name,last_name,display_name,role,status,aircall_user_id,currency_code,avatar_url")
     .eq("organization_id", organizationId)
     .eq("status", "active")
     .order("display_name", { ascending: true });
@@ -1522,6 +1558,7 @@ async function loadWorkspaceUsers(organizationId) {
       status: "Active",
       aircallUserId: workspaceUser.aircall_user_id || "",
       currencyCode: normalizeCurrencyCode(workspaceUser.currency_code),
+      avatarUrl: workspaceUser.avatar_url || "",
     };
   });
 }
@@ -1530,7 +1567,7 @@ async function loadCurrentWorkspaceUser(organizationId, authUser) {
   if (!supabase || !organizationId || !authUser?.id) return mapAuthUserToWorkspaceUser(authUser);
   let query = supabase
     .from("users")
-    .select("id,email,first_name,last_name,display_name,role,status,aircall_user_id,currency_code,organization_id")
+    .select("id,email,first_name,last_name,display_name,role,status,aircall_user_id,currency_code,avatar_url,organization_id")
     .eq("organization_id", organizationId);
   query = UUID_PATTERN.test(String(authUser.id || ""))
     ? query.eq("id", authUser.id)
@@ -1552,6 +1589,7 @@ async function loadCurrentWorkspaceUser(organizationId, authUser) {
     status: titleCase(data.status || "active"),
     aircallUserId: data.aircall_user_id || "",
     currencyCode: normalizeCurrencyCode(data.currency_code),
+    avatarUrl: data.avatar_url || "",
   };
 }
 
@@ -1572,6 +1610,7 @@ function mapAuthUserToWorkspaceUser(user) {
     status: "Active",
     aircallUserId: profile.aircallUserId || metadata.aircallUserId || "",
     currencyCode: normalizeCurrencyCode(profile.currencyCode),
+    avatarUrl: profile.avatarUrl || metadata.avatar_url || "",
   };
 }
 
@@ -1810,7 +1849,7 @@ function monthKeyFromDateKey(key) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function getAircallDateRange(rangeMode, selectedDateKey) {
+function getAircallDateRange(rangeMode, selectedDateKey, customStartKey = "", customEndKey = "") {
   const today = startOfLocalDay(new Date());
   if (rangeMode === "yesterday") {
     const start = addDays(today, -1);
@@ -1819,6 +1858,24 @@ function getAircallDateRange(rangeMode, selectedDateKey) {
   if (rangeMode === "7") {
     const start = addDays(today, -6);
     return { start, end: addDays(today, 1), days: 7 };
+  }
+  if (rangeMode === "30") {
+    const start = addDays(today, -29);
+    return { start, end: addDays(today, 1), days: 30 };
+  }
+  if (rangeMode === "month") {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    return { start, end: addDays(today, 1), days: Math.max(1, Math.ceil((addDays(today, 1) - start) / 86400000)) };
+  }
+  if (rangeMode === "year") {
+    const start = new Date(today.getFullYear(), 0, 1);
+    return { start, end: addDays(today, 1), days: Math.max(1, Math.ceil((addDays(today, 1) - start) / 86400000)) };
+  }
+  if (rangeMode === "custom") {
+    const start = localDateFromKey(customStartKey || selectedDateKey);
+    const endBase = localDateFromKey(customEndKey || customStartKey || selectedDateKey);
+    const end = addDays(endBase < start ? start : endBase, 1);
+    return { start, end, days: Math.max(1, Math.ceil((end - start) / 86400000)) };
   }
   if (rangeMode === "date") {
     const start = localDateFromKey(selectedDateKey);
@@ -1835,7 +1892,7 @@ function formatAircallDateLabel(key) {
 function describeAircallDateRange(rangeMode, selectedDateKey, dateRange) {
   if (rangeMode === "today") return `Today · ${formatAircallDateLabel(toLocalDateKey(dateRange.start))}`;
   if (rangeMode === "yesterday") return `Yesterday · ${formatAircallDateLabel(toLocalDateKey(dateRange.start))}`;
-  if (rangeMode === "7") {
+  if (["7", "30", "month", "year", "custom"].includes(rangeMode)) {
     return `${formatAircallDateLabel(toLocalDateKey(dateRange.start))} - ${formatAircallDateLabel(toLocalDateKey(addDays(dateRange.end, -1)))}`;
   }
   return formatAircallDateLabel(selectedDateKey);
@@ -3740,6 +3797,7 @@ function buildUserCallSummaries(calls = [], workspaceUsers = []) {
         email: user.email || "",
         initials: user.initials || accountInitial(user.name || user.email),
         aircallUserId: user.aircallUserId || "",
+        avatarUrl: user.avatarUrl || "",
         calls: userCalls.length,
         connected: userCalls.filter(call => call.answeredAt).length,
       };
@@ -3756,7 +3814,7 @@ function UserCallSummaryList({ rows = [], onOpenUser }) {
     <div className="user-call-list compact">
       {rows.map(row => (
         <button className="user-call-row" key={row.id} type="button" onClick={() => onOpenUser?.(row.id)}>
-          <span className="record-avatar">{row.initials}</span>
+          <RecordAvatar name={row.name || row.email || row.initials} imageUrl={row.avatarUrl} />
           <div>
             <strong>{row.name}</strong>
             <small>{row.aircallUserId ? `Aircall ID ${row.aircallUserId}` : row.email}</small>
@@ -5142,13 +5200,19 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact, canDeleteConta
 }
 
 function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [], onOpenContact, canSync = false, onSyncAircall, onBookMeeting, currentUserId = "", currentAircallUserId = "", selectedAircallUserId = "", isAdmin = false }) {
-  const { campaigns: crmCampaigns = [] } = useCrmData();
+  const { clients: crmClients = [], campaigns: crmCampaigns = [] } = useCrmData();
   const todayKey = toLocalDateKey(new Date());
   const [rangeMode, setRangeMode] = useState("today");
   const [selectedDate, setSelectedDate] = useState(todayKey);
+  const [customStartDate, setCustomStartDate] = useState(toLocalDateKey(addDays(startOfLocalDay(new Date()), -6)));
+  const [customEndDate, setCustomEndDate] = useState(todayKey);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => monthKeyFromDateKey(todayKey));
   const [selectedUserId, setSelectedUserId] = useState("all");
+  const [reportClientId, setReportClientId] = useState("all");
+  const [reportCampaignId, setReportCampaignId] = useState("all");
+  const [reportUserId, setReportUserId] = useState("all");
+  const [reportExportStatus, setReportExportStatus] = useState("idle");
   const [activeAircallPanel, setActiveAircallPanel] = useState("activity");
   const [transcriptModalCall, setTranscriptModalCall] = useState(null);
   const [meetingBookingCall, setMeetingBookingCall] = useState(null);
@@ -5171,7 +5235,7 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   ));
   const aircallUsers = visibleAircallUsers;
   const selectedDateKey = normalizeDateKey(selectedDate) || todayKey;
-  const dateRange = getAircallDateRange(rangeMode, selectedDateKey);
+  const dateRange = getAircallDateRange(rangeMode, selectedDateKey, customStartDate, customEndDate);
   const dateRangeLabel = describeAircallDateRange(rangeMode, selectedDateKey, dateRange);
   const userById = new Map(visibleWorkspaceUsers.map(item => [item.id, item]));
   const contactById = new Map(contacts.map(item => [item.id, item]));
@@ -5304,10 +5368,64 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const selectableUsers = [
     ...userRows.map(item => ({ id: item.rowId, label: item.name || item.email || item.aircallUserId || "Aircall user" })),
   ];
+  const accessibleClients = isAdmin ? crmClients : crmClients.filter(client => recordHasMember(client, currentUserId));
+  const selectedReportClient = reportClientId === "all" ? null : accessibleClients.find(client => client.id === reportClientId) || null;
+  const accessibleCampaigns = (isAdmin ? crmCampaigns : crmCampaigns.filter(campaign => recordHasMember(campaign, currentUserId)))
+    .filter(campaign => reportClientId === "all" || campaign.clientId === reportClientId);
+  const selectedReportCampaign = reportCampaignId === "all" ? null : accessibleCampaigns.find(campaign => campaign.id === reportCampaignId) || null;
+  const reportMemberRecord = selectedReportCampaign || selectedReportClient || null;
+  const reportUserOptions = reportMemberRecord
+    ? workspaceMembersForRecord(reportMemberRecord, workspaceUsers, currentUserId, !isAdmin && recordHasMember(reportMemberRecord, currentUserId))
+    : visibleWorkspaceUsers;
+  const normalizedReportUserOptions = reportUserOptions.length ? reportUserOptions : visibleWorkspaceUsers;
+  const selectedReportUser = reportUserId === "all"
+    ? null
+    : normalizedReportUserOptions.find(user => user.id === reportUserId || user.aircallUserId === reportUserId) || userRows.find(row => row.rowId === reportUserId) || null;
+  const reportCalls = rangeCalls.filter(call => {
+    if (selectedReportClient && call.clientId && call.clientId !== selectedReportClient.id) return false;
+    if (selectedReportCampaign && call.campaignId && call.campaignId !== selectedReportCampaign.id) return false;
+    if (selectedReportUser) {
+      const selectedAircallId = selectedReportUser.aircallUserId || selectedReportUser.aircallUserId === 0
+        ? String(selectedReportUser.aircallUserId)
+        : "";
+      return call.userId === selectedReportUser.id || (selectedAircallId && String(call.aircallUserId) === selectedAircallId);
+    }
+    return true;
+  });
+  const reportUserRows = userRows
+    .filter(row => {
+      if (selectedReportUser) return row.rowId === selectedReportUser.id || row.aircallUserId === selectedReportUser.aircallUserId;
+      if (!reportMemberRecord) return true;
+      return normalizedReportUserOptions.some(user => user.id === row.rowId || (user.aircallUserId && user.aircallUserId === row.aircallUserId));
+    })
+    .map(row => {
+      const rowCalls = reportCalls.filter(call => call.userId === row.rowId || (row.aircallUserId && call.aircallUserId === row.aircallUserId));
+      const rowSentiments = rowCalls.map(deriveAircallCallSentiment).filter(Boolean);
+      return {
+        ...row,
+        calls: rowCalls.length,
+        connected: rowCalls.filter(call => call.answeredAt).length,
+        recorded: rowCalls.filter(call => call.recordingUrl).length,
+        duration: rowCalls.reduce((total, call) => total + (Number(call.durationSeconds) || 0), 0),
+        sentiment: rowSentiments.length ? Math.round((rowSentiments.reduce((total, item) => total + item.score, 0) / rowSentiments.length) * 100) / 100 : null,
+      };
+    });
 
   useEffect(() => {
     if (selectedAircallUserId) setSelectedUserId(selectedAircallUserId);
   }, [selectedAircallUserId]);
+
+  useEffect(() => {
+    if (reportCampaignId !== "all" && !accessibleCampaigns.some(campaign => campaign.id === reportCampaignId)) {
+      setReportCampaignId("all");
+    }
+  }, [accessibleCampaigns, reportCampaignId]);
+
+  useEffect(() => {
+    if (reportUserId !== "all" && !normalizedReportUserOptions.some(user => user.id === reportUserId || user.aircallUserId === reportUserId)) {
+      setReportUserId("all");
+    }
+  }, [normalizedReportUserOptions, reportUserId]);
 
   function chooseRangeMode(nextRangeMode) {
     setRangeMode(nextRangeMode);
@@ -5329,6 +5447,29 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
     setCalendarMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`);
   }
 
+  async function exportProgressReport() {
+    setReportExportStatus("exporting");
+    try {
+      await exportAircallClientProgressHtml({
+        calls: reportCalls,
+        userRows: reportUserRows,
+        dailyRows,
+        contactById,
+        userById,
+        aircallUsers,
+        client: selectedReportClient,
+        campaign: selectedReportCampaign,
+        bdr: selectedReportUser,
+        dateRangeLabel,
+      });
+      setReportExportStatus("exported");
+      window.setTimeout(() => setReportExportStatus("idle"), 2500);
+    } catch (error) {
+      setSyncError(error?.message || "Could not export Aircall progress report.");
+      setReportExportStatus("idle");
+    }
+  }
+
   function getCallDisplayData(call) {
     const contact = contactById.get(call.contactId);
     const linkedAircallUser = aircallUsers.find(user => user.aircallUserId === call.aircallUserId);
@@ -5342,7 +5483,7 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
     return { contact, agentName, otherParty, tags, transcriptTurns, transcriptText };
   }
 
-  function buildTranscriptCopyText(call, contact, agentName, tags, transcriptText) {
+function buildTranscriptCopyText(call, contact, agentName, tags, transcriptText) {
     const derivedSentiment = deriveAircallCallSentiment(call);
     return [
       `Call: ${contact?.name || call.externalPhoneNumber || call.aircallCallId}`,
@@ -5354,7 +5495,271 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
       call.summary ? `Summary: ${call.summary}` : "",
       `Transcript:\n${transcriptText}`,
     ].filter(Boolean).join("\n");
+}
+
+function excelPercent(numerator, denominator) {
+  const value = denominator ? numerator / denominator : 0;
+  return Math.round(value * 1000) / 10;
+}
+
+function aircallReportFilename(clientName = "client", campaignName = "campaign") {
+  const date = new Date().toISOString().slice(0, 10);
+  return sanitizeExportFilename(
+    `${clientName || "client"}-${campaignName || "aircall"}-progress-${date}`,
+    `aircall-client-progress-${date}`,
+    "html",
+  );
+}
+
+async function assetUrlToDataUrl(url = "") {
+  if (!url) return "";
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return url;
+    const blob = await response.blob();
+    return await new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result || url);
+      reader.onerror = () => resolve(url);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return url;
   }
+}
+
+function buildAircallReportRows({ calls = [], userRows = [], dailyRows = [], contactById = new Map(), userById = new Map(), aircallUsers = [] }) {
+  const connectedCalls = calls.filter(call => call.answeredAt);
+  const recordedCalls = calls.filter(call => call.recordingUrl);
+  const transcriptCalls = calls.filter(call => call.transcriptText || (Array.isArray(call.transcriptUtterances) && call.transcriptUtterances.length));
+  const totalDuration = calls.reduce((total, call) => total + (Number(call.durationSeconds) || 0), 0);
+  const sentimentCalls = calls.map(call => ({ call, sentiment: deriveAircallCallSentiment(call) })).filter(item => item.sentiment);
+  const sentimentCounts = sentimentCalls.reduce((acc, item) => {
+    acc[item.sentiment.tone] = (acc[item.sentiment.tone] || 0) + 1;
+    return acc;
+  }, { positive: 0, neutral: 0, negative: 0 });
+  const appointmentSignals = calls.filter(call => {
+    const text = [
+      call.myOutcome,
+      call.status,
+      call.summary,
+      ...(call.tags || []).map(getAircallTagLabel),
+    ].join(" ").toLowerCase();
+    return /appointment|meeting|booked|demo|discovery/.test(text);
+  }).length;
+  const taggedOutcomes = new Map();
+  for (const call of calls) {
+    const labels = (call.tags || []).map(getAircallTagLabel).filter(Boolean);
+    if (call.myOutcome) labels.push(call.myOutcome);
+    for (const label of labels) taggedOutcomes.set(label, (taggedOutcomes.get(label) || 0) + 1);
+  }
+  const topOutcomes = [...taggedOutcomes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const callDetailRows = calls
+    .slice()
+    .sort((a, b) => new Date(b.startedAt || 0) - new Date(a.startedAt || 0))
+    .map(call => {
+      const linkedAircallUser = aircallUsers.find(user => user.aircallUserId === call.aircallUserId);
+      const agentName = userById.get(call.userId)?.name || call.userName || linkedAircallUser?.name || "Unassigned";
+      const contact = contactById.get(call.contactId);
+      const sentiment = deriveAircallCallSentiment(call);
+      return [
+        call.startedAt ? new Date(call.startedAt) : "",
+        agentName,
+        String(call.direction || "").toUpperCase(),
+        contact?.name || call.externalPhoneNumber || "Unknown",
+        call.status || "",
+        call.answeredAt ? "Connected" : "Not connected",
+        Math.round((Number(call.durationSeconds) || 0) / 60 * 10) / 10,
+        call.recordingUrl ? "Yes" : "No",
+        call.transcriptText || (Array.isArray(call.transcriptUtterances) && call.transcriptUtterances.length) ? "Yes" : "No",
+        sentiment?.label || "",
+        call.myOutcome || "",
+        (call.tags || []).map(getAircallTagLabel).filter(Boolean).join(", "),
+        call.summary || "",
+        call.directLink || "",
+      ];
+    });
+
+  return {
+    connectedCalls,
+    recordedCalls,
+    transcriptCalls,
+    totalDuration,
+    sentimentCalls,
+    sentimentCounts,
+    appointmentSignals,
+    topOutcomes,
+    callDetailRows,
+    userRows,
+    dailyRows,
+  };
+}
+
+async function exportAircallClientProgressHtml({
+  calls = [],
+  userRows = [],
+  dailyRows = [],
+  contactById = new Map(),
+  userById = new Map(),
+  aircallUsers = [],
+  client = null,
+  campaign = null,
+  bdr = null,
+  dateRangeLabel = "",
+} = {}) {
+  const report = buildAircallReportRows({ calls, userRows, dailyRows, contactById, userById, aircallUsers });
+  const logoDataUrl = await assetUrlToDataUrl(logoUrl);
+  const totalCalls = calls.length;
+  const connectedCount = report.connectedCalls.length;
+  const connectRate = excelPercent(connectedCount, totalCalls);
+  const reportDailyCounts = dailyRows.map(row => calls.filter(call => {
+    const startedAt = call.startedAt ? new Date(call.startedAt) : null;
+    return startedAt && !Number.isNaN(startedAt.getTime()) && toLocalDateKey(startedAt) === row.key;
+  }).length);
+  const maxDailyCalls = Math.max(1, ...reportDailyCounts);
+  const maxUserCalls = Math.max(1, ...userRows.map(row => row.calls || 0));
+  const generatedAt = new Date();
+  const clientName = client?.name || "All client accounts";
+  const campaignName = campaign?.name || "All campaigns";
+  const bdrName = bdr?.name || bdr?.email || "All selected BDRs";
+  const kpis = [
+    ["Calls made", totalCalls, "Total calling activity"],
+    ["Connected", connectedCount, `${connectRate}% connect rate`],
+    ["Talk time", formatDuration(report.totalDuration), `${formatDuration(report.totalDuration / Math.max(totalCalls, 1))} avg`],
+    ["Recordings", report.recordedCalls.length, "Recorded calls synced"],
+    ["Transcripts", report.transcriptCalls.length, "Conversation text available"],
+    ["Meeting signals", report.appointmentSignals, "Booked/demo/discovery language"],
+  ];
+  const dailyBars = dailyRows.map(row => {
+    const rowCalls = calls.filter(call => {
+      const startedAt = call.startedAt ? new Date(call.startedAt) : null;
+      return startedAt && !Number.isNaN(startedAt.getTime()) && toLocalDateKey(startedAt) === row.key;
+    }).length;
+    const height = Math.max(8, Math.round((rowCalls / maxDailyCalls) * 100));
+    return `<div class="daily-bar"><strong>${rowCalls}</strong><span style="height:${height}%"></span><small>${htmlEscape(row.label)}</small><em>${htmlEscape(row.subLabel || "")}</em></div>`;
+  }).join("");
+  const userCards = userRows.length ? userRows.map(row => {
+    const width = Math.round(((row.calls || 0) / maxUserCalls) * 100);
+    return `<article class="bdr-card">
+      <div><strong>${htmlEscape(row.name || row.email || "BDR")}</strong><small>BDR</small></div>
+      <b>${row.calls || 0}</b>
+      <div class="progress"><span style="width:${width}%"></span></div>
+      <dl>
+        <div><dt>Connected</dt><dd>${row.connected || 0}</dd></div>
+        <div><dt>Connect rate</dt><dd>${excelPercent(row.connected || 0, row.calls || 0)}%</dd></div>
+        <div><dt>Talk time</dt><dd>${htmlEscape(formatDuration(row.duration || 0))}</dd></div>
+        <div><dt>Recordings</dt><dd>${row.recorded || 0}</dd></div>
+      </dl>
+    </article>`;
+  }).join("") : `<p class="empty">No BDR activity in this report scope.</p>`;
+  const outcomeRows = report.topOutcomes.length ? report.topOutcomes.map(([label, count]) => (
+    `<div class="outcome-row"><span>${htmlEscape(label)}</span><strong>${count}</strong></div>`
+  )).join("") : `<p class="empty">No tagged outcomes in this period.</p>`;
+  const callRows = report.callDetailRows.slice(0, 60).map(row => (
+    `<tr>
+      <td>${htmlEscape(row[0] ? formatDateTime(row[0]) : "")}</td>
+      <td>${htmlEscape(row[1])}</td>
+      <td>${htmlEscape(row[2])}</td>
+      <td>${htmlEscape(row[3])}</td>
+      <td>${htmlEscape(row[5])}</td>
+      <td>${htmlEscape(`${row[6]} mins`)}</td>
+      <td>${htmlEscape(row[9])}</td>
+      <td>${htmlEscape(row[12])}</td>
+    </tr>`
+  )).join("");
+  const sentimentTotal = Math.max(1, (report.sentimentCounts.positive || 0) + (report.sentimentCounts.neutral || 0) + (report.sentimentCounts.negative || 0));
+  const sentimentRows = ["positive", "neutral", "negative"].map(tone => {
+    const count = report.sentimentCounts[tone] || 0;
+    return `<div class="sentiment-row"><span>${titleCase(tone)}</span><div><b class="${tone}" style="width:${Math.round((count / sentimentTotal) * 100)}%"></b></div><strong>${count}</strong></div>`;
+  }).join("");
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${htmlEscape(clientName)} Aircall Progress Report</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f7fb; color: #111827; font-family: Aptos, "Segoe UI", Arial, sans-serif; }
+    main { max-width: 1180px; margin: 0 auto; padding: 34px; }
+    .hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 28px; align-items: end; padding: 28px; border: 1px solid #dbe4f0; border-radius: 14px; background: #fff; box-shadow: 0 18px 44px rgba(15, 23, 42, 0.08); }
+    .brand { display: inline-flex; align-items: center; gap: 10px; color: #0c69c8; font-weight: 900; letter-spacing: 0; }
+    .brand img { width: 42px; height: 42px; border-radius: 10px; object-fit: cover; border: 1px solid #dbe4f0; background: #fff; }
+    .eyebrow { margin: 0 0 8px; color: #0c69c8; font-size: 12px; font-weight: 850; text-transform: uppercase; }
+    h1 { margin: 14px 0 0; font-size: 34px; line-height: 1.05; }
+    h2 { margin: 0; font-size: 20px; }
+    .hero p { margin: 10px 0 0; color: #5b6777; font-weight: 650; }
+    .context { min-width: 330px; display: grid; gap: 8px; padding: 16px; border-radius: 12px; background: #eef6ff; }
+    .context div { display: flex; justify-content: space-between; gap: 14px; color: #4b5563; font-size: 13px; font-weight: 750; }
+    .context strong { color: #111827; text-align: right; }
+    .kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+    .kpi { padding: 18px; border: 1px solid #dbe4f0; border-radius: 14px; background: #fff; box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06); }
+    .kpi span { color: #6b7280; font-size: 12px; font-weight: 850; text-transform: uppercase; }
+    .kpi strong { display: block; margin-top: 8px; font-size: 30px; line-height: 1; }
+    .kpi small { display: block; margin-top: 8px; color: #5b6777; font-weight: 700; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr); gap: 18px; margin-top: 20px; }
+    .panel { padding: 18px; border: 1px solid #dbe4f0; border-radius: 14px; background: #fff; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06); }
+    .daily-chart { height: 230px; display: grid; grid-template-columns: repeat(${Math.max(1, Math.min(dailyRows.length, 30))}, minmax(16px, 1fr)); gap: 8px; align-items: end; padding-top: 18px; }
+    .daily-bar { min-width: 0; height: 100%; display: grid; grid-template-rows: 22px 1fr 18px 16px; gap: 5px; text-align: center; }
+    .daily-bar span { align-self: end; border-radius: 8px 8px 3px 3px; background: #0c69c8; }
+    .daily-bar small, .daily-bar em { overflow: hidden; color: #6b7280; font-size: 11px; font-style: normal; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+    .sentiment-row, .outcome-row { display: grid; grid-template-columns: 94px minmax(0, 1fr) 44px; gap: 10px; align-items: center; margin-top: 10px; color: #4b5563; font-weight: 800; }
+    .sentiment-row div { height: 12px; overflow: hidden; border-radius: 999px; background: #eef2f7; }
+    .sentiment-row b { display: block; height: 100%; border-radius: inherit; }
+    .sentiment-row b.positive { background: #22c55e; }
+    .sentiment-row b.neutral { background: #94a3b8; }
+    .sentiment-row b.negative { background: #ef4444; }
+    .outcome-row { grid-template-columns: minmax(0, 1fr) 44px; padding: 9px 0; border-bottom: 1px solid #eef2f7; }
+    .bdr-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+    .bdr-card { padding: 14px; border: 1px solid #dbe4f0; border-radius: 12px; background: #fff; }
+    .bdr-card > div:first-child { display: flex; justify-content: space-between; gap: 12px; }
+    .bdr-card small { display: block; margin-top: 3px; color: #6b7280; font-size: 12px; font-weight: 700; }
+    .bdr-card > b { display: block; margin-top: 10px; font-size: 24px; }
+    .progress { height: 8px; margin: 8px 0 12px; overflow: hidden; border-radius: 999px; background: #eef2f7; }
+    .progress span { display: block; height: 100%; border-radius: inherit; background: #0c69c8; }
+    dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+    dt { color: #6b7280; font-size: 10px; font-weight: 850; text-transform: uppercase; }
+    dd { margin: 2px 0 0; font-size: 13px; font-weight: 850; }
+    table { width: 100%; margin-top: 20px; border-collapse: collapse; border: 1px solid #dbe4f0; border-radius: 12px; overflow: hidden; background: #fff; }
+    th, td { padding: 10px 11px; border-bottom: 1px solid #edf2f7; text-align: left; vertical-align: top; font-size: 12px; }
+    th { background: #eef6ff; color: #0c69c8; font-size: 11px; font-weight: 900; text-transform: uppercase; }
+    td:last-child { max-width: 380px; color: #4b5563; }
+    .empty { color: #6b7280; font-weight: 700; }
+    footer { margin-top: 20px; color: #6b7280; font-size: 12px; font-weight: 700; }
+    @media print { body { background: #fff; } main { padding: 18px; } .hero, .panel, .kpi, .bdr-card, table { break-inside: avoid; box-shadow: none; } }
+    @media (max-width: 860px) { main { padding: 16px; } .hero, .grid, .kpis, .bdr-grid { grid-template-columns: 1fr; } .context { min-width: 0; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div>
+        <div class="brand">${logoDataUrl ? `<img src="${logoDataUrl}" alt="PaceOps logo">` : ""}PaceOps</div>
+        <h1>Aircall Client Progress Report</h1>
+        <p>Generated in ProspectIQ for client-facing campaign progress, BDR activity, and outbound call performance.</p>
+      </div>
+      <aside class="context">
+        <div><span>Client</span><strong>${htmlEscape(clientName)}</strong></div>
+        <div><span>Campaign</span><strong>${htmlEscape(campaignName)}</strong></div>
+        <div><span>BDR</span><strong>${htmlEscape(bdrName)}</strong></div>
+        <div><span>Period</span><strong>${htmlEscape(dateRangeLabel)}</strong></div>
+        <div><span>Generated</span><strong>${htmlEscape(generatedAt.toLocaleDateString())}</strong></div>
+      </aside>
+    </section>
+    <section class="kpis">${kpis.map(([label, value, note]) => `<article class="kpi"><span>${htmlEscape(label)}</span><strong>${htmlEscape(value)}</strong><small>${htmlEscape(note)}</small></article>`).join("")}</section>
+    <section class="grid">
+      <article class="panel"><p class="eyebrow">Call volume</p><h2>Daily trend</h2><div class="daily-chart">${dailyBars || "<p class='empty'>No calls in this period.</p>"}</div></article>
+      <article class="panel"><p class="eyebrow">Outcomes</p><h2>Sentiment and signals</h2>${sentimentRows}<div style="margin-top:18px">${outcomeRows}</div></article>
+    </section>
+    <section class="panel" style="margin-top:20px"><p class="eyebrow">BDR performance</p><h2>Team activity</h2><div class="bdr-grid">${userCards}</div></section>
+    <section style="margin-top:20px"><p class="eyebrow">Call detail</p><h2>Recent report calls</h2><table><thead><tr><th>Time</th><th>BDR</th><th>Direction</th><th>Contact</th><th>Connection</th><th>Duration</th><th>Outcome</th><th>Summary</th></tr></thead><tbody>${callRows || "<tr><td colspan='8'>No calls in this report scope.</td></tr>"}</tbody></table></section>
+    <footer>This PaceOps report is generated by ProspectIQ from synced Aircall activity. Use it to evidence outbound progress and guide the next campaign review.</footer>
+  </main>
+</body>
+</html>`;
+  const filename = aircallReportFilename(client?.name || "all-clients", campaign?.name || "all-campaigns");
+  downloadTextFile(filename, "text/html;charset=utf-8", html);
+}
 
   async function copyCall(call) {
     const { contact, agentName, tags, transcriptText } = getCallDisplayData(call);
@@ -5501,6 +5906,9 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
             ["today", "Today"],
             ["yesterday", "Yesterday"],
             ["7", "Last 7 days"],
+            ["30", "Last 30 days"],
+            ["month", "This month"],
+            ["year", "This year"],
           ].map(([value, label]) => (
             <button
               key={value}
@@ -5511,6 +5919,16 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
               {label}
             </button>
           ))}
+          <button
+            type="button"
+            className={rangeMode === "custom" ? "active" : ""}
+            onClick={() => {
+              setRangeMode("custom");
+              setCalendarOpen(false);
+            }}
+          >
+            Custom
+          </button>
           <div className="aircall-calendar-control">
             <button
               type="button"
@@ -5555,14 +5973,63 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
             ) : null}
           </div>
         </div>
+        {rangeMode === "custom" ? (
+          <div className="aircall-custom-range">
+            <label>
+              <span>Start</span>
+              <input type="date" value={customStartDate} onChange={event => setCustomStartDate(normalizeDateKey(event.target.value) || event.target.value)} />
+            </label>
+            <label>
+              <span>End</span>
+              <input type="date" value={customEndDate} onChange={event => setCustomEndDate(normalizeDateKey(event.target.value) || event.target.value)} />
+            </label>
+          </div>
+        ) : null}
         <label className="aircall-user-filter">
           <span>{isAdmin ? "User" : "Scope"}</span>
-          <select value={selectedUserId} onChange={event => setSelectedUserId(event.target.value)}>
-            <option value="all">{isAdmin ? "All users" : "My calls"}</option>
+          <select value={isAdmin ? selectedUserId : (selectableUsers[0]?.id || "all")} onChange={event => setSelectedUserId(event.target.value)} disabled={!isAdmin && selectableUsers.length <= 1}>
+            {isAdmin ? <option value="all">All users</option> : null}
             {selectableUsers.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
           </select>
         </label>
       </div>
+      <section className="aircall-report-panel">
+        <div className="aircall-report-heading">
+          <div>
+            <span className="eyebrow">Client progress export</span>
+            <h2>ProspectIQ Aircall report</h2>
+            <p>Generate a client-ready visual report with PaceOps activity, BDR performance, call outcomes, trend data, and call detail.</p>
+          </div>
+          <StatusBadge>{reportCalls.length} report calls</StatusBadge>
+        </div>
+        <div className="aircall-report-controls">
+          <label>
+            <span>Client account</span>
+            <select value={reportClientId} onChange={event => setReportClientId(event.target.value)}>
+              <option value="all">All accessible clients</option>
+              {accessibleClients.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Campaign</span>
+            <select value={reportCampaignId} onChange={event => setReportCampaignId(event.target.value)}>
+              <option value="all">All accessible campaigns</option>
+              {accessibleCampaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>BDR</span>
+            <select value={reportUserId} onChange={event => setReportUserId(event.target.value)}>
+              <option value="all">{isAdmin ? "All campaign users" : "All my accessible users"}</option>
+              {normalizedReportUserOptions.map(user => <option key={user.id || user.aircallUserId} value={user.id || user.aircallUserId}>{user.name || user.email}</option>)}
+            </select>
+          </label>
+          <button className="primary-button" type="button" onClick={exportProgressReport} disabled={reportExportStatus === "exporting"}>
+            {reportExportStatus === "exporting" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Download size={16} />}
+            {reportExportStatus === "exported" ? "Exported" : "Export client report"}
+          </button>
+        </div>
+      </section>
       <div className="metrics-grid">
         <MetricCard label="Calls made" value={filteredCalls.length} detail={`${connectedCalls.length} connected`} icon={AircallLogoIcon} />
         <MetricCard label="Calls with recordings" value={recordedCalls.length} detail="Aircall recording link synced" icon={FileText} />
@@ -5618,7 +6085,7 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
           <div className="user-call-list">
             {userRows.map(row => (
               <button className={`user-call-row ${selectedUserId === row.rowId ? "selected" : ""}`} key={row.rowId} type="button" onClick={() => setSelectedUserId(row.rowId)}>
-                <span className="record-avatar">{accountInitial(row.name || row.email)}</span>
+                <RecordAvatar name={row.name || row.email} imageUrl={row.avatarUrl} />
                 <div>
                   <strong>{row.name || row.email}</strong>
                   <small>{row.aircallUserId ? `Aircall ID ${row.aircallUserId}` : row.matchStatus === "unassigned" ? "No Aircall user" : "Aircall ID missing"}</small>
@@ -5778,7 +6245,7 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   );
 }
 
-function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpdateContact, onSavePrivateNote, onLogCall, onRemoveContact, onDeleteMeeting, onUpdateMeetingAssignment, canDeleteContacts, canManageCrmRecords = false }) {
+function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpdateContact, onSavePrivateNote, onLogCall, onRemoveContact, onDeleteMeeting, onUpdateMeetingAssignment, canDeleteContacts, canEditContact = false, canManageCrmRecords = false }) {
   const { accounts, campaigns, workspaceUsers, meetings } = useCrmData();
   const [outcome, setOutcome] = useState("Connected");
   const [noteDraft, setNoteDraft] = useState(privateNote);
@@ -5854,12 +6321,12 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
         <section className="panel">
           <div className="panel-header">
             <h2>Contact details</h2>
-            {canManageCrmRecords && editing ? (
+            {canEditContact && editing ? (
               <div className="row-actions">
                 <button className="text-button" type="button" onClick={() => setEditing(false)}>Cancel</button>
                 <button className="secondary-button" type="button" onClick={saveContactChanges}>Save</button>
               </div>
-            ) : canManageCrmRecords ? (
+            ) : canEditContact ? (
               <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>
             ) : null}
           </div>
@@ -11261,6 +11728,104 @@ function googleEarthCoordinateUrl(location = {}) {
   return `https://earth.google.com/web/search/${encodeURIComponent(`${lat.toFixed(6)},${lng.toFixed(6)}`)}`;
 }
 
+function htmlEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function buildLockerFinderReportHtml({ title = "Locker Finder Location Pack", mapImage = "", locations = [], searchValues = {}, generatedAt = new Date() } = {}) {
+  const generatedDate = generatedAt instanceof Date ? generatedAt : new Date(generatedAt);
+  const area = [searchValues.city, searchValues.postcode, searchValues.country].map(normalizeLookupValue).filter(Boolean).join(", ");
+  const rows = locations.map((location, index) => {
+    const fit = lockerHostFit(location);
+    const coordinates = Number.isFinite(Number(location.lat)) && Number.isFinite(Number(location.lng))
+      ? `${Number(location.lat).toFixed(6)}, ${Number(location.lng).toFixed(6)}`
+      : "Needed";
+    const photoUrl = location.photo
+      ? (/^https?:\/\//i.test(location.photo) ? location.photo : `${window.location.origin}${location.photo}`)
+      : "";
+    return `
+      <article class="location-card">
+        <div class="location-media">
+          ${photoUrl ? `<img src="${htmlEscape(photoUrl)}" alt="">` : `<div class="photo-empty">No image</div>`}
+          <span>${index + 1}</span>
+        </div>
+        <div class="location-body">
+          <p class="eyebrow">${htmlEscape(location.industry || industryLabelForType(location.placeType))}</p>
+          <h2>${htmlEscape(location.name || "Unnamed location")}</h2>
+          <p class="address">${htmlEscape([location.address, location.postcode].filter(Boolean).join(", "))}</p>
+          <dl>
+            <div><dt>Phone</dt><dd>${htmlEscape(location.phone || "Needed")}</dd></div>
+            <div><dt>Website</dt><dd>${htmlEscape(location.website || "Needed")}</dd></div>
+            <div><dt>Host fit</dt><dd>${htmlEscape(`${fit.label} (${location.score || "-"}): ${fit.reason}`)}</dd></div>
+            <div><dt>Coordinates</dt><dd>${htmlEscape(coordinates)}</dd></div>
+          </dl>
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${htmlEscape(title)}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f7fb; color: #111827; font-family: Aptos, "Segoe UI", Arial, sans-serif; }
+    main { max-width: 1180px; margin: 0 auto; padding: 34px; }
+    .hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; align-items: end; padding: 26px; border: 1px solid #dbe4f0; border-radius: 14px; background: #ffffff; box-shadow: 0 18px 44px rgba(15, 23, 42, 0.08); }
+    .eyebrow { margin: 0 0 8px; color: #0c69c8; font-size: 12px; font-weight: 850; letter-spacing: 0; text-transform: uppercase; }
+    h1 { margin: 0; font-size: 32px; line-height: 1.08; }
+    .hero p { margin: 10px 0 0; color: #5b6777; font-weight: 650; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; min-width: 330px; }
+    .stats span { display: grid; gap: 3px; padding: 12px; border-radius: 10px; background: #eef6ff; color: #0c69c8; font-weight: 850; }
+    .stats strong { color: #0f172a; font-size: 22px; line-height: 1; }
+    .map-card { margin-top: 20px; padding: 16px; border: 1px solid #dbe4f0; border-radius: 14px; background: #ffffff; box-shadow: 0 14px 34px rgba(15, 23, 42, 0.07); }
+    .map-card img { display: block; width: 100%; border-radius: 10px; border: 1px solid #e5e7eb; }
+    .location-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 20px; }
+    .location-card { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 14px; min-height: 174px; border: 1px solid #dbe4f0; border-radius: 14px; overflow: hidden; background: #ffffff; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06); }
+    .location-media { position: relative; background: #e8f2ff; }
+    .location-media img, .photo-empty { width: 100%; height: 100%; min-height: 174px; object-fit: cover; display: grid; place-items: center; color: #6b7280; font-weight: 800; }
+    .location-media span { position: absolute; left: 10px; top: 10px; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 999px; background: #0c69c8; color: #ffffff; font-weight: 900; }
+    .location-body { min-width: 0; padding: 14px 14px 14px 0; }
+    .location-body h2 { margin: 0; font-size: 18px; line-height: 1.2; }
+    .address { margin: 7px 0 12px; color: #5b6777; font-weight: 650; }
+    dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+    dt { color: #6b7280; font-size: 10px; font-weight: 850; text-transform: uppercase; }
+    dd { margin: 2px 0 0; font-size: 12px; font-weight: 750; overflow-wrap: anywhere; }
+    footer { margin-top: 22px; color: #6b7280; font-size: 12px; font-weight: 700; }
+    @media print { body { background: #fff; } main { padding: 18px; } .location-card, .hero, .map-card { break-inside: avoid; box-shadow: none; } }
+    @media (max-width: 820px) { main { padding: 16px; } .hero, .location-grid, .stats { grid-template-columns: 1fr; } .location-card { grid-template-columns: 1fr; } .location-body { padding: 14px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">PaceOpsIQ - Locker Finder List</p>
+        <h1>${htmlEscape(title)}</h1>
+        <p>${htmlEscape(area || "Target area")} outbound pack for parcel locker host outreach.</p>
+      </div>
+      <div class="stats">
+        <span><strong>${locations.length}</strong><small>Locations</small></span>
+        <span><strong>${locations.length ? Math.round(locations.reduce((sum, location) => sum + Number(location.score || 0), 0) / locations.length) : 0}</strong><small>Avg host fit</small></span>
+        <span><strong>${htmlEscape(generatedDate.toLocaleDateString())}</strong><small>Generated</small></span>
+      </div>
+    </section>
+    ${mapImage ? `<section class="map-card"><p class="eyebrow">Annotated current map view</p><img src="${mapImage}" alt="Annotated map view"></section>` : ""}
+    <section class="location-grid">${rows}</section>
+    <footer>Use this pack for outbound qualification. Confirm available space, ownership permission, access hours, power, loading access, and security on the call.</footer>
+  </main>
+</body>
+</html>`;
+}
+
 function lockerLocationToLead(location = {}) {
   const website = normalizeLookupValue(location.website);
   const phone = normalizeLookupValue(location.phone);
@@ -11319,11 +11884,25 @@ function createLockerSearchResults({ city, country, postcode, selectedTypes }) {
   }));
 }
 
-function LockerMap({ locations = [], activeLocationId = "", selectedLocationIds = [], savedKeys = new Set(), onSelectLocation, onToggleLocation }) {
+function LockerMap({
+  locations = [],
+  activeLocationId = "",
+  selectedLocationIds = [],
+  savedKeys = new Set(),
+  onSelectLocation,
+  onToggleLocation,
+  mapCaptureRef,
+  drawingEnabled = false,
+  annotationColor = "#0c69c8",
+  clearDrawingSignal = 0,
+}) {
   const mapContainerRef = useRef(null);
+  const annotationCanvasRef = useRef(null);
   const mapRef = useRef(null);
   const markerLayerRef = useRef(null);
   const lastBoundsSignatureRef = useRef("");
+  const drawingRef = useRef(false);
+  const lastPointRef = useRef(null);
   const selectedLocationSet = useMemo(() => new Set(selectedLocationIds), [selectedLocationIds]);
   const locationsSignature = useMemo(() => locations
     .map(location => `${location.id}:${location.lat}:${location.lng}`)
@@ -11339,6 +11918,7 @@ function LockerMap({ locations = [], activeLocationId = "", selectedLocationIds 
     }).setView([51.5074, -0.1278], 12);
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
+      crossOrigin: true,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(mapRef.current);
     markerLayerRef.current = L.layerGroup().addTo(mapRef.current);
@@ -11354,6 +11934,96 @@ function LockerMap({ locations = [], activeLocationId = "", selectedLocationIds 
     if (!mapRef.current) return;
     window.setTimeout(() => mapRef.current?.invalidateSize(), 0);
   }, []);
+
+  useEffect(() => {
+    const canvas = annotationCanvasRef.current;
+    const wrapper = mapCaptureRef?.current;
+    if (!canvas || !wrapper) return undefined;
+    const resizeCanvas = () => {
+      const rect = wrapper.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      const previousImage = canvas.width && canvas.height ? canvas.toDataURL("image/png") : "";
+      canvas.width = Math.max(1, Math.round(rect.width * ratio));
+      canvas.height = Math.max(1, Math.round(rect.height * ratio));
+      canvas.style.width = `${rect.width}px`;
+      canvas.style.height = `${rect.height}px`;
+      const context = canvas.getContext("2d");
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      if (previousImage) {
+        const image = new Image();
+        image.onload = () => context.drawImage(image, 0, 0, rect.width, rect.height);
+        image.src = previousImage;
+      }
+    };
+    resizeCanvas();
+    const observer = new ResizeObserver(resizeCanvas);
+    observer.observe(wrapper);
+    return () => observer.disconnect();
+  }, [mapCaptureRef]);
+
+  useEffect(() => {
+    const canvas = annotationCanvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    context.clearRect(0, 0, canvas.width, canvas.height);
+  }, [clearDrawingSignal]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (drawingEnabled) {
+      map.dragging.disable();
+      map.scrollWheelZoom.disable();
+      map.doubleClickZoom.disable();
+    } else {
+      map.dragging.enable();
+      map.scrollWheelZoom.enable();
+      map.doubleClickZoom.enable();
+      drawingRef.current = false;
+      lastPointRef.current = null;
+    }
+  }, [drawingEnabled]);
+
+  function annotationPoint(event) {
+    const canvas = annotationCanvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+  }
+
+  function startAnnotation(event) {
+    if (!drawingEnabled) return;
+    event.preventDefault();
+    annotationCanvasRef.current?.setPointerCapture?.(event.pointerId);
+    drawingRef.current = true;
+    lastPointRef.current = annotationPoint(event);
+  }
+
+  function drawAnnotation(event) {
+    if (!drawingEnabled || !drawingRef.current || !lastPointRef.current) return;
+    event.preventDefault();
+    const canvas = annotationCanvasRef.current;
+    const context = canvas.getContext("2d");
+    const nextPoint = annotationPoint(event);
+    context.strokeStyle = annotationColor;
+    context.lineWidth = 4;
+    context.beginPath();
+    context.moveTo(lastPointRef.current.x, lastPointRef.current.y);
+    context.lineTo(nextPoint.x, nextPoint.y);
+    context.stroke();
+    lastPointRef.current = nextPoint;
+  }
+
+  function stopAnnotation(event) {
+    if (!drawingEnabled) return;
+    annotationCanvasRef.current?.releasePointerCapture?.(event.pointerId);
+    drawingRef.current = false;
+    lastPointRef.current = null;
+  }
 
   useEffect(() => {
     if (!mapRef.current || !markerLayerRef.current) return;
@@ -11395,30 +12065,35 @@ function LockerMap({ locations = [], activeLocationId = "", selectedLocationIds 
   }, [activeLocationId, locations, locationsSignature, onSelectLocation, onToggleLocation, savedKeySignature, savedKeys, selectedLocationSet]);
 
   return (
-    <div className="locker-map-canvas">
+    <div ref={mapCaptureRef} className={`locker-map-canvas ${drawingEnabled ? "drawing" : ""}`}>
       <div ref={mapContainerRef} className="locker-real-map" />
+      <canvas
+        ref={annotationCanvasRef}
+        className="locker-annotation-canvas"
+        aria-label="Map annotation canvas"
+        onPointerDown={startAnnotation}
+        onPointerMove={drawAnnotation}
+        onPointerUp={stopAnnotation}
+        onPointerCancel={stopAnnotation}
+        onPointerLeave={stopAnnotation}
+      />
     </div>
   );
 }
 
-function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppendToLeadList, onOpenLeadLists }) {
+function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppendToLeadList, onUpdateLeadList, onOpenLeadLists }) {
   const [searchValues, setSearchValues] = useState({
     city: "London",
     country: "United Kingdom",
     postcode: "",
     customIndustry: "",
   });
-  const [selectedTypes, setSelectedTypes] = useState(["convenience_store", "gas_station", "supermarket", "train_station"]);
-  const [results, setResults] = useState(() => createLockerSearchResults({
-    city: "London",
-    country: "United Kingdom",
-    postcode: "",
-    selectedTypes: ["convenience_store", "gas_station", "supermarket", "train_station"],
-  }));
+  const [selectedTypes, setSelectedTypes] = useState([]);
+  const [results, setResults] = useState([]);
   const [activeLocationId, setActiveLocationId] = useState(results[0]?.id || "");
-  const [searchStatus, setSearchStatus] = useState("demo");
+  const [searchStatus, setSearchStatus] = useState("idle");
   const [searchError, setSearchError] = useState("");
-  const [resultSource, setResultSource] = useState("Demo data");
+  const [resultSource, setResultSource] = useState("Choose category");
   const autoSearchStartedRef = useRef(false);
   const [targetLeadListId, setTargetLeadListId] = useState("");
   const [createLeadListMode, setCreateLeadListMode] = useState(false);
@@ -11426,8 +12101,16 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
   const [selectedLocationIds, setSelectedLocationIds] = useState([]);
   const [lockerExportFormat, setLockerExportFormat] = useState("csv");
   const [copiedCoordinateKey, setCopiedCoordinateKey] = useState("");
+  const [locationLibrary, setLocationLibrary] = useState(null);
+  const [drawingEnabled, setDrawingEnabled] = useState(false);
+  const [annotationColor, setAnnotationColor] = useState("#0c69c8");
+  const [clearDrawingSignal, setClearDrawingSignal] = useState(0);
+  const [attachVisualReport, setAttachVisualReport] = useState(true);
+  const [reportStatus, setReportStatus] = useState("idle");
+  const [reportError, setReportError] = useState("");
   const [leadListSaveStatus, setLeadListSaveStatus] = useState("idle");
   const [leadListSaveError, setLeadListSaveError] = useState("");
+  const mapCaptureRef = useRef(null);
   const activeLocation = results.find(location => location.id === activeLocationId) || results[0] || null;
   const selectedLocations = results.filter(location => selectedLocationIds.includes(location.id));
   const savedPlaceIds = useMemo(() => new Set((leadLists || [])
@@ -11442,6 +12125,51 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
     ? Math.round(results.reduce((sum, location) => sum + Number(location.score || 0), 0) / filteredProspectCount)
     : 0;
   const hasSearchCategory = selectedTypes.length > 0 || String(searchValues.customIndustry || "").trim().length > 0;
+  const countryOptions = useMemo(() => locationLibrary?.Country?.getAllCountries?.() || [], [locationLibrary]);
+  const countryInput = String(searchValues.country || "").trim().toLowerCase();
+  const cityInput = String(searchValues.city || "").trim().toLowerCase();
+  const matchingCountryOptions = useMemo(() => {
+    if (!countryInput) return countryOptions.slice(0, 20);
+    return countryOptions
+      .filter(country => {
+        const name = country.name.toLowerCase();
+        const iso = country.isoCode.toLowerCase();
+        return name.includes(countryInput) || iso === countryInput || (countryInput === "uk" && iso === "gb");
+      })
+      .slice(0, 20);
+  }, [countryInput, countryOptions]);
+  const selectedCountryIso = useMemo(() => {
+    const exactCountry = countryOptions.find(country => {
+      const name = country.name.toLowerCase();
+      const iso = country.isoCode.toLowerCase();
+      return name === countryInput || iso === countryInput || (countryInput === "uk" && iso === "gb");
+    });
+    return exactCountry?.isoCode || "";
+  }, [countryInput, countryOptions]);
+  const matchingCityOptions = useMemo(() => {
+    if (!selectedCountryIso) return [];
+    const cities = locationLibrary?.City?.getCitiesOfCountry?.(selectedCountryIso) || [];
+    const matchingCities = cityInput
+      ? cities.filter(city => city.name.toLowerCase().includes(cityInput))
+      : cities;
+    return matchingCities
+      .filter((city, index, list) => list.findIndex(item => item.name === city.name) === index)
+      .slice(0, 40);
+  }, [cityInput, locationLibrary, selectedCountryIso]);
+
+  useEffect(() => {
+    let cancelled = false;
+    import("country-state-city")
+      .then(module => {
+        if (!cancelled) setLocationLibrary(module);
+      })
+      .catch(() => {
+        if (!cancelled) setLocationLibrary(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const executeSearch = useCallback(async (values = searchValues, types = selectedTypes, { silent = false } = {}) => {
     setSearchStatus("searching");
@@ -11533,10 +12261,28 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
     setLeadListSaveStatus("saving");
     setLeadListSaveError("");
     try {
+      const visualReportMetadata = attachVisualReport ? {
+        createdAt: new Date().toISOString(),
+        area: [searchValues.city, searchValues.postcode, searchValues.country].map(normalizeLookupValue).filter(Boolean).join(", "),
+        locationCount: cleanLocations.length,
+        includesAnnotatedMap: true,
+        note: "A Locker Finder visual report was generated for this saved list from the current map view.",
+      } : null;
+      let savedList;
       if (existingList) {
-        await onAppendToLeadList({ leadList: existingList, leads });
+        savedList = await onAppendToLeadList({ leadList: existingList, leads });
+        if (attachVisualReport && onUpdateLeadList) {
+          await onUpdateLeadList({
+            leadList: savedList,
+            filters: {
+              ...(savedList.filters || existingList.filters || {}),
+              source: "locker_finder",
+              visualReport: visualReportMetadata,
+            },
+          });
+        }
       } else {
-        await onSaveLeadList({
+        savedList = await onSaveLeadList({
           name: listName,
           assignedUserIds: [],
           leads,
@@ -11548,10 +12294,12 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
             customIndustry: searchValues.customIndustry,
             placeTypes: selectedTypes,
             clientId: activeClient?.id !== "none" ? activeClient?.id || "" : "",
+            visualReport: visualReportMetadata,
           },
         });
         setNewLeadListName("");
       }
+      if (attachVisualReport) await generateVisualReport(cleanLocations);
       setSelectedLocationIds([]);
       setLeadListSaveStatus("saved");
       window.setTimeout(() => setLeadListSaveStatus("idle"), 2500);
@@ -11581,15 +12329,58 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
     }
   }
 
+  async function captureAnnotatedMap() {
+    const target = mapCaptureRef.current;
+    if (!target) return "";
+    const { default: html2canvas } = await import("html2canvas");
+    const canvas = await html2canvas(target, {
+      backgroundColor: "#ffffff",
+      scale: Math.min(2, window.devicePixelRatio || 1),
+      useCORS: true,
+      allowTaint: false,
+      logging: false,
+    });
+    return canvas.toDataURL("image/png");
+  }
+
+  async function generateVisualReport(locations = selectedLocations) {
+    const cleanLocations = (locations || []).filter(Boolean);
+    if (!cleanLocations.length) {
+      setReportError("Select at least one location before creating a visual report.");
+      return;
+    }
+    setReportStatus("generating");
+    setReportError("");
+    try {
+      const mapImage = await captureAnnotatedMap();
+      const timestamp = new Date();
+      const areaName = [searchValues.city, searchValues.postcode, searchValues.country].map(normalizeLookupValue).filter(Boolean).join(" ");
+      const filenameBase = sanitizeExportFilename(`${areaName || "locker-finder"}-visual-report-${timestamp.toISOString().slice(0, 10)}`, "locker-finder-visual-report", "html").replace(/\.html$/i, "");
+      const html = buildLockerFinderReportHtml({
+        title: `${searchValues.city || "Target area"} Locker Finder Report`,
+        mapImage,
+        locations: cleanLocations,
+        searchValues,
+        generatedAt: timestamp,
+      });
+      downloadTextFile(`${filenameBase}.html`, "text/html;charset=utf-8", html);
+      setReportStatus("saved");
+      window.setTimeout(() => setReportStatus("idle"), 2500);
+    } catch (error) {
+      setReportStatus("idle");
+      setReportError(error?.message || "Could not create visual report.");
+    }
+  }
+
   return (
     <>
       <PageHeader
         eyebrow="Locker Finder"
-        title="Parcel locker location scout"
+        title="Parcel locker location finder"
         description="Find convenience-led host locations for Quadient Parcel Pending outreach, then save the strongest places to a call list."
       >
         <StatusBadge tone={resultSource === "Google Places" ? "success" : "neutral"}>
-          {resultSource === "Google Places" ? "Google Places live" : "Demo mode"}
+          {resultSource === "Google Places" ? "Google Places live" : resultSource}
         </StatusBadge>
       </PageHeader>
 
@@ -11610,13 +12401,23 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
 
       <form className="locker-search-panel" onSubmit={runSearch}>
         <label>
-          <span>City</span>
-          <input value={searchValues.city} onChange={event => setSearchValues(current => ({ ...current, city: event.target.value }))} placeholder="London" />
-        </label>
-        <label>
           <span>Country</span>
-          <input value={searchValues.country} onChange={event => setSearchValues(current => ({ ...current, country: event.target.value }))} placeholder="United Kingdom" />
+          <input list="locker-country-options" value={searchValues.country} onChange={event => setSearchValues(current => ({ ...current, country: event.target.value }))} placeholder="United Kingdom" />
         </label>
+        <datalist id="locker-country-options">
+          {matchingCountryOptions.map(country => (
+            <option key={country.isoCode} value={country.name}>{country.isoCode}</option>
+          ))}
+        </datalist>
+        <label>
+          <span>City / target area</span>
+          <input list="locker-city-options" value={searchValues.city} onChange={event => setSearchValues(current => ({ ...current, city: event.target.value }))} placeholder="London, London Greenwood" />
+        </label>
+        <datalist id="locker-city-options">
+          {matchingCityOptions.map(city => (
+            <option key={`${city.countryCode}-${city.stateCode}-${city.name}`} value={city.name}>{city.stateCode}</option>
+          ))}
+        </datalist>
         <label>
           <span>Postcode / Eircode area</span>
           <input value={searchValues.postcode} onChange={event => setSearchValues(current => ({ ...current, postcode: event.target.value }))} placeholder="NW1, SE1, D01" />
@@ -11699,31 +12500,78 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
               <span>{searchValues.country || "Country"} candidate map</span>
               <small>{resultSource}</small>
             </div>
-            <button className="secondary-button" type="button" onClick={() => setSelectedLocationIds(results.map(location => location.id))} disabled={!results.length}>
-              Select all
-            </button>
-            <button className="secondary-button" type="button" onClick={() => setSelectedLocationIds([])} disabled={!selectedLocationIds.length}>
-              Clear
-            </button>
-            <button className="secondary-button" type="button" onClick={() => saveLocationsToLeadList(selectedLocations)} disabled={!selectedLocations.length || leadListSaveStatus === "saving"}>
-              <CheckCircle2 size={16} />
-              Save selected ({selectedLocations.length})
-            </button>
-            <button className="secondary-button" type="button" onClick={() => saveLocationsToLeadList(results)} disabled={!results.length || leadListSaveStatus === "saving"}>
-              <CheckCircle2 size={16} />
-              {leadListSaveStatus === "saving" ? "Saving" : "Save all to list"}
-            </button>
-            <label className="locker-export-format">
-              <span>Export</span>
-              <select value={lockerExportFormat} onChange={event => setLockerExportFormat(event.target.value)}>
-                <option value="csv">CSV</option>
-                <option value="xls">Excel</option>
-              </select>
+            <StatusBadge tone={drawingEnabled ? "success" : "neutral"}>{drawingEnabled ? "Drawing on" : `${selectedLocations.length} selected`}</StatusBadge>
+          </div>
+          <div className="locker-map-action-bar">
+            <div className="locker-selection-actions">
+              <button className="secondary-button" type="button" onClick={() => setSelectedLocationIds(results.map(location => location.id))} disabled={!results.length}>
+                Select all
+              </button>
+              <button className="secondary-button" type="button" onClick={() => setSelectedLocationIds([])} disabled={!selectedLocationIds.length}>
+                Clear
+              </button>
+              <button className="secondary-button" type="button" onClick={() => saveLocationsToLeadList(selectedLocations)} disabled={!selectedLocations.length || leadListSaveStatus === "saving"}>
+                <CheckCircle2 size={16} />
+                Save selected ({selectedLocations.length})
+              </button>
+              <button className="secondary-button" type="button" onClick={() => saveLocationsToLeadList(results)} disabled={!results.length || leadListSaveStatus === "saving"}>
+                <CheckCircle2 size={16} />
+                {leadListSaveStatus === "saving" ? "Saving" : "Save all to list"}
+              </button>
+            </div>
+            <div className="locker-export-actions">
+              <label className="locker-export-format">
+                <span>Format</span>
+                <select value={lockerExportFormat} onChange={event => setLockerExportFormat(event.target.value)}>
+                  <option value="csv">CSV</option>
+                  <option value="xls">Excel</option>
+                </select>
+              </label>
+              <button className="secondary-button locker-export-button" type="button" onClick={exportSelectedLocationsCsv} disabled={!selectedLocations.length}>
+                <Download size={16} />
+                Export list
+              </button>
+            </div>
+          </div>
+          <div className="locker-annotation-panel">
+            <div>
+              <span className="eyebrow">Annotate map</span>
+              <strong>Mark target streets or zones, then generate a visual outbound pack.</strong>
+            </div>
+            <div className="locker-draw-tools" aria-label="Map drawing tools">
+              <button className={`secondary-button ${drawingEnabled ? "active" : ""}`} type="button" onClick={() => setDrawingEnabled(value => !value)}>
+                <Pencil size={16} />
+                {drawingEnabled ? "Drawing" : "Draw"}
+              </button>
+              <div className="locker-colour-group" aria-label="Drawing colour">
+                {["#0c69c8", "#16a34a", "#f59e0b", "#dc2626", "#7c3aed"].map(color => (
+                  <button
+                    key={color}
+                    className={`locker-color-swatch ${annotationColor === color ? "active" : ""}`}
+                    type="button"
+                    style={{ "--swatch-color": color }}
+                    title={`Use ${color}`}
+                    aria-label={`Use ${color}`}
+                    onClick={() => setAnnotationColor(color)}
+                  />
+                ))}
+              </div>
+              <button className="secondary-button" type="button" onClick={() => setClearDrawingSignal(value => value + 1)}>
+                <Trash2 size={16} />
+                Clear drawing
+              </button>
+              <button className="secondary-button locker-report-button" type="button" onClick={() => generateVisualReport()} disabled={!selectedLocations.length || reportStatus === "generating"}>
+                {reportStatus === "generating" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <FileText size={16} />}
+                {reportStatus === "generating" ? "Creating" : "Visual report"}
+              </button>
+            </div>
+          </div>
+          <div className="locker-report-options">
+            <label>
+              <input type="checkbox" checked={attachVisualReport} onChange={event => setAttachVisualReport(event.target.checked)} />
+              <span>Generate and record report when saving to a lead list</span>
             </label>
-            <button className="secondary-button locker-export-button" type="button" onClick={exportSelectedLocationsCsv} disabled={!selectedLocations.length}>
-              <Download size={16} />
-              Export saved list
-            </button>
+            {reportError ? <small className="form-error">{reportError}</small> : reportStatus === "saved" ? <small className="form-success">Visual report downloaded.</small> : null}
           </div>
           <LockerMap
             locations={results}
@@ -11732,6 +12580,10 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
             savedKeys={savedKeys}
             onSelectLocation={setActiveLocationId}
             onToggleLocation={toggleLocationSelection}
+            mapCaptureRef={mapCaptureRef}
+            drawingEnabled={drawingEnabled}
+            annotationColor={annotationColor}
+            clearDrawingSignal={clearDrawingSignal}
           />
           {!results.length ? (
             <div className="locker-map-empty">
@@ -11854,7 +12706,9 @@ function SettingsPage({
     lastName: profile.lastName || metadata.last_name || "",
     displayName: profile.displayName || metadata.display_name || "",
     aircallUserId: profile.aircallUserId || metadata.aircallUserId || "",
+    avatarUrl: profile.avatarUrl || metadata.avatar_url || "",
   });
+  const [profileImageFile, setProfileImageFile] = useState(null);
   const [profileStatus, setProfileStatus] = useState("idle");
   const [profileError, setProfileError] = useState("");
   const [adminSettingsStatus, setAdminSettingsStatus] = useState("idle");
@@ -11927,18 +12781,35 @@ function SettingsPage({
     if (adminAccessFilter === "member") return !isOrgAdmin && !isMemberAdmin;
     return true;
   });
+  const profileImagePreviewUrl = useMemo(() => (
+    profileImageFile ? URL.createObjectURL(profileImageFile) : ""
+  ), [profileImageFile]);
+  const displayedProfileAvatarUrl = profileImagePreviewUrl || profileValues.avatarUrl || "";
+
+  useEffect(() => {
+    if (!profileImagePreviewUrl) return undefined;
+    return () => URL.revokeObjectURL(profileImagePreviewUrl);
+  }, [profileImagePreviewUrl]);
 
   async function submitProfile(event) {
     event.preventDefault();
     setProfileStatus("saving");
     setProfileError("");
     try {
+      let avatarUrl = profileValues.avatarUrl;
+      if (profileImageFile) {
+        const uploadedImage = await uploadProfileImage({ file: profileImageFile, userId: user?.id });
+        avatarUrl = uploadedImage.avatarUrl;
+      }
       await onUpdateProfile({
         firstName: profileValues.firstName.trim(),
         lastName: profileValues.lastName.trim(),
         displayName: profileValues.displayName.trim(),
         aircallUserId: profileValues.aircallUserId.trim(),
+        avatarUrl,
       });
+      setProfileValues(current => ({ ...current, avatarUrl }));
+      setProfileImageFile(null);
       setProfileStatus("saved");
     } catch (error) {
       setProfileStatus("idle");
@@ -12009,6 +12880,31 @@ function SettingsPage({
           <form className="profile-settings-form" onSubmit={submitProfile}>
             <FormField label="Email">
               <input value={user?.email || ""} disabled />
+            </FormField>
+            <FormField label="Profile image" className="brand-image-field">
+              <div className="brand-image-uploader profile-image-uploader">
+                <div className="brand-image-preview profile-image-preview">
+                  {displayedProfileAvatarUrl
+                    ? <img src={displayedProfileAvatarUrl} alt="" />
+                    : <UserRound size={18} />}
+                </div>
+                <div>
+                  <label className="secondary-button brand-image-upload-button">
+                    <Upload size={16} />
+                    Choose image
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      onChange={event => {
+                        setProfileStatus("idle");
+                        setProfileError("");
+                        setProfileImageFile(event.target.files?.[0] || null);
+                      }}
+                    />
+                  </label>
+                  <small>{profileImageFile?.name || "PNG, JPG, WebP, or GIF under 5 MB."}</small>
+                </div>
+              </div>
             </FormField>
             <FormField label="First name">
               <input
@@ -12094,7 +12990,7 @@ function SettingsPage({
           {visibleTeamMembers.length ? <div className="team-list">
             {sortedVisibleTeamMembers.map(member => (
               <div key={member.id || member.name} className="team-row">
-                <span>{member.initials}</span>
+                <RecordAvatar name={member.name || member.email || member.initials} imageUrl={member.avatarUrl} />
                 <div>
                   <strong>{member.name}</strong>
                   <small>{member.email || member.role}</small>
@@ -12229,7 +13125,7 @@ function SettingsPage({
               return (
                 <article key={member.id || member.email || member.name} className={`admin-access-card ${isOrgAdmin || isMemberAdmin ? "admin" : ""}`}>
                   <div className="admin-access-person">
-                    <span>{member.initials || accountInitial(member.name || member.email || "Member")}</span>
+                    <RecordAvatar name={member.name || member.email || member.initials || "Member"} imageUrl={member.avatarUrl} />
                     <div>
                       <strong>{member.name}</strong>
                       <small>{member.email || "No email"}</small>
@@ -12383,9 +13279,7 @@ function ActivityTimeline({ account, collaborativeOnly = false }) {
 function RecordName({ name, meta, imageUrl = "" }) {
   return (
     <div className="record-name">
-      {imageUrl
-        ? <img className="record-avatar record-avatar-image" src={imageUrl} alt="" />
-        : <span className="record-avatar">{accountInitial(name)}</span>}
+      <RecordAvatar name={name} imageUrl={imageUrl} />
       <div>
         <strong>{name}</strong>
         <small>{meta}</small>
@@ -12556,7 +13450,7 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
         setError("Check your email to confirm your account, then sign in.");
         return;
       }
-      onAuthenticate(user);
+      await onAuthenticate(user);
     } catch (authError) {
       const message = String(authError?.message || "").toLowerCase();
       if (message.includes("invalid login")) setError("Email or password is incorrect.");
@@ -12627,9 +13521,9 @@ function AuthPanel({ initialMode = "signin", onAuthenticate }) {
 
             {error && <div className="auth-error">{error}</div>}
 
-            <button className="primary-button auth-submit" type="submit" disabled={!canSubmit}>
+            <button className="primary-button auth-submit" type="submit" disabled={!canSubmit || loading} aria-busy={loading}>
               {loading ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <LogIn size={16} />}
-              {loading ? "Working..." : mode === "signin" ? "Sign in" : "Create account"}
+              {loading ? (mode === "signin" ? "Signing in" : "Creating account") : mode === "signin" ? "Sign in" : "Create account"}
             </button>
           </form>
     </section>
@@ -12761,9 +13655,9 @@ function RightDrawer({ open, isDark, onThemeToggle, onOpenHome, onLogout, loggin
   );
 }
 
-function FormField({ label, children }) {
+function FormField({ label, children, className = "" }) {
   return (
-    <label className="form-field">
+    <label className={`form-field ${className}`.trim()}>
       <span>{label}</span>
       {children}
     </label>
@@ -13873,6 +14767,7 @@ export default function App() {
   }, [user?.id]);
 
   async function handleAuthenticatedUser(nextUser) {
+    setAuthReady(false);
     if (authLoadRef.current.userId === nextUser.id && authLoadRef.current.promise) {
       await authLoadRef.current.promise;
       return;
@@ -13937,6 +14832,7 @@ export default function App() {
           displayName: currentWorkspaceRecord?.name || nextUser.user_metadata?.display_name || "",
           aircallUserId: currentWorkspaceRecord?.aircallUserId || nextUser.user_metadata?.aircallUserId || "",
           currencyCode: normalizeCurrencyCode(currentWorkspaceRecord?.currencyCode),
+          avatarUrl: currentWorkspaceRecord?.avatarUrl || nextUser.user_metadata?.avatar_url || "",
         },
       };
       setCrmData(refreshCrmData(nextCrmData));
@@ -14005,6 +14901,7 @@ export default function App() {
           displayName: fallbackWorkspaceUser.name || nextUser.user_metadata?.display_name || "",
           aircallUserId: fallbackWorkspaceUser.aircallUserId || nextUser.user_metadata?.aircallUserId || "",
           currencyCode: fallbackWorkspaceUser.currencyCode || "GBP",
+          avatarUrl: fallbackWorkspaceUser.avatarUrl || nextUser.user_metadata?.avatar_url || "",
         },
       });
       setCurrencyCode(fallbackWorkspaceUser.currencyCode || "GBP");
@@ -14014,14 +14911,15 @@ export default function App() {
     }
   }
 
-  async function handleUpdateProfile({ firstName, lastName, displayName, aircallUserId, currencyCode: nextCurrencyCode }) {
+  async function handleUpdateProfile({ firstName, lastName, displayName, aircallUserId, currencyCode: nextCurrencyCode, avatarUrl }) {
     if (!user?.id) throw new Error("Authentication is not configured yet.");
     const derivedDisplayName = displayName || [firstName, lastName].filter(Boolean).join(" ");
     const normalizedCurrencyCode = normalizeCurrencyCode(nextCurrencyCode || user.crm_profile?.currencyCode || currencyCode);
+    const nextAvatarUrl = typeof avatarUrl === "string" ? avatarUrl : user.crm_profile?.avatarUrl || "";
     const response = await fetch("/api/profile", {
       method: "POST",
       headers: await buildApiHeaders(),
-      body: JSON.stringify({ firstName, lastName, displayName: derivedDisplayName, aircallUserId, currencyCode: normalizedCurrencyCode }),
+      body: JSON.stringify({ firstName, lastName, displayName: derivedDisplayName, aircallUserId, currencyCode: normalizedCurrencyCode, avatarUrl: nextAvatarUrl }),
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload.error || "Could not update profile.");
@@ -14031,6 +14929,7 @@ export default function App() {
       lastName,
       aircallUserId,
       currencyCode: normalizedCurrencyCode,
+      avatarUrl: nextAvatarUrl,
     };
     setUser(current => current ? {
       ...current,
@@ -14039,6 +14938,7 @@ export default function App() {
         first_name: firstName,
         last_name: lastName,
         display_name: nextProfile.displayName || derivedDisplayName,
+        avatar_url: nextProfile.avatarUrl || nextAvatarUrl,
       },
       crm_profile: {
         firstName: nextProfile.firstName || firstName,
@@ -14046,6 +14946,7 @@ export default function App() {
         displayName: nextProfile.displayName || derivedDisplayName,
         aircallUserId: nextProfile.aircallUserId || "",
         currencyCode: nextProfile.currencyCode || normalizedCurrencyCode,
+        avatarUrl: nextProfile.avatarUrl || nextAvatarUrl,
       },
     } : current);
     setCurrencyCode(nextProfile.currencyCode || normalizedCurrencyCode);
@@ -14059,6 +14960,7 @@ export default function App() {
           lastName: nextProfile.lastName || lastName,
           initials: accountInitial(nextProfile.displayName || derivedDisplayName || workspaceUser.name),
           aircallUserId: nextProfile.aircallUserId || "",
+          avatarUrl: nextProfile.avatarUrl || nextAvatarUrl,
         }
         : workspaceUser),
     }));
@@ -14494,6 +15396,7 @@ export default function App() {
     return (
       <div className={`auth-app app-loading-screen ${isDark ? "dark" : "light"}`} role="status" aria-live="polite">
         <div className="app-loading-card">
+          <LoaderCircle className="button-spinner" size={24} aria-hidden="true" />
           <strong>ProspectIQ</strong>
           <span>Loading workspace...</span>
         </div>
@@ -16038,6 +16941,7 @@ export default function App() {
 
   function renderPage() {
     const canManageCrmRecords = Boolean(effectiveAccessState.isAdmin);
+    const canEditContacts = Boolean(effectiveWorkspaceUser?.id);
     const canDeleteContacts = Boolean(effectiveAccessState.isAdmin && normalizedAdminSettings.contact_deletion_enabled);
     const cognismRedeemEnabled = Boolean(crmData.integrations?.find(integration => integration.name === "Cognism" || integration.key === "Cognism")?.redeemEnabled);
     const canUseCognismRedeemMode = Boolean(effectiveAccessState.isAdmin && cognismRedeemEnabled);
@@ -16093,6 +16997,7 @@ export default function App() {
             onDeleteMeeting={handleDeleteMeeting}
             onUpdateMeetingAssignment={handleUpdateMeetingAssignment}
             canDeleteContacts={canDeleteContacts}
+            canEditContact={canEditContacts}
             canManageCrmRecords={canManageCrmRecords}
           />
           : <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} onSaveLeadList={handleSaveLeadList} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
@@ -16103,13 +17008,11 @@ export default function App() {
       case "aircall":
         return <AircallDashboardPage aircallData={aircallData} workspaceUsers={workspaceUsers} contacts={contacts} onOpenContact={openContact} canSync={effectiveAccessState.isAdmin} onSyncAircall={handleSyncAircall} onBookMeeting={handleBookMeeting} currentUserId={effectiveWorkspaceUser?.id || ""} currentAircallUserId={effectiveWorkspaceUser?.aircallUserId || ""} selectedAircallUserId={selectedAircallUserId} isAdmin={effectiveAccessState.isAdmin} />;
       case "pipeline":
-        if (!effectiveAccessState.isAdmin) return <DashboardPage activeClient={activeClient} activeCampaign={activeCampaign} onNavigate={openView} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
         return <PipelinePage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onOpenContact={openContact} onMovePipelineItem={handleMovePipelineItem} onUpdateStages={handleUpdatePipelineStages} onSaveActionNote={handleSaveActionNote} onDeleteActionNote={handleDeleteActionNote} />;
       case "research":
-        if (!effectiveAccessState.isAdmin) return <DashboardPage activeClient={activeClient} activeCampaign={activeCampaign} onNavigate={openView} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
         return <ResearchPage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onEditAccount={editAccount} onAddSource={() => openWorkflow("file", { returnTo: "research" })} onGenerateScripts={handleGenerateResearchScripts} onSaveScript={handleSaveResearchScript} onDeleteScript={handleDeleteResearchScript} onSaveActionNote={handleSaveActionNote} onDeleteActionNote={handleDeleteActionNote} />;
       case "locker-finder":
-        return <LockerFinderPage activeClient={activeClient} leadLists={leadLists} onSaveLeadList={handleSaveLeadList} onAppendToLeadList={handleAppendToLeadList} onOpenLeadLists={() => openView("lead-lists")} />;
+        return <LockerFinderPage activeClient={activeClient} leadLists={leadLists} onSaveLeadList={handleSaveLeadList} onAppendToLeadList={handleAppendToLeadList} onUpdateLeadList={handleUpdateLeadList} onOpenLeadLists={() => openView("lead-lists")} />;
       // Calls workspace disabled:
       // case "calls":
       //   return <CallsPage onOpenContact={openContact} onLogCall={handleLogCall} onStartCallBlock={() => openWorkflow("call")} />;

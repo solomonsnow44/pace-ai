@@ -253,7 +253,7 @@ async function updateCurrentUserProfile(req, input = {}) {
   const serviceClient = getServiceClient();
   const { data: beforeProfile, error: beforeError } = await serviceClient
     .from('users')
-    .select('id,email,first_name,last_name,display_name,aircall_user_id,currency_code')
+    .select('id,email,first_name,last_name,display_name,aircall_user_id,currency_code,avatar_url')
     .eq('id', user.id)
     .eq('organization_id', user.organizationId)
     .single();
@@ -270,6 +270,9 @@ async function updateCurrentUserProfile(req, input = {}) {
     ? String(input.aircallUserId || '').trim() || null
     : beforeProfile.aircall_user_id || null;
   const currencyCode = normalizeCurrencyCode(input.currencyCode) || normalizeCurrencyCode(beforeProfile.currency_code) || 'GBP';
+  const avatarUrl = hasOwnValue(input, 'avatarUrl')
+    ? String(input.avatarUrl || '').trim() || null
+    : beforeProfile.avatar_url || null;
 
   const profilePayload = {
     first_name: firstName || null,
@@ -277,6 +280,7 @@ async function updateCurrentUserProfile(req, input = {}) {
     display_name: displayName || beforeProfile.email?.split('@')[0] || null,
     aircall_user_id: aircallUserId,
     currency_code: currencyCode,
+    avatar_url: avatarUrl,
     updated_at: new Date().toISOString(),
   };
 
@@ -285,7 +289,7 @@ async function updateCurrentUserProfile(req, input = {}) {
     .update(profilePayload)
     .eq('id', user.id)
     .eq('organization_id', user.organizationId)
-    .select('id,email,first_name,last_name,display_name,aircall_user_id,currency_code')
+    .select('id,email,first_name,last_name,display_name,aircall_user_id,currency_code,avatar_url')
     .single();
 
   if (updateError) throw updateError;
@@ -295,6 +299,7 @@ async function updateCurrentUserProfile(req, input = {}) {
       first_name: firstName,
       last_name: lastName,
       display_name: displayName,
+      avatar_url: avatarUrl,
     },
   });
   if (authUpdateError) console.warn('Could not sync profile display metadata', authUpdateError);
@@ -305,8 +310,8 @@ async function updateCurrentUserProfile(req, input = {}) {
     'workspace_user.profile_updated',
     'user',
     user.id,
-    { firstName: beforeProfile.first_name, lastName: beforeProfile.last_name, displayName: beforeProfile.display_name, aircallUserId: beforeProfile.aircall_user_id, currencyCode: normalizeCurrencyCode(beforeProfile.currency_code) || '' },
-    { firstName: updatedProfile.first_name, lastName: updatedProfile.last_name, displayName: updatedProfile.display_name, aircallUserId: updatedProfile.aircall_user_id, currencyCode: normalizeCurrencyCode(updatedProfile.currency_code) || '' },
+    { firstName: beforeProfile.first_name, lastName: beforeProfile.last_name, displayName: beforeProfile.display_name, aircallUserId: beforeProfile.aircall_user_id, currencyCode: normalizeCurrencyCode(beforeProfile.currency_code) || '', avatarUrl: beforeProfile.avatar_url || '' },
+    { firstName: updatedProfile.first_name, lastName: updatedProfile.last_name, displayName: updatedProfile.display_name, aircallUserId: updatedProfile.aircall_user_id, currencyCode: normalizeCurrencyCode(updatedProfile.currency_code) || '', avatarUrl: updatedProfile.avatar_url || '' },
   );
 
   return {
@@ -318,6 +323,7 @@ async function updateCurrentUserProfile(req, input = {}) {
       displayName: updatedProfile.display_name || '',
       aircallUserId: updatedProfile.aircall_user_id || '',
       currencyCode: normalizeCurrencyCode(updatedProfile.currency_code) || 'GBP',
+      avatarUrl: updatedProfile.avatar_url || '',
     },
   };
 }

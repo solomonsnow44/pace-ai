@@ -5440,23 +5440,40 @@ function IntentResearchPage({
       <div className="intent-research-layout">
         <section className="panel intent-research-form-panel">
           <div className="panel-header"><div><span className="eyebrow">Research job</span><h2>Run new research</h2></div><StatusBadge>Source agnostic</StatusBadge></div>
-          <form onSubmit={submitRun}>
-            <div className="form-grid">
+          <form className="intent-research-form" onSubmit={submitRun}>
+            <label className="form-field intent-query-field"><span>Research brief</span><textarea value={form.query} onChange={event => updateForm("query", event.target.value)} placeholder="Find recently funded B2B software companies in the UK hiring RevOps or customer operations leaders." /></label>
+            <div className="intent-brief-row">
               <label className="form-field"><span>Date range</span><select value={form.range} onChange={event => updateForm("range", event.target.value)}><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 6 months</option><option value="365">Last 1 year</option><option value="custom">Custom</option></select></label>
               {form.range === "custom" ? <label className="form-field"><span>Start</span><input type="date" value={form.customStart} onChange={event => updateForm("customStart", event.target.value)} /></label> : null}
               {form.range === "custom" ? <label className="form-field"><span>End</span><input type="date" value={form.customEnd} onChange={event => updateForm("customEnd", event.target.value)} /></label> : null}
               <label className="form-field"><span>Geography</span><input value={form.geography} onChange={event => updateForm("geography", event.target.value)} placeholder="UK, Ireland, EMEA" /></label>
-              <label className="form-field"><span>Industry</span><input value={form.industry} onChange={event => updateForm("industry", event.target.value)} placeholder="Cybersecurity, SaaS, healthcare" /></label>
+              <label className="form-field"><span>Industry</span><input value={form.industry} onChange={event => updateForm("industry", event.target.value)} placeholder="Cybersecurity or SaaS" /></label>
             </div>
-            <div className="role-choice-grid compact-choice-grid">
-              {intentEventTypes.map(type => <label key={type} className={`role-choice ${form.eventTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.eventTypes.includes(type)} onChange={() => toggleEventType(type)} /><span>{titleCase(type.replaceAll("_", " "))}</span></label>)}
+            <div className="intent-chip-section">
+              <div className="intent-section-label">
+                <span>Signals</span>
+                <small>{form.eventTypes.length || "No"} selected</small>
+              </div>
+              <div className="intent-chip-row">
+                {intentEventTypes.map(type => <button key={type} className={`intent-chip ${form.eventTypes.includes(type) ? "selected" : ""}`} type="button" onClick={() => toggleEventType(type)}>{titleCase(type.replaceAll("_", " "))}</button>)}
+              </div>
             </div>
-            <div className="role-choice-grid compact-choice-grid">
-              {intentSourceTypes.map(type => <label key={type} className={`role-choice ${form.sourceTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.sourceTypes.includes(type)} onChange={() => toggleSourceType(type)} /><span>{titleCase(type.replaceAll("_", " "))}</span></label>)}
+            <details className="intent-advanced-options">
+              <summary>Advanced sources and test extraction</summary>
+              <div className="intent-chip-section">
+                <div className="intent-section-label">
+                  <span>Sources</span>
+                  <small>{form.sourceTypes.length ? `${form.sourceTypes.length} selected` : "All sources"}</small>
+                </div>
+                <div className="intent-chip-row">
+                  {intentSourceTypes.map(type => <button key={type} className={`intent-chip ${form.sourceTypes.includes(type) ? "selected" : ""}`} type="button" onClick={() => toggleSourceType(type)}>{titleCase(type.replaceAll("_", " "))}</button>)}
+                </div>
+              </div>
+              <label className="form-field"><span>Structured extraction JSON</span><textarea value={form.structuredJson} onChange={event => updateForm("structuredJson", event.target.value)} placeholder='Paste extracted events JSON. Future OpenAI/web extraction will fill this automatically.' /></label>
+            </details>
+            <div className="intent-form-actions">
+              <button className="primary-button" type="submit" disabled={running}>{running ? <LoaderCircle className="button-spinner" size={16} /> : <Search size={16} />}{running ? "Running" : "Run research"}</button>
             </div>
-            <label className="form-field"><span>Custom query / ICP</span><textarea value={form.query} onChange={event => updateForm("query", event.target.value)} placeholder="Find recently funded B2B software companies in the UK hiring RevOps or customer operations leaders." /></label>
-            <label className="form-field"><span>Structured extraction JSON</span><textarea value={form.structuredJson} onChange={event => updateForm("structuredJson", event.target.value)} placeholder='Paste extracted events JSON. Future OpenAI/web extraction will fill this automatically.' /></label>
-            <button className="primary-button" type="submit" disabled={running}>{running ? <LoaderCircle className="button-spinner" size={16} /> : <Search size={16} />}{running ? "Running" : "Run research"}</button>
           </form>
           {message || error ? <div className={`form-success ${(message || error).toLowerCase().includes("could not") ? "warning" : ""}`}>{message || error}</div> : null}
         </section>

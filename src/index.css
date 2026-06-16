@@ -11,6 +11,94 @@
   align-items: start;
 }
 
+.intent-research-form {
+  display: grid;
+  gap: 14px;
+}
+
+.intent-query-field textarea {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.intent-brief-row {
+  display: grid;
+  grid-template-columns: 0.9fr repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.intent-chip-section {
+  display: grid;
+  gap: 8px;
+}
+
+.intent-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.intent-section-label span {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.intent-section-label small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.intent-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.intent-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.intent-chip:hover,
+.intent-chip.selected {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.intent-advanced-options {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--background));
+}
+
+.intent-advanced-options summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.intent-advanced-options[open] {
+  display: grid;
+  gap: 12px;
+}
+
+.intent-form-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
 .intent-staging-panel,
 .intent-research-form-panel,
 .intent-run-history-panel,
@@ -86,6 +174,10 @@
 
 @media (max-width: 1100px) {
   .intent-research-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .intent-brief-row {
     grid-template-columns: 1fr;
   }
 

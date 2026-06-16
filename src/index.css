@@ -7317,6 +7317,10 @@ textarea::placeholder {
   align-content: center;
 }
 
+.initial-auth-hold {
+  min-height: 100vh;
+}
+
 .app-loading-card {
   display: grid;
   place-items: center;

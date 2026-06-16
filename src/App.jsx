@@ -15393,13 +15393,7 @@ export default function App() {
 
   if (!authReady) {
     return (
-      <div className={`auth-app app-loading-screen ${isDark ? "dark" : "light"}`} role="status" aria-live="polite">
-        <div className="app-loading-card">
-          <LoaderCircle className="button-spinner" size={24} aria-hidden="true" />
-          <strong>ProspectIQ</strong>
-          <span>Loading workspace...</span>
-        </div>
-      </div>
+      <div className={`auth-app initial-auth-hold ${isDark ? "dark" : "light"}`} aria-hidden="true" />
     );
   }
 

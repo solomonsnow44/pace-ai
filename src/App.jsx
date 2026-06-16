@@ -14767,7 +14767,6 @@ export default function App() {
   }, [user?.id]);
 
   async function handleAuthenticatedUser(nextUser) {
-    setAuthReady(false);
     if (authLoadRef.current.userId === nextUser.id && authLoadRef.current.promise) {
       await authLoadRef.current.promise;
       return;

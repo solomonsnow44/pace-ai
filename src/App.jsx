@@ -15096,15 +15096,14 @@ export default function App() {
       if (!["member", "admin", "org_admin"].includes(role)) throw new Error("Workspace role must be member, admin, or org admin.");
       if (!adminSettingsState.isOrgAdmin && role === "org_admin") throw new Error("Only org admins can assign org admin access.");
 
-      const { data: updatedUser, error } = await supabase
-        .from("users")
-        .update({ role, updated_at: new Date().toISOString() })
-        .eq("id", userId)
-        .eq("organization_id", dataOrgId)
-        .select("id,email,first_name,last_name,display_name,role,status")
-        .single();
+      const { data: updatedRows, error } = await supabase.rpc("update_workspace_user_role", {
+        target_user_id: userId,
+        next_role: role,
+      });
 
       if (error) throw new Error(error.message || "Could not update member admin access.");
+      const updatedUser = Array.isArray(updatedRows) ? updatedRows[0] : updatedRows;
+      if (!updatedUser?.id) throw new Error("Workspace user was not found.");
       payload = {
         user: {
           id: updatedUser.id,

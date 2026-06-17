@@ -1069,6 +1069,8 @@ export async function handleApiRequest(req, res) {
         perPage: body.perPage,
         maxUserPages: body.maxUserPages,
         maxCallPages: body.maxCallPages,
+        dateRangeStart: body.dateRangeStart,
+        dateRangeEnd: body.dateRangeEnd,
       }, {
         serviceClient: getServiceClient(),
       });

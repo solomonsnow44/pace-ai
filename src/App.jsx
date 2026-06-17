@@ -6806,7 +6806,10 @@ async function exportAircallClientProgressHtml({
     setSyncStatus("syncing");
     setSyncError("");
     try {
-      await onSyncAircall();
+      await onSyncAircall({
+        dateRangeStart: dateRange.start.toISOString(),
+        dateRangeEnd: dateRange.end.toISOString(),
+      });
       setSyncStatus("synced");
     } catch (error) {
       setSyncError(error.message || "Could not sync Aircall.");
@@ -16267,11 +16270,17 @@ export default function App() {
     return payload;
   }
 
-  async function handleSyncAircall() {
+  async function handleSyncAircall(options = {}) {
     const response = await fetch("/api/aircall/sync", {
       method: "POST",
       headers: await buildApiHeaders(),
-      body: JSON.stringify({ perPage: 100, maxCallPages: 1, maxUserPages: 10 }),
+      body: JSON.stringify({
+        perPage: 100,
+        maxCallPages: 20,
+        maxUserPages: 10,
+        dateRangeStart: options.dateRangeStart,
+        dateRangeEnd: options.dateRangeEnd,
+      }),
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload.error || "Could not sync Aircall.");

@@ -28,6 +28,21 @@ function aircallTimestampToIso(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function dateInputToUnixSeconds(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : Math.floor(date.getTime() / 1000);
+}
+
+function buildCallPath(input = {}) {
+  const params = new URLSearchParams({ order: "desc" });
+  const from = dateInputToUnixSeconds(input.dateRangeStart || input.from);
+  const to = dateInputToUnixSeconds(input.dateRangeEnd || input.to);
+  if (from) params.set("from", String(from));
+  if (to) params.set("to", String(to));
+  return `/calls?${params.toString()}`;
+}
+
 function normalizePhoneKey(value) {
   const digits = String(value || "").replace(/\D/g, "");
   if (!digits) return "";
@@ -493,10 +508,11 @@ export async function syncAircallData(input = {}, options = {}) {
   const maxUserPages = input.maxUserPages || 10;
   const maxCallPages = input.maxCallPages || 5;
   const includeIntelligence = input.includeIntelligence !== false;
+  const callPath = buildCallPath(input);
 
   const aircallUsers = await fetchAircallPages("/users?", "users", { apiId, apiToken, fetcher, perPage, maxPages: maxUserPages });
   const usersFromAircallCalls = new Map();
-  const aircallCalls = await fetchAircallPages("/calls?order=desc", "calls", { apiId, apiToken, fetcher, perPage, maxPages: maxCallPages });
+  const aircallCalls = await fetchAircallPages(callPath, "calls", { apiId, apiToken, fetcher, perPage, maxPages: maxCallPages });
 
   for (const call of aircallCalls) {
     if (call.user?.id) usersFromAircallCalls.set(String(call.user.id), call.user);

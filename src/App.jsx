@@ -2,7 +2,6 @@ import { createContext, createElement, useCallback, useContext, useEffect, useMe
 import { createClient } from "@supabase/supabase-js";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import * as XLSX from "xlsx";
 import {
   ArrowRight,
   ArrowLeft,
@@ -77,6 +76,21 @@ const DEFAULT_ADMIN_SETTINGS = {
   contact_deletion_enabled: false,
   test_account_enabled: false,
 };
+
+let xlsxModulePromise = null;
+
+function loadXlsxModule() {
+  if (!xlsxModulePromise) xlsxModulePromise = import("xlsx");
+  return xlsxModulePromise;
+}
+
+let countryStateCityModulePromise = null;
+
+function loadCountryStateCityModule() {
+  if (!countryStateCityModulePromise) countryStateCityModulePromise = import("country-state-city");
+  return countryStateCityModulePromise;
+}
+
 const TEST_WORKSPACE_USER = {
   id: "00000000-0000-4000-8000-000000700707",
   email: "james.bond@paceops.com",
@@ -2378,8 +2392,9 @@ function mapAircallCallRecord(record = {}) {
   };
 }
 
-async function loadAircallDashboardData(organizationId) {
+async function loadAircallDashboardData(organizationId, options = {}) {
   if (!supabase || !organizationId) return { users: [], calls: [], dailyStats: [] };
+  const callsLimit = Math.max(100, Math.min(Number(options.callsLimit) || 1500, 5000));
 
   const [usersResult, callsResult, statsResult] = await Promise.all([
     supabase
@@ -2392,7 +2407,7 @@ async function loadAircallDashboardData(organizationId) {
       .select("*")
       .eq("organization_id", organizationId)
       .order("started_at", { ascending: false })
-      .limit(500),
+      .limit(callsLimit),
     supabase
       .from("aircall_user_daily_stats")
       .select("*")
@@ -5604,19 +5619,12 @@ function IntentResearchPage({
     return () => observer.disconnect();
   }, [selectedEvent?.id]);
 
-  useEffect(() => {
-    let cancelled = false;
-    import("country-state-city")
-      .then(module => {
-        if (!cancelled) setIntentCountryLibrary(module);
-      })
-      .catch(() => {
-        if (!cancelled) setIntentCountryLibrary(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const ensureIntentCountryLibrary = useCallback(() => {
+    if (intentCountryLibrary) return;
+    loadCountryStateCityModule()
+      .then(module => setIntentCountryLibrary(module))
+      .catch(() => setIntentCountryLibrary(null));
+  }, [intentCountryLibrary]);
 
   function jumpToIntentSection(event, targetId) {
     event.preventDefault();
@@ -5743,7 +5751,16 @@ function IntentResearchPage({
             </div>
             <label>
               <span>Geography</span>
-              <input list="intent-country-options" value={form.geography} onChange={event => updateForm("geography", event.target.value)} placeholder="Country, region, city" />
+              <input
+                list="intent-country-options"
+                value={form.geography}
+                onFocus={ensureIntentCountryLibrary}
+                onChange={event => {
+                  ensureIntentCountryLibrary();
+                  updateForm("geography", event.target.value);
+                }}
+                placeholder="Country, region, city"
+              />
               <datalist id="intent-country-options">
                 {geographyCountryOptions.map(country => <option key={country.isoCode} value={country.name}>{country.isoCode}</option>)}
               </datalist>
@@ -6158,6 +6175,7 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const [freshRecordingStatus, setFreshRecordingStatus] = useState("");
   const [syncStatus, setSyncStatus] = useState("idle");
   const [syncError, setSyncError] = useState("");
+  const [syncSummary, setSyncSummary] = useState("");
   const rawCalls = Array.isArray(aircallData?.calls) ? aircallData.calls : [];
   const rawAircallUsers = Array.isArray(aircallData?.users) ? aircallData.users : [];
   const visibleWorkspaceUsers = isAdmin ? workspaceUsers : workspaceUsers.filter(item => item.id === currentUserId);
@@ -6805,12 +6823,16 @@ async function exportAircallClientProgressHtml({
     if (!onSyncAircall) return;
     setSyncStatus("syncing");
     setSyncError("");
+    setSyncSummary("");
     try {
-      await onSyncAircall({
+      const payload = await onSyncAircall({
         dateRangeStart: dateRange.start.toISOString(),
         dateRangeEnd: dateRange.end.toISOString(),
       });
+      const syncedCount = Number(payload?.callsSynced ?? payload?.callsFetched);
+      setSyncSummary(Number.isFinite(syncedCount) ? `${syncedCount} calls synced for ${dateRangeLabel}.` : `Aircall calls synced for ${dateRangeLabel}.`);
       setSyncStatus("synced");
+      window.setTimeout(() => setSyncStatus(current => current === "synced" ? "idle" : current), 3500);
     } catch (error) {
       setSyncError(error.message || "Could not sync Aircall.");
       setSyncStatus("idle");
@@ -6832,13 +6854,13 @@ async function exportAircallClientProgressHtml({
         ) : null}
       </PageHeader>
       {syncError ? <div className="form-error">{syncError}</div> : null}
-      {syncStatus === "synced" ? <div className="form-success">Aircall calls synced for {dateRangeLabel}.</div> : null}
+      {syncStatus === "synced" ? <div className="form-success">{syncSummary || `Aircall calls synced for ${dateRangeLabel}.`}</div> : null}
       {aircallData?.unavailable ? (
         <section className="panel">
           <EmptyState icon={Phone} title="Aircall tables not applied yet" text="Run the Aircall migration, then synced users and calls will appear here." />
         </section>
       ) : null}
-      <div className="aircall-filter-panel">
+      <div className={`aircall-filter-panel ${rangeMode === "custom" ? "custom-active" : ""}`}>
         <div className="aircall-filter-summary">
           <span><ListFilter size={16} /> Filters</span>
           <strong>{dateRangeLabel}</strong>
@@ -6896,20 +6918,30 @@ async function exportAircallClientProgressHtml({
                   {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(day => <span key={day}>{day}</span>)}
                 </div>
                 <div className="aircall-calendar-grid">
-                  {calendarDays.map(day => (
-                    <button
-                      key={day.key}
-                      type="button"
-                      className={[
-                        day.inMonth ? "" : "muted",
-                        day.key === selectedDateKey && rangeMode === "date" ? "selected" : "",
-                        day.key === todayKey ? "today" : "",
-                      ].filter(Boolean).join(" ")}
-                      onClick={() => chooseCalendarDate(day.key)}
-                    >
-                      {day.date.getDate()}
-                    </button>
-                  ))}
+                  {calendarDays.map(day => {
+                    const customStartKey = normalizeDateKey(customStartDate);
+                    const customEndKey = normalizeDateKey(customEndDate || customStartDate);
+                    const customRangeStart = customStartKey && customEndKey && customEndKey < customStartKey ? customEndKey : customStartKey;
+                    const customRangeEnd = customStartKey && customEndKey && customEndKey < customStartKey ? customStartKey : customEndKey;
+                    const customRangeActive = rangeMode === "custom" && customRangeStart && customRangeEnd;
+                    return (
+                      <button
+                        key={day.key}
+                        type="button"
+                        className={[
+                          day.inMonth ? "" : "muted",
+                          day.key === selectedDateKey && rangeMode === "date" ? "selected" : "",
+                          customRangeActive && day.key === customRangeStart ? "range-start" : "",
+                          customRangeActive && day.key === customRangeEnd ? "range-end" : "",
+                          customRangeActive && day.key > customRangeStart && day.key < customRangeEnd ? "in-range" : "",
+                          day.key === todayKey ? "today" : "",
+                        ].filter(Boolean).join(" ")}
+                        onClick={() => chooseCalendarDate(day.key)}
+                      >
+                        {day.date.getDate()}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ) : null}
@@ -8471,6 +8503,7 @@ async function parseCompanyImportMappingFile(file) {
   if (!["csv", "xlsx"].includes(extension)) {
     throw new Error("Upload a .xlsx or .csv file.");
   }
+  const XLSX = await loadXlsxModule();
 
   const workbook = extension === "csv"
     ? XLSX.read(await file.text(), { type: "string" })
@@ -8567,6 +8600,7 @@ async function parseCompanyImportFile(file) {
   if (!["csv", "xlsx"].includes(extension)) {
     throw new Error("Upload a .xlsx or .csv file.");
   }
+  const XLSX = await loadXlsxModule();
 
   const workbook = extension === "csv"
     ? XLSX.read(await file.text(), { type: "string" })
@@ -8640,6 +8674,7 @@ async function parseContactImportFile(file) {
   if (!["csv", "xlsx"].includes(extension)) {
     throw new Error("Upload a .xlsx or .csv file.");
   }
+  const XLSX = await loadXlsxModule();
 
   const workbook = extension === "csv"
     ? XLSX.read(await file.text(), { type: "string" })
@@ -8686,11 +8721,11 @@ function normalizeIntentSource(source = "Manual") {
   return intentSources.find(item => item.toLowerCase() === normalized.toLowerCase()) || "Manual";
 }
 
-function parseIntentDate(value) {
+function parseIntentDate(value, xlsxModule = null) {
   const rawValue = normalizeLookupValue(value);
   if (!rawValue) return null;
-  if (typeof value === "number") {
-    const parsed = XLSX.SSF.parse_date_code(value);
+  if (typeof value === "number" && xlsxModule?.SSF?.parse_date_code) {
+    const parsed = xlsxModule.SSF.parse_date_code(value);
     if (parsed) return `${parsed.y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}`;
   }
   const date = new Date(rawValue);
@@ -8715,10 +8750,10 @@ function parseIntentJsonList(value) {
   }
 }
 
-function mapIntentCompanyRow(row, rawRow = {}) {
+function mapIntentCompanyRow(row, rawRow = {}, context = {}) {
   const name = normalizeLookupValue(row.name || row.companyName);
   const website = normalizeUrl(row.website);
-  const fundingDate = parseIntentDate(row.fundingDate);
+  const fundingDate = parseIntentDate(row.fundingDate, context.xlsx);
   const fundingAmountValue = parseIntentMoneyValue(row.fundingAmount);
   return {
     externalId: normalizeLookupValue(row.externalId || row.crunchbaseId || row.uuid),
@@ -8738,7 +8773,7 @@ function mapIntentCompanyRow(row, rawRow = {}) {
     industry: normalizeLookupValue(row.industry),
     categories: parseIntentJsonList(row.categories || row.categoryGroups || row.industry),
     employeeRange: normalizeLookupValue(row.employeeRange),
-    foundedOn: parseIntentDate(row.foundedOn),
+    foundedOn: parseIntentDate(row.foundedOn, context.xlsx),
     operatingStatus: normalizeLookupValue(row.operatingStatus),
     companyType: normalizeLookupValue(row.companyType),
     rankValue: parsePositiveInteger(row.rankValue),
@@ -8762,7 +8797,7 @@ function mapIntentCompanyRow(row, rawRow = {}) {
   };
 }
 
-function mapIntentPersonRow(row, rawRow = {}) {
+function mapIntentPersonRow(row, rawRow = {}, context = {}) {
   return {
     companyName: normalizeLookupValue(row.companyName),
     companyWebsite: normalizeUrl(row.companyWebsite),
@@ -8780,8 +8815,8 @@ function mapIntentPersonRow(row, rawRow = {}) {
     department: normalizeLookupValue(row.department),
     seniority: normalizeLookupValue(row.seniority),
     roleType: normalizeLookupValue(row.roleType),
-    startedOn: parseIntentDate(row.startedOn),
-    endedOn: parseIntentDate(row.endedOn),
+    startedOn: parseIntentDate(row.startedOn, context.xlsx),
+    endedOn: parseIntentDate(row.endedOn, context.xlsx),
     isCurrent: normalizeLookupValue(row.isCurrent).toLowerCase() === "false" ? false : null,
     source: normalizeIntentSource(row.source || "Crunchbase"),
     rawData: rawRow && Object.keys(rawRow).length ? rawRow : row,
@@ -8789,7 +8824,7 @@ function mapIntentPersonRow(row, rawRow = {}) {
   };
 }
 
-function extractIntentRowsFromSheet(rows, columnMap, mapper, sourceFile, sourceSheet = "") {
+function extractIntentRowsFromSheet(rows, columnMap, mapper, sourceFile, sourceSheet = "", context = {}) {
   const headerRowIndex = rows.findIndex(row => Object.values(columnMap).some(aliases => findImportColumnIndex(row, aliases) !== -1));
   if (headerRowIndex === -1) return [];
   const headerRow = rows[headerRowIndex];
@@ -8805,7 +8840,7 @@ function extractIntentRowsFromSheet(rows, columnMap, mapper, sourceFile, sourceS
       const mappedRow = Object.fromEntries(
         Object.entries(columnIndexes).map(([field, index]) => [field, importCellValue(row, index)]),
       );
-      return mapper({ ...mappedRow, sourceFile, sourceSheet }, { ...rawRow, sourceFile, sourceSheet });
+      return mapper({ ...mappedRow, sourceFile, sourceSheet }, { ...rawRow, sourceFile, sourceSheet }, context);
     });
 }
 
@@ -8813,6 +8848,7 @@ async function parseIntentImportFile(file, type = "companies") {
   const filename = file?.name || "";
   const extension = filename.split(".").pop()?.toLowerCase();
   if (!["csv", "xlsx"].includes(extension)) throw new Error("Upload a .xlsx or .csv file.");
+  const XLSX = await loadXlsxModule();
   const workbook = extension === "csv"
     ? XLSX.read(await file.text(), { type: "string", cellDates: true })
     : XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
@@ -8821,7 +8857,7 @@ async function parseIntentImportFile(file, type = "companies") {
   return workbook.SheetNames.flatMap(sheetName => {
     const worksheet = workbook.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "", blankrows: false, raw: false });
-    return extractIntentRowsFromSheet(rows, columnMap, mapper, filename, extension === "csv" ? "" : sheetName);
+    return extractIntentRowsFromSheet(rows, columnMap, mapper, filename, extension === "csv" ? "" : sheetName, { xlsx: XLSX });
   });
 }
 
@@ -13334,19 +13370,12 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       .slice(0, 40);
   }, [cityInput, locationLibrary, selectedCountryIso]);
 
-  useEffect(() => {
-    let cancelled = false;
-    import("country-state-city")
-      .then(module => {
-        if (!cancelled) setLocationLibrary(module);
-      })
-      .catch(() => {
-        if (!cancelled) setLocationLibrary(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const ensureLocationLibrary = useCallback(() => {
+    if (locationLibrary) return;
+    loadCountryStateCityModule()
+      .then(module => setLocationLibrary(module))
+      .catch(() => setLocationLibrary(null));
+  }, [locationLibrary]);
 
   const executeSearch = useCallback(async (values = searchValues, types = selectedTypes, { silent = false } = {}) => {
     setSearchStatus("searching");
@@ -13579,7 +13608,16 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       <form className="locker-search-panel" onSubmit={runSearch}>
         <label>
           <span>Country</span>
-          <input list="locker-country-options" value={searchValues.country} onChange={event => setSearchValues(current => ({ ...current, country: event.target.value }))} placeholder="United Kingdom" />
+          <input
+            list="locker-country-options"
+            value={searchValues.country}
+            onFocus={ensureLocationLibrary}
+            onChange={event => {
+              ensureLocationLibrary();
+              setSearchValues(current => ({ ...current, country: event.target.value }));
+            }}
+            placeholder="United Kingdom"
+          />
         </label>
         <datalist id="locker-country-options">
           {matchingCountryOptions.map(country => (
@@ -13588,7 +13626,16 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
         </datalist>
         <label>
           <span>City / target area</span>
-          <input list="locker-city-options" value={searchValues.city} onChange={event => setSearchValues(current => ({ ...current, city: event.target.value }))} placeholder="London, London Greenwood" />
+          <input
+            list="locker-city-options"
+            value={searchValues.city}
+            onFocus={ensureLocationLibrary}
+            onChange={event => {
+              ensureLocationLibrary();
+              setSearchValues(current => ({ ...current, city: event.target.value }));
+            }}
+            placeholder="London, London Greenwood"
+          />
         </label>
         <datalist id="locker-city-options">
           {matchingCityOptions.map(city => (
@@ -15926,6 +15973,22 @@ export default function App() {
     });
   }, [activeCampaignId, activeClientId, activeView, dataUserId, selectedAccountId, selectedContactId, user?.id]);
 
+  useEffect(() => {
+    if (!supabase || !dataOrgId || !user?.id) return undefined;
+    let cancelled = false;
+    loadAircallDashboardData(dataOrgId)
+      .then(nextAircallData => {
+        if (!cancelled) setAircallData(nextAircallData);
+      })
+      .catch(error => {
+        console.error("Could not load Aircall dashboard", error);
+        if (!cancelled) setAircallData({ users: [], calls: [], dailyStats: [], error: error.message || "Could not load Aircall dashboard." });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dataOrgId, user?.id]);
+
   const normalizedAdminSettings = normalizeAdminSettings(adminSettingsState.settings);
   const realWorkspaceUsers = stripTestWorkspaceAccount(crmData.workspaceUsers || []);
   const workspaceUsers = workspaceUsersForTestMode(realWorkspaceUsers, normalizedAdminSettings);
@@ -15981,45 +16044,15 @@ export default function App() {
       organizationId = await ensureWorkspace(nextUser);
       const currentWorkspaceUser = mapAuthUserToWorkspaceUser(nextUser);
       const workspaceUsers = await loadWorkspaceUsers(organizationId);
-      const [syncedCrmData, nextLeadLists, nextIntentData, nextLeadContactDatabase, nextPrivateContactNotes, nextAircallData, nextAdminSettings] = await Promise.all([
-        loadSyncedCrmData(nextUser.id, organizationId, workspaceUsers),
-        loadLeadLists(organizationId).catch(error => {
-          console.error("Could not load lead lists", error);
-          setLeadListsError(error.message || "Could not load lead lists.");
-          return [];
-        }),
-        loadIntentData(organizationId).catch(error => {
-          console.error("Could not load intent data", error);
-          setIntentDataError(error.message || "Could not load intent data.");
-          return { sources: [], runs: [], events: [], people: [] };
-        }),
-        loadLeadContactDatabase(organizationId).catch(error => {
-          console.error("Could not load contacts", error);
-          setLeadListsError(error.message || "Could not load contacts.");
-          return [];
-        }),
-        loadPrivateContactNotes(organizationId, nextUser.id).catch(error => {
-          console.error("Could not load private contact notes", error);
-          return {};
-        }),
-        loadAircallDashboardData(organizationId).catch(error => {
-          console.error("Could not load Aircall dashboard", error);
-          return { users: [], calls: [], dailyStats: [], error: error.message || "Could not load Aircall dashboard." };
-        }),
-        loadAdminSettings(organizationId, nextUser.id).catch(error => {
-          console.error("Could not load admin settings", error);
-          return { settings: DEFAULT_ADMIN_SETTINGS, role: "member", isAdmin: false, isOrgAdmin: false };
-        }),
-      ]);
-      const normalizedAdminSettings = normalizeAdminSettings(nextAdminSettings.settings);
-      const mergedWorkspaceUsers = stripTestWorkspaceAccount(mergeWorkspaceUsers(workspaceUsers, currentWorkspaceUser));
-      const nextCrmData = {
-        ...syncedCrmData,
-        workspaceUsers: mergedWorkspaceUsers,
-      };
       const currentWorkspaceRecord = workspaceUsers.find(workspaceUser => workspaceUser.id === nextUser.id)
         || await loadCurrentWorkspaceUser(organizationId, nextUser)
         || currentWorkspaceUser;
+      const nextAdminSettings = await loadAdminSettings(organizationId, nextUser.id).catch(error => {
+        console.error("Could not load admin settings", error);
+        return { settings: DEFAULT_ADMIN_SETTINGS, role: currentWorkspaceRecord?.roleKey || currentWorkspaceRecord?.role || "member", isAdmin: false, isOrgAdmin: false };
+      });
+      const normalizedAdminSettings = normalizeAdminSettings(nextAdminSettings.settings);
+      const mergedWorkspaceUsers = stripTestWorkspaceAccount(mergeWorkspaceUsers(workspaceUsers, currentWorkspaceUser));
       const nextUserWithProfile = {
         ...nextUser,
         crm_profile: {
@@ -16031,24 +16064,20 @@ export default function App() {
           avatarUrl: currentWorkspaceRecord?.avatarUrl || nextUser.user_metadata?.avatar_url || "",
         },
       };
-      setCrmData(refreshCrmData(nextCrmData));
-      setLeadLists(nextLeadLists);
-      setIntentData(nextIntentData);
-      setLeadContactDatabase(nextLeadContactDatabase);
-      setPrivateContactNotes(nextPrivateContactNotes);
-      setAircallData(nextAircallData);
       const resolvedRole = normalizeRoleKey(nextAdminSettings.role || currentWorkspaceRecord?.roleKey || currentWorkspaceRecord?.role || "member");
       const nextAccessState = {
         isAdmin: Boolean(nextAdminSettings.isAdmin) || ADMIN_ROLES.has(resolvedRole),
         isOrgAdmin: Boolean(nextAdminSettings.isOrgAdmin) || ORG_ADMIN_ROLES.has(resolvedRole),
       };
+
+      setCrmData(refreshCrmData({
+        ...createInitialCrmData(),
+        workspaceUsers: mergedWorkspaceUsers,
+      }));
       setAdminSettingsState({
         settings: normalizedAdminSettings,
         role: resolvedRole,
         ...nextAccessState,
-      });
-      loadIntegrationCredentialsStatus().catch(error => {
-        console.error("Could not load integration credential status", error);
       });
       const isFirstAuthenticatedLoad = !hasSavedUiState(nextUser.id);
       if (isFirstAuthenticatedLoad) {
@@ -16070,6 +16099,52 @@ export default function App() {
       setDataUserId(nextUser.id);
       setUser(nextUserWithProfile);
       setCurrencyCode(nextUserWithProfile.crm_profile.currencyCode || "GBP");
+      setAircallData({ users: [], calls: [], dailyStats: [], loading: true });
+      setAuthReady(true);
+      setLoggingOut(false);
+      loadIntegrationCredentialsStatus().catch(error => {
+        console.error("Could not load integration credential status", error);
+      });
+
+      const [syncedCrmData, nextLeadLists, nextIntentData, nextLeadContactDatabase, nextPrivateContactNotes] = await Promise.all([
+        loadSyncedCrmData(nextUser.id, organizationId, workspaceUsers).catch(error => {
+          console.error("Could not load synced CRM data", error);
+          return createInitialCrmData();
+        }),
+        loadLeadLists(organizationId).catch(error => {
+          console.error("Could not load lead lists", error);
+          setLeadListsError(error.message || "Could not load lead lists.");
+          return [];
+        }),
+        loadIntentData(organizationId).catch(error => {
+          console.error("Could not load intent data", error);
+          setIntentDataError(error.message || "Could not load intent data.");
+          return { sources: [], runs: [], events: [], people: [] };
+        }),
+        loadLeadContactDatabase(organizationId).catch(error => {
+          console.error("Could not load contacts", error);
+          setLeadListsError(error.message || "Could not load contacts.");
+          return [];
+        }),
+        loadPrivateContactNotes(organizationId, nextUser.id).catch(error => {
+          console.error("Could not load private contact notes", error);
+          return {};
+        }),
+      ]);
+      const nextCrmData = {
+        ...syncedCrmData,
+        workspaceUsers: mergedWorkspaceUsers,
+      };
+      setCrmData(refreshCrmData(nextCrmData));
+      setLeadLists(nextLeadLists);
+      setIntentData(nextIntentData);
+      setLeadContactDatabase(nextLeadContactDatabase);
+      setPrivateContactNotes(nextPrivateContactNotes);
+      setAdminSettingsState({
+        settings: normalizedAdminSettings,
+        role: resolvedRole,
+        ...nextAccessState,
+      });
       setLeadListsError("");
       setIntentDataError("");
     } catch (error) {
@@ -16287,8 +16362,15 @@ export default function App() {
     if (!response.ok) throw new Error(payload.error || "Could not sync Aircall.");
 
     if (dataOrgId) {
-      const nextAircallData = await loadAircallDashboardData(dataOrgId);
-      setAircallData(nextAircallData);
+      loadAircallDashboardData(dataOrgId)
+        .then(nextAircallData => setAircallData(nextAircallData))
+        .catch(error => {
+          console.error("Could not refresh Aircall dashboard after sync", error);
+          setAircallData(current => ({
+            ...(current || { users: [], calls: [], dailyStats: [] }),
+            error: error.message || "Aircall synced, but the dashboard refresh failed.",
+          }));
+        });
     }
     return payload;
   }

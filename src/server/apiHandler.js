@@ -597,6 +597,35 @@ async function getCredentialValue(req, provider, field, envKey) {
   }
 }
 
+async function getCredentialResolution(req, provider, field, envKey) {
+  if (process.env[envKey]) {
+    return {
+      value: process.env[envKey],
+      source: 'env',
+      hint: maskSecret(process.env[envKey]),
+      configured: true,
+    };
+  }
+  try {
+    const storedCredentials = await loadStoredIntegrationCredentials(req, provider);
+    const value = storedCredentials[field];
+    return {
+      value,
+      source: value ? 'supabase' : 'none',
+      hint: maskSecret(value),
+      configured: Boolean(value),
+    };
+  } catch (error) {
+    return {
+      value: process.env[envKey],
+      source: process.env[envKey] ? 'env-fallback' : 'none',
+      hint: maskSecret(process.env[envKey]),
+      configured: Boolean(process.env[envKey]),
+      error: error?.message || 'Could not load stored credential',
+    };
+  }
+}
+
 async function getIntegrationStatuses(req) {
   if (canUseLocalCognismPreviewFallback() && !hasSupabaseServiceCredentials()) {
     const providers = Object.keys(integrationSecretFields);
@@ -1062,15 +1091,42 @@ export async function handleApiRequest(req, res) {
     return handlePostRoute(req, res, async body => {
       const user = await getAuthenticatedCrmUserWithOrganization(req);
       assertAdmin(user);
+      const [apiIdCredential, apiTokenCredential] = await Promise.all([
+        getCredentialResolution(req, 'aircall', 'apiId', 'AIRCALL_API_ID'),
+        getCredentialResolution(req, 'aircall', 'apiToken', 'AIRCALL_API_TOKEN'),
+      ]);
+      console.info('Aircall sync request', {
+        organizationId: user.organizationId,
+        userId: user.id,
+        role: user.role,
+        dateRangeStart: body.dateRangeStart,
+        dateRangeEnd: body.dateRangeEnd,
+        includeIntelligence: body.includeIntelligence,
+        maxCallPages: body.maxCallPages,
+        maxUserPages: body.maxUserPages,
+        credentialSource: {
+          apiId: apiIdCredential.source,
+          apiToken: apiTokenCredential.source,
+        },
+        credentialConfigured: {
+          apiId: apiIdCredential.configured,
+          apiToken: apiTokenCredential.configured,
+        },
+        credentialHints: {
+          apiId: apiIdCredential.hint,
+          apiToken: apiTokenCredential.hint,
+        },
+      });
       return syncAircallData({
         organizationId: user.organizationId,
-        apiId: await getCredentialValue(req, 'aircall', 'apiId', 'AIRCALL_API_ID'),
-        apiToken: await getCredentialValue(req, 'aircall', 'apiToken', 'AIRCALL_API_TOKEN'),
+        apiId: apiIdCredential.value,
+        apiToken: apiTokenCredential.value,
         perPage: body.perPage,
         maxUserPages: body.maxUserPages,
         maxCallPages: body.maxCallPages,
         dateRangeStart: body.dateRangeStart,
         dateRangeEnd: body.dateRangeEnd,
+        includeIntelligence: body.includeIntelligence,
       }, {
         serviceClient: getServiceClient(),
       });

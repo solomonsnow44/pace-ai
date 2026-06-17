@@ -12,6 +12,13 @@ function requireCredential(value, label) {
   }
 }
 
+function maskCredential(value = "") {
+  const cleanValue = String(value || "").trim();
+  if (!cleanValue) return "";
+  if (cleanValue.length <= 8) return "••••";
+  return `${cleanValue.slice(0, 4)}••••${cleanValue.slice(-4)}`;
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -80,6 +87,13 @@ async function fetchAircallJson(path, { apiId, apiToken, fetcher }) {
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    console.error("Aircall API request failed", {
+      status: response.status,
+      path,
+      body: text || "",
+      apiIdHint: maskCredential(apiId),
+      tokenHint: maskCredential(apiToken),
+    });
     const error = new Error(`Aircall request failed (${response.status})${text ? `: ${text}` : ""}`);
     error.statusCode = response.status || 502;
     throw error;
@@ -509,6 +523,17 @@ export async function syncAircallData(input = {}, options = {}) {
   const maxCallPages = input.maxCallPages || 5;
   const includeIntelligence = input.includeIntelligence !== false;
   const callPath = buildCallPath(input);
+
+  console.info("Aircall sync started", {
+    organizationId,
+    callPath,
+    perPage,
+    maxUserPages,
+    maxCallPages,
+    includeIntelligence,
+    apiIdHint: maskCredential(apiId),
+    tokenConfigured: Boolean(String(apiToken || "").trim()),
+  });
 
   const aircallUsers = await fetchAircallPages("/users?", "users", { apiId, apiToken, fetcher, perPage, maxPages: maxUserPages });
   const usersFromAircallCalls = new Map();

@@ -2422,9 +2422,26 @@ async function loadAircallDashboardData(organizationId, options = {}) {
   const failedResult = [usersResult, callsResult, statsResult].find(result => result.error);
   if (failedResult?.error) throw failedResult.error;
 
+  let callRows = callsResult.data || [];
+  let callsSource = "timeline";
+  if (!callRows.length) {
+    const fallbackResult = await supabase
+      .from("aircall_calls")
+      .select("id,organization_id,client_id,campaign_id,company_id,contact_id,user_id,aircall_user_id,aircall_call_id,aircall_call_uuid,direction,status,missed_call_reason,started_at,answered_at,ended_at,duration_seconds,external_phone_number,raw_digits,recording_url,recording_short_url,direct_link,tags,comments")
+      .eq("organization_id", organizationId)
+      .order("started_at", { ascending: false })
+      .limit(callsLimit);
+    if (fallbackResult.error && !["42P01", "42703"].includes(fallbackResult.error.code)) throw fallbackResult.error;
+    if (fallbackResult.data?.length) {
+      callRows = fallbackResult.data;
+      callsSource = "aircall_calls";
+    }
+  }
+
   return {
     users: (usersResult.data || []).map(mapAircallUserRecord),
-    calls: (callsResult.data || []).map(mapAircallCallRecord),
+    calls: callRows.map(mapAircallCallRecord),
+    callsSource,
     dailyStats: (statsResult.data || []).map(record => ({
       organizationId: record.organization_id,
       userId: record.user_id || "",
@@ -2439,6 +2456,25 @@ async function loadAircallDashboardData(organizationId, options = {}) {
       averageDurationSeconds: Number(record.average_duration_seconds) || 0,
     })),
   };
+}
+
+function mergeAircallDashboardData(current = {}, next = {}) {
+  const currentCalls = Array.isArray(current.calls) ? current.calls : [];
+  const nextCalls = Array.isArray(next.calls) ? next.calls : [];
+  if (currentCalls.length && !nextCalls.length && !next.unavailable) {
+    console.warn("Aircall dashboard refresh returned no calls; preserving existing calls", {
+      currentCalls: currentCalls.length,
+      nextUsers: Array.isArray(next.users) ? next.users.length : 0,
+      nextDailyStats: Array.isArray(next.dailyStats) ? next.dailyStats.length : 0,
+      callsSource: next.callsSource || "",
+    });
+    return {
+      ...next,
+      calls: currentCalls,
+      preservedCalls: true,
+    };
+  }
+  return next;
 }
 
 function normalizeLookupValue(value) {
@@ -15978,7 +16014,7 @@ export default function App() {
     let cancelled = false;
     loadAircallDashboardData(dataOrgId)
       .then(nextAircallData => {
-        if (!cancelled) setAircallData(nextAircallData);
+        if (!cancelled) setAircallData(current => mergeAircallDashboardData(current, nextAircallData));
       })
       .catch(error => {
         console.error("Could not load Aircall dashboard", error);
@@ -16366,7 +16402,7 @@ export default function App() {
 
     if (dataOrgId) {
       loadAircallDashboardData(dataOrgId)
-        .then(nextAircallData => setAircallData(nextAircallData))
+        .then(nextAircallData => setAircallData(current => mergeAircallDashboardData(current, nextAircallData)))
         .catch(error => {
           console.error("Could not refresh Aircall dashboard after sync", error);
           setAircallData(current => ({

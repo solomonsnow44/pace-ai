@@ -96,6 +96,15 @@ async function fetchAircallJson(path, { apiId, apiToken, fetcher }) {
     });
     const error = new Error(`Aircall request failed (${response.status})${text ? `: ${text}` : ""}`);
     error.statusCode = response.status || 502;
+    error.provider = "aircall";
+    error.debug = {
+      provider: "aircall",
+      status: response.status,
+      path,
+      body: text || "",
+      apiIdHint: maskCredential(apiId),
+      tokenHint: maskCredential(apiToken),
+    };
     throw error;
   }
 

@@ -913,12 +913,14 @@ async function handlePostRoute(req, res, handler, fallbackMessage) {
       provider: error?.provider,
       providerStatus: error?.providerStatus,
       providerUrl: error?.providerUrl,
+      debug: error?.debug,
       path: req.url,
     });
     sendJson(res, error.statusCode || 500, {
       error: error.message || fallbackMessage,
       provider: error?.provider,
       providerStatus: error?.providerStatus,
+      debug: error?.debug,
     });
   }
 
@@ -1095,7 +1097,7 @@ export async function handleApiRequest(req, res) {
         getCredentialResolution(req, 'aircall', 'apiId', 'AIRCALL_API_ID'),
         getCredentialResolution(req, 'aircall', 'apiToken', 'AIRCALL_API_TOKEN'),
       ]);
-      console.info('Aircall sync request', {
+      const syncDebugContext = {
         organizationId: user.organizationId,
         userId: user.id,
         role: user.role,
@@ -1116,20 +1118,29 @@ export async function handleApiRequest(req, res) {
           apiId: apiIdCredential.hint,
           apiToken: apiTokenCredential.hint,
         },
-      });
-      return syncAircallData({
-        organizationId: user.organizationId,
-        apiId: apiIdCredential.value,
-        apiToken: apiTokenCredential.value,
-        perPage: body.perPage,
-        maxUserPages: body.maxUserPages,
-        maxCallPages: body.maxCallPages,
-        dateRangeStart: body.dateRangeStart,
-        dateRangeEnd: body.dateRangeEnd,
-        includeIntelligence: body.includeIntelligence,
-      }, {
-        serviceClient: getServiceClient(),
-      });
+      };
+      console.info('Aircall sync request', syncDebugContext);
+      try {
+        return await syncAircallData({
+          organizationId: user.organizationId,
+          apiId: apiIdCredential.value,
+          apiToken: apiTokenCredential.value,
+          perPage: body.perPage,
+          maxUserPages: body.maxUserPages,
+          maxCallPages: body.maxCallPages,
+          dateRangeStart: body.dateRangeStart,
+          dateRangeEnd: body.dateRangeEnd,
+          includeIntelligence: body.includeIntelligence,
+        }, {
+          serviceClient: getServiceClient(),
+        });
+      } catch (error) {
+        error.debug = {
+          ...(error.debug || {}),
+          request: syncDebugContext,
+        };
+        throw error;
+      }
     }, 'Aircall sync failed');
   }
 

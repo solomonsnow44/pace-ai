@@ -15923,6 +15923,16 @@ export default function App() {
     });
   }, [activeCampaignId, activeClientId, activeView, dataUserId, selectedAccountId, selectedContactId, user?.id]);
 
+  const normalizedAdminSettings = normalizeAdminSettings(adminSettingsState.settings);
+  const realWorkspaceUsers = stripTestWorkspaceAccount(crmData.workspaceUsers || []);
+  const workspaceUsers = workspaceUsersForTestMode(realWorkspaceUsers, normalizedAdminSettings);
+  const crmDataWithoutTestAccount = {
+    ...crmData,
+    workspaceUsers: realWorkspaceUsers,
+  };
+  const effectiveWorkspaceUser = effectiveWorkspaceUserForSession(user, realWorkspaceUsers, normalizedAdminSettings);
+  const effectiveAccessState = effectiveAccessStateForSession(adminSettingsState, normalizedAdminSettings, effectiveWorkspaceUser);
+
   useEffect(() => {
     if (!user?.id) return undefined;
 
@@ -16611,15 +16621,6 @@ export default function App() {
     );
   }
 
-  const normalizedAdminSettings = normalizeAdminSettings(adminSettingsState.settings);
-  const realWorkspaceUsers = stripTestWorkspaceAccount(crmData.workspaceUsers || []);
-  const workspaceUsers = workspaceUsersForTestMode(realWorkspaceUsers, normalizedAdminSettings);
-  const crmDataWithoutTestAccount = {
-    ...crmData,
-    workspaceUsers: realWorkspaceUsers,
-  };
-  const effectiveWorkspaceUser = effectiveWorkspaceUserForSession(user, realWorkspaceUsers, normalizedAdminSettings);
-  const effectiveAccessState = effectiveAccessStateForSession(adminSettingsState, normalizedAdminSettings, effectiveWorkspaceUser);
   const visibleCrmData = {
     ...scopeCrmDataForWorkspaceUser(crmDataWithoutTestAccount, effectiveWorkspaceUser, effectiveAccessState),
     workspaceUsers,

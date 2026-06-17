@@ -626,6 +626,49 @@ async function getCredentialResolution(req, provider, field, envKey) {
   }
 }
 
+async function getAircallCredentialCandidates(req) {
+  const candidates = [];
+  const envCredentials = {
+    apiId: process.env.AIRCALL_API_ID,
+    apiToken: process.env.AIRCALL_API_TOKEN,
+  };
+  if (envCredentials.apiId && envCredentials.apiToken) {
+    candidates.push({
+      source: 'env',
+      apiId: envCredentials.apiId,
+      apiToken: envCredentials.apiToken,
+      hints: {
+        apiId: maskSecret(envCredentials.apiId),
+        apiToken: maskSecret(envCredentials.apiToken),
+      },
+    });
+  }
+
+  try {
+    const storedCredentials = await loadStoredIntegrationCredentials(req, 'aircall');
+    const storedApiId = storedCredentials.apiId;
+    const storedApiToken = storedCredentials.apiToken;
+    const matchesEnv = storedApiId === envCredentials.apiId && storedApiToken === envCredentials.apiToken;
+    if (storedApiId && storedApiToken && !matchesEnv) {
+      candidates.push({
+        source: 'supabase',
+        apiId: storedApiId,
+        apiToken: storedApiToken,
+        hints: {
+          apiId: maskSecret(storedApiId),
+          apiToken: maskSecret(storedApiToken),
+        },
+      });
+    }
+  } catch (error) {
+    console.warn('Could not load stored Aircall credentials for fallback', {
+      message: error?.message || String(error),
+    });
+  }
+
+  return candidates;
+}
+
 async function getIntegrationStatuses(req) {
   if (canUseLocalCognismPreviewFallback() && !hasSupabaseServiceCredentials()) {
     const providers = Object.keys(integrationSecretFields);
@@ -1092,54 +1135,59 @@ export async function handleApiRequest(req, res) {
     return handlePostRoute(req, res, async body => {
       const user = await getAuthenticatedCrmUserWithOrganization(req);
       assertAdmin(user);
-      const [apiIdCredential, apiTokenCredential] = await Promise.all([
-        getCredentialResolution(req, 'aircall', 'apiId', 'AIRCALL_API_ID'),
-        getCredentialResolution(req, 'aircall', 'apiToken', 'AIRCALL_API_TOKEN'),
-      ]);
-      const syncDebugContext = {
-        organizationId: user.organizationId,
-        userId: user.id,
-        role: user.role,
-        dateRangeStart: body.dateRangeStart,
-        dateRangeEnd: body.dateRangeEnd,
-        includeIntelligence: body.includeIntelligence,
-        maxCallPages: body.maxCallPages,
-        maxUserPages: body.maxUserPages,
-        credentialSource: {
-          apiId: apiIdCredential.source,
-          apiToken: apiTokenCredential.source,
-        },
-        credentialConfigured: {
-          apiId: apiIdCredential.configured,
-          apiToken: apiTokenCredential.configured,
-        },
-        credentialHints: {
-          apiId: apiIdCredential.hint,
-          apiToken: apiTokenCredential.hint,
-        },
-      };
-      console.info('Aircall sync request', syncDebugContext);
-      try {
-        return await syncAircallData({
+      const credentialCandidates = await getAircallCredentialCandidates(req);
+      if (!credentialCandidates.length) {
+        const error = new Error('Aircall API credentials are not configured.');
+        error.statusCode = 500;
+        throw error;
+      }
+
+      let lastError = null;
+      for (const credential of credentialCandidates) {
+        const syncDebugContext = {
           organizationId: user.organizationId,
-          apiId: apiIdCredential.value,
-          apiToken: apiTokenCredential.value,
-          perPage: body.perPage,
-          maxUserPages: body.maxUserPages,
-          maxCallPages: body.maxCallPages,
+          userId: user.id,
+          role: user.role,
           dateRangeStart: body.dateRangeStart,
           dateRangeEnd: body.dateRangeEnd,
           includeIntelligence: body.includeIntelligence,
-        }, {
-          serviceClient: getServiceClient(),
-        });
-      } catch (error) {
-        error.debug = {
-          ...(error.debug || {}),
-          request: syncDebugContext,
+          maxCallPages: body.maxCallPages,
+          maxUserPages: body.maxUserPages,
+          credentialSource: credential.source,
+          credentialHints: credential.hints,
         };
-        throw error;
+        console.info('Aircall sync request', syncDebugContext);
+        try {
+          return await syncAircallData({
+            organizationId: user.organizationId,
+            apiId: credential.apiId,
+            apiToken: credential.apiToken,
+            perPage: body.perPage,
+            maxUserPages: body.maxUserPages,
+            maxCallPages: body.maxCallPages,
+            dateRangeStart: body.dateRangeStart,
+            dateRangeEnd: body.dateRangeEnd,
+            includeIntelligence: body.includeIntelligence,
+          }, {
+            serviceClient: getServiceClient(),
+          });
+        } catch (error) {
+          lastError = error;
+          error.debug = {
+            ...(error.debug || {}),
+            request: syncDebugContext,
+          };
+          const canRetryWithNextCredential = [401, 403].includes(Number(error.statusCode))
+            && credentialCandidates.indexOf(credential) < credentialCandidates.length - 1;
+          if (!canRetryWithNextCredential) throw error;
+          console.warn('Aircall sync credential rejected; retrying fallback credential', {
+            rejectedSource: credential.source,
+            statusCode: error.statusCode,
+            message: error.message,
+          });
+        }
       }
+      throw lastError || new Error('Aircall sync failed.');
     }, 'Aircall sync failed');
   }
 

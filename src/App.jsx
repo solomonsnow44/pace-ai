@@ -6290,7 +6290,10 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
     return call.userId === selectedUserId
       || call.aircallUserId === selectedUserId
       || (selectedUserRow?.aircallUserId && call.aircallUserId === selectedUserRow.aircallUserId);
-  });
+  }).sort((a, b) => (
+    (Number(b.durationSeconds) || 0) - (Number(a.durationSeconds) || 0)
+    || new Date(b.startedAt || 0) - new Date(a.startedAt || 0)
+  ));
   const connectedCalls = filteredCalls.filter(call => call.answeredAt);
   const recordedCalls = filteredCalls.filter(call => call.recordingUrl);
   const transcriptCalls = filteredCalls.filter(call => call.transcriptText || (Array.isArray(call.transcriptUtterances) && call.transcriptUtterances.length));

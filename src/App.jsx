@@ -15903,6 +15903,7 @@ export default function App() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [selectedAircallUserId, setSelectedAircallUserId] = useState("");
   const authLoadRef = useRef({ userId: "", promise: null });
+  const loadedAuthUserIdRef = useRef("");
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -15913,12 +15914,17 @@ export default function App() {
       }
       setAuthReady(true);
     });
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "TOKEN_REFRESHED") {
+        setLoggingOut(false);
+        return;
+      }
       if (session?.user) {
         handleAuthenticatedUser(session.user);
         setLoggingOut(false);
         return;
       }
+      loadedAuthUserIdRef.current = "";
       setCrmData(createInitialCrmData());
       setDataUserId(null);
       setDataOrgId(null);
@@ -16028,10 +16034,21 @@ export default function App() {
       return;
     }
 
+    if (loadedAuthUserIdRef.current === nextUser.id) {
+      setUser(current => current ? {
+        ...nextUser,
+        crm_profile: current.crm_profile,
+      } : nextUser);
+      setAuthReady(true);
+      setLoggingOut(false);
+      return;
+    }
+
     const loadPromise = loadAuthenticatedUser(nextUser);
     authLoadRef.current = { userId: nextUser.id, promise: loadPromise };
     try {
       await loadPromise;
+      loadedAuthUserIdRef.current = nextUser.id;
     } finally {
       if (authLoadRef.current.promise === loadPromise) {
         authLoadRef.current = { userId: "", promise: null };

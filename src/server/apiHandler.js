@@ -565,11 +565,13 @@ function buildCredentialStatus(provider, connection) {
   return {
     provider,
     configured: storedConfigured || envStatus.configured,
-    source: storedConfigured ? 'supabase' : envStatus.source,
+    source: envStatus.configured ? envStatus.source : storedConfigured ? 'supabase' : envStatus.source,
     fields: configuredFields,
-    hints: storedConfigured
-      ? Object.fromEntries(fields.map(field => [field, maskSecret(storedValues[field])]))
-      : envStatus.hints,
+    hints: envStatus.configured
+      ? envStatus.hints
+      : storedConfigured
+        ? Object.fromEntries(fields.map(field => [field, maskSecret(storedValues[field])]))
+        : envStatus.hints,
     updatedAt: credential?.updated_at || connection?.updated_at || null,
   };
 }
@@ -586,9 +588,10 @@ async function loadStoredIntegrationCredentials(req, provider) {
 }
 
 async function getCredentialValue(req, provider, field, envKey) {
+  if (process.env[envKey]) return process.env[envKey];
   try {
     const storedCredentials = await loadStoredIntegrationCredentials(req, provider);
-    return storedCredentials[field] || process.env[envKey];
+    return storedCredentials[field];
   } catch {
     return process.env[envKey];
   }

@@ -16793,6 +16793,9 @@ export default function App() {
 
   function navigateTo(view, updates = {}, options = {}) {
     if (!canAccessWorkspaceView(view, effectiveAccessState)) view = "dashboard";
+    if (view === "aircall" && !options.preserveAircallUserFilter) {
+      setSelectedAircallUserId("");
+    }
     if (options.pushHistory !== false) {
       setViewHistory(current => [...current.slice(-9), currentNavigationState()]);
     }
@@ -17134,7 +17137,7 @@ export default function App() {
 
   function openAircallForUser(userId) {
     setSelectedAircallUserId(userId || "all");
-    navigateTo("aircall");
+    navigateTo("aircall", {}, { preserveAircallUserFilter: true });
   }
 
   async function handleBookMeeting(values = {}) {

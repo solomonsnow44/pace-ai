@@ -13677,6 +13677,12 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
           {searchStatus === "searching" ? "Searching" : "Search places"}
         </button>
       </form>
+      {resultSource === "Google Places" && !normalizeLookupValue(searchValues.city) && !normalizeLookupValue(searchValues.postcode) ? (
+        <div className="locker-api-note">
+          <strong>Country-wide search.</strong>
+          <span>Google returns a ranked sample for broad country searches. Add a city, postcode, or county to exhaust a tighter area.</span>
+        </div>
+      ) : null}
       {searchError ? (
         <div className="locker-api-note">
           <strong>{hasSearchCategory ? "Search notice." : "Choose a category."}</strong>

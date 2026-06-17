@@ -844,15 +844,17 @@ async function searchGooglePlaces(input = {}) {
   const customIndustryQueries = Array.isArray(input.customIndustryQueries)
     ? input.customIndustryQueries.map(value => String(value || '').trim()).filter(Boolean).slice(0, 6)
     : [];
+  const hasLocalArea = Boolean(city || postcode);
   const queryLocation = [city, postcode, country].filter(Boolean).join(', ') || 'London, United Kingdom';
+  const searchPreposition = hasLocalArea ? 'near' : 'in';
   const typeQueries = includedTypes;
   const searchQueries = [
     ...typeQueries.map(placeType => ({
-      textQuery: `${placeType.replaceAll('_', ' ')} near ${queryLocation}`,
+      textQuery: `${placeType.replaceAll('_', ' ')} ${searchPreposition} ${queryLocation}`,
       includedType: placeType,
     })),
     ...customIndustryQueries.map(query => ({
-      textQuery: `${query} near ${queryLocation}`,
+      textQuery: `${query} ${searchPreposition} ${queryLocation}`,
       includedType: '',
     })),
   ];
@@ -864,62 +866,71 @@ async function searchGooglePlaces(input = {}) {
     };
   }
   const resultsById = new Map();
+  const fieldMask = [
+    'places.id',
+    'places.displayName',
+    'places.formattedAddress',
+    'places.addressComponents',
+    'places.location',
+    'places.primaryType',
+    'places.primaryTypeDisplayName',
+    'places.types',
+    'places.internationalPhoneNumber',
+    'places.nationalPhoneNumber',
+    'places.websiteUri',
+    'places.googleMapsUri',
+    'places.photos',
+    'places.currentOpeningHours',
+    'places.regularOpeningHours',
+    'nextPageToken',
+  ].join(',');
 
   for (const searchQuery of searchQueries) {
-    const requestBody = {
-      textQuery: searchQuery.textQuery,
-      maxResultCount: 12,
-    };
-    if (searchQuery.includedType) requestBody.includedType = searchQuery.includedType;
-    const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': [
-          'places.id',
-          'places.displayName',
-          'places.formattedAddress',
-          'places.addressComponents',
-          'places.location',
-          'places.primaryType',
-          'places.primaryTypeDisplayName',
-          'places.types',
-          'places.internationalPhoneNumber',
-          'places.nationalPhoneNumber',
-          'places.websiteUri',
-          'places.googleMapsUri',
-          'places.photos',
-          'places.currentOpeningHours',
-          'places.regularOpeningHours',
-        ].join(','),
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const error = new Error(payload.error?.message || 'Google Places search failed.');
-      error.statusCode = response.status;
-      error.provider = 'google_places';
-      error.providerStatus = response.status;
-      throw error;
-    }
-
-    for (const place of payload.places || []) {
-      const normalized = normalizeGooglePlace(place);
-      const scoreBoost = {
-        convenience_store: 24,
-        gas_station: 22,
-        supermarket: 16,
-        train_station: 14,
-        parking: 10,
-        shopping_mall: 8,
-      }[normalized.placeType] || 0;
-      resultsById.set(normalized.placeId || normalized.id, {
-        ...normalized,
-        score: Math.min(96, 68 + scoreBoost),
+    let pageToken = '';
+    for (let page = 0; page < 3; page += 1) {
+      const requestBody = {
+        textQuery: searchQuery.textQuery,
+        pageSize: 20,
+        ...(pageToken ? { pageToken } : {}),
+      };
+      if (searchQuery.includedType) requestBody.includedType = searchQuery.includedType;
+      const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask': fieldMask,
+        },
+        body: JSON.stringify(requestBody),
       });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error = new Error(payload.error?.message || 'Google Places search failed.');
+        error.statusCode = response.status;
+        error.provider = 'google_places';
+        error.providerStatus = response.status;
+        throw error;
+      }
+
+      for (const place of payload.places || []) {
+        const normalized = normalizeGooglePlace(place);
+        const scoreBoost = {
+          convenience_store: 24,
+          gas_station: 22,
+          supermarket: 16,
+          train_station: 14,
+          parking: 10,
+          shopping_mall: 8,
+        }[normalized.placeType] || 0;
+        resultsById.set(normalized.placeId || normalized.id, {
+          ...normalized,
+          score: Math.min(96, 68 + scoreBoost),
+        });
+      }
+
+      pageToken = payload.nextPageToken || '';
+      if (!pageToken) break;
     }
   }
 

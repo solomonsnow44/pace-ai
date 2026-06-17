@@ -6176,7 +6176,6 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const [syncStatus, setSyncStatus] = useState("idle");
   const [syncError, setSyncError] = useState("");
   const [syncSummary, setSyncSummary] = useState("");
-  const [syncDebugModal, setSyncDebugModal] = useState(null);
   const rawCalls = Array.isArray(aircallData?.calls) ? aircallData.calls : [];
   const rawAircallUsers = Array.isArray(aircallData?.users) ? aircallData.users : [];
   const visibleWorkspaceUsers = isAdmin ? workspaceUsers : workspaceUsers.filter(item => item.id === currentUserId);
@@ -6836,16 +6835,6 @@ async function exportAircallClientProgressHtml({
       window.setTimeout(() => setSyncStatus(current => current === "synced" ? "idle" : current), 3500);
     } catch (error) {
       setSyncError(error.message || "Could not sync Aircall.");
-      setSyncDebugModal({
-        message: error.message || "Could not sync Aircall.",
-        debug: error.debug || null,
-        payload: error.payload || null,
-        dateRange: {
-          label: dateRangeLabel,
-          start: dateRange.start.toISOString(),
-          end: dateRange.end.toISOString(),
-        },
-      });
       setSyncStatus("idle");
     }
   }
@@ -6866,32 +6855,6 @@ async function exportAircallClientProgressHtml({
       </PageHeader>
       {syncError ? <div className="form-error">{syncError}</div> : null}
       {syncStatus === "synced" ? <div className="form-success">{syncSummary || `Aircall calls synced for ${dateRangeLabel}.`}</div> : null}
-      {syncDebugModal ? (
-        <section className="modal-backdrop" role="presentation" onMouseDown={event => {
-          if (event.target === event.currentTarget) setSyncDebugModal(null);
-        }}>
-          <div className="workflow-modal" role="dialog" aria-modal="true" aria-labelledby="aircall-sync-debug-title">
-            <div className="modal-header">
-              <div>
-                <span className="eyebrow">Aircall sync error</span>
-                <h2 id="aircall-sync-debug-title">Copy this debug log</h2>
-                <p>The credential values are masked.</p>
-              </div>
-              <button className="icon-action" type="button" onClick={() => setSyncDebugModal(null)} aria-label="Close Aircall sync debug">
-                <X size={16} />
-              </button>
-            </div>
-            <pre className="debug-log-block">{JSON.stringify(syncDebugModal, null, 2)}</pre>
-            <div className="modal-actions">
-              <button className="secondary-button" type="button" onClick={() => setSyncDebugModal(null)}>Close</button>
-              <button className="primary-button" type="button" onClick={() => navigator.clipboard?.writeText(JSON.stringify(syncDebugModal, null, 2))}>
-                <Copy size={16} />
-                Copy log
-              </button>
-            </div>
-          </div>
-        </section>
-      ) : null}
       {aircallData?.unavailable ? (
         <section className="panel">
           <EmptyState icon={Phone} title="Aircall tables not applied yet" text="Run the Aircall migration, then synced users and calls will appear here." />
@@ -16398,8 +16361,6 @@ export default function App() {
     const payload = await readJsonResponse(response);
     if (!response.ok) {
       const error = new Error(payload.error || "Could not sync Aircall.");
-      error.payload = payload;
-      error.debug = payload.debug || null;
       throw error;
     }
 

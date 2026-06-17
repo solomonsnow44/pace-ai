@@ -244,3 +244,66 @@ test("Aircall temporary recording link fetches a fresh signed recording URL", as
   assert.equal(payload.recordingUrl, "https://temporary-recording.example.com/signed.mp3");
   assert.equal(payload.stableRecordingUrl, "https://assets.aircall.io/calls/3865862294/recording");
 });
+
+test("Aircall sync continues when users endpoint is forbidden", async () => {
+  const state = { upserts: [], selects: [], filters: [], limits: [] };
+  const serviceClient = {
+    from(table) {
+      return {
+        ...createQuery(table, state),
+        upsert(rows, options) {
+          state.upserts.push({ table, rows, options });
+          return Promise.resolve({ error: null });
+        },
+      };
+    },
+  };
+
+  const fetcher = async url => {
+    if (url.includes("/calls?")) {
+      return {
+        ok: true,
+        json: async () => ({
+          calls: [{
+            id: 3865862294,
+            direction: "outbound",
+            status: "done",
+            started_at: 1781528860,
+            ended_at: 1781528880,
+            duration: 20,
+            raw_digits: "+353 89 214 4638",
+            user: { id: 1825018, name: "Solomon Sonowo", email: "solomon.sonowo@paceops.com" },
+            tags: [],
+            comments: [],
+          }],
+          meta: {},
+        }),
+      };
+    }
+
+    if (url.includes("/users?")) {
+      return { ok: false, status: 403, text: async () => '{"message":"Forbidden"}' };
+    }
+
+    return {
+      ok: true,
+      json: async () => ({}),
+    };
+  };
+
+  const result = await syncAircallData({
+    organizationId: "org-1",
+    apiId: "api-id",
+    apiToken: "api-token",
+    includeIntelligence: false,
+  }, { serviceClient, fetcher });
+
+  assert.equal(result.status, "synced");
+  assert.equal(result.usersSkipped, true);
+  assert.equal(result.usersFromCalls, 1);
+  assert.equal(result.usersSynced, 1);
+  assert.equal(result.callsSynced, 1);
+
+  const userUpsert = state.upserts.find(entry => entry.table === "aircall_users");
+  assert.equal(userUpsert.rows[0].aircall_user_id, "1825018");
+});

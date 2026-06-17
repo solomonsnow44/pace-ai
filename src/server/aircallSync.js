@@ -152,7 +152,7 @@ export async function createTemporaryAircallRecordingLink(input = {}, options = 
 async function fetchAircallPages(path, key, options) {
   const perPage = Math.min(Math.max(Number(options.perPage) || 50, 1), 100);
   const maxPages = Math.max(Number(options.maxPages) || 1, 1);
-  const separator = path.includes("?") ? "&" : "?";
+  const separator = path.endsWith("?") ? "" : path.includes("?") ? "&" : "?";
   const rows = [];
   let page = 1;
 
@@ -165,6 +165,23 @@ async function fetchAircallPages(path, key, options) {
   }
 
   return rows;
+}
+
+async function fetchOptionalAircallPages(path, key, options) {
+  try {
+    return { rows: await fetchAircallPages(path, key, options), skipped: false, error: null };
+  } catch (error) {
+    if ([400, 403, 404].includes(Number(error.statusCode))) {
+      console.warn("Optional Aircall page fetch skipped", {
+        path,
+        key,
+        statusCode: error.statusCode,
+        message: error.message,
+      });
+      return { rows: [], skipped: true, error };
+    }
+    throw error;
+  }
 }
 
 function mapAircallUser(organizationId, user) {
@@ -544,9 +561,10 @@ export async function syncAircallData(input = {}, options = {}) {
     tokenConfigured: Boolean(String(apiToken || "").trim()),
   });
 
-  const aircallUsers = await fetchAircallPages("/users?", "users", { apiId, apiToken, fetcher, perPage, maxPages: maxUserPages });
   const usersFromAircallCalls = new Map();
   const aircallCalls = await fetchAircallPages(callPath, "calls", { apiId, apiToken, fetcher, perPage, maxPages: maxCallPages });
+  const aircallUsersResult = await fetchOptionalAircallPages("/users", "users", { apiId, apiToken, fetcher, perPage, maxPages: maxUserPages });
+  const aircallUsers = aircallUsersResult.rows;
 
   for (const call of aircallCalls) {
     if (call.user?.id) usersFromAircallCalls.set(String(call.user.id), call.user);
@@ -580,6 +598,8 @@ export async function syncAircallData(input = {}, options = {}) {
   return {
     status: "synced",
     usersFetched: aircallUsers.length,
+    usersSkipped: aircallUsersResult.skipped,
+    usersFromCalls: usersFromAircallCalls.size,
     usersSynced: syncedUsers,
     callsFetched: aircallCalls.length,
     callsSynced: syncedCalls,

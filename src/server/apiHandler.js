@@ -920,7 +920,6 @@ async function handlePostRoute(req, res, handler, fallbackMessage) {
       error: error.message || fallbackMessage,
       provider: error?.provider,
       providerStatus: error?.providerStatus,
-      debug: error?.debug,
     });
   }
 

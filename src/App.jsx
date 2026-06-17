@@ -6338,7 +6338,25 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const reportUserOptions = reportMemberRecord
     ? workspaceMembersForRecord(reportMemberRecord, workspaceUsers, currentUserId, !isAdmin && recordHasMember(reportMemberRecord, currentUserId))
     : visibleWorkspaceUsers;
-  const normalizedReportUserOptions = reportUserOptions.length ? reportUserOptions : visibleWorkspaceUsers;
+  const normalizedReportUserOptions = [
+    ...(reportUserOptions.length ? reportUserOptions : visibleWorkspaceUsers),
+    ...userRows,
+  ].reduce((options, user) => {
+    const optionId = user.rowId || user.id || user.aircallUserId;
+    const optionAircallId = user.aircallUserId ? String(user.aircallUserId) : "";
+    const optionKey = optionId || optionAircallId;
+    if (!optionKey || options.seen.has(optionKey)) return options;
+    options.seen.add(optionKey);
+    if (optionAircallId) options.seen.add(optionAircallId);
+    options.rows.push({
+      ...user,
+      id: optionId,
+      rowId: optionId,
+      aircallUserId: optionAircallId,
+      name: user.name || user.email || (optionAircallId ? `Aircall user ${optionAircallId}` : "BDR"),
+    });
+    return options;
+  }, { seen: new Set(), rows: [] }).rows;
   const selectedReportUser = reportUserId === "all"
     ? null
     : normalizedReportUserOptions.find(user => user.id === reportUserId || user.aircallUserId === reportUserId) || userRows.find(row => row.rowId === reportUserId) || null;

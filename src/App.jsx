@@ -6832,7 +6832,7 @@ async function exportAircallClientProgressHtml({
         ) : null}
       </PageHeader>
       {syncError ? <div className="form-error">{syncError}</div> : null}
-      {syncStatus === "synced" ? <div className="form-success">Aircall calls synced.</div> : null}
+      {syncStatus === "synced" ? <div className="form-success">Aircall calls synced for {dateRangeLabel}.</div> : null}
       {aircallData?.unavailable ? (
         <section className="panel">
           <EmptyState icon={Phone} title="Aircall tables not applied yet" text="Run the Aircall migration, then synced users and calls will appear here." />
@@ -16280,6 +16280,7 @@ export default function App() {
         maxUserPages: 10,
         dateRangeStart: options.dateRangeStart,
         dateRangeEnd: options.dateRangeEnd,
+        includeIntelligence: options.includeIntelligence === true,
       }),
     });
     const payload = await readJsonResponse(response);

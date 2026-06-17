@@ -6,6 +6,7 @@ import { exportContactsToHubSpot } from './hubspotContacts.js'
 import { runIntentResearch } from './intentResearch.js'
 import { getRedeemedContactById } from './redeemedContactStore.js'
 import { suggestTargetRoles } from './roleSuggestions.js'
+import { Country, State } from 'country-state-city'
 
 let supabaseServer = null;
 let supabaseService = null;
@@ -24,6 +25,7 @@ const DEFAULT_ADMIN_SETTINGS = {
 };
 const SUPPORTED_CURRENCY_CODES = new Set(['EUR', 'GBP', 'USD']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const GOOGLE_PLACES_COUNTRY_AREA_LIMIT = 60;
 
 function getSupabaseUrl() {
   return process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -793,6 +795,55 @@ function normalizeGooglePlace(place = {}) {
   };
 }
 
+function normalizeCountrySearchValue(value = '') {
+  return String(value || '').trim().toLowerCase();
+}
+
+function resolveGooglePlacesCountry(value = '') {
+  const query = normalizeCountrySearchValue(value);
+  if (!query) return null;
+  const aliases = {
+    america: 'US',
+    usa: 'US',
+    'u.s.': 'US',
+    'u.s.a.': 'US',
+    'united states': 'US',
+    'united states of america': 'US',
+    uk: 'GB',
+    'u.k.': 'GB',
+    britain: 'GB',
+    'great britain': 'GB',
+    england: 'GB',
+  };
+  const aliasCode = aliases[query];
+  if (aliasCode) return Country.getCountryByCode(aliasCode) || null;
+  return Country.getAllCountries().find(country => (
+    normalizeCountrySearchValue(country.name) === query
+    || normalizeCountrySearchValue(country.isoCode) === query
+  )) || null;
+}
+
+function buildGooglePlacesAreaQueries({ baseQuery, country, includedType = '' }) {
+  const resolvedCountry = resolveGooglePlacesCountry(country);
+  if (!resolvedCountry) {
+    return [{ textQuery: `${baseQuery} in ${country}`, includedType, area: country || '' }];
+  }
+
+  const states = State.getStatesOfCountry(resolvedCountry.isoCode)
+    .filter(state => state?.name)
+    .slice(0, GOOGLE_PLACES_COUNTRY_AREA_LIMIT);
+  const countryLabel = resolvedCountry.name || country;
+  if (!states.length) {
+    return [{ textQuery: `${baseQuery} in ${countryLabel}`, includedType, area: countryLabel }];
+  }
+
+  return states.map(state => ({
+    textQuery: `${baseQuery} in ${state.name}, ${countryLabel}`,
+    includedType,
+    area: `${state.name}, ${countryLabel}`,
+  }));
+}
+
 async function proxyGooglePlacePhoto(req, res) {
   const apiKey = getGooglePlacesApiKey();
   if (!apiKey) {
@@ -848,16 +899,32 @@ async function searchGooglePlaces(input = {}) {
   const queryLocation = [city, postcode, country].filter(Boolean).join(', ') || 'London, United Kingdom';
   const searchPreposition = hasLocalArea ? 'near' : 'in';
   const typeQueries = includedTypes;
-  const searchQueries = [
-    ...typeQueries.map(placeType => ({
-      textQuery: `${placeType.replaceAll('_', ' ')} ${searchPreposition} ${queryLocation}`,
-      includedType: placeType,
-    })),
-    ...customIndustryQueries.map(query => ({
-      textQuery: `${query} ${searchPreposition} ${queryLocation}`,
-      includedType: '',
-    })),
-  ];
+  const shouldExpandCountry = Boolean(country && !hasLocalArea);
+  const searchQueries = shouldExpandCountry
+    ? [
+      ...typeQueries.flatMap(placeType => buildGooglePlacesAreaQueries({
+        baseQuery: placeType.replaceAll('_', ' '),
+        country,
+        includedType: placeType,
+      })),
+      ...customIndustryQueries.flatMap(query => buildGooglePlacesAreaQueries({
+        baseQuery: query,
+        country,
+        includedType: '',
+      })),
+    ]
+    : [
+      ...typeQueries.map(placeType => ({
+        textQuery: `${placeType.replaceAll('_', ' ')} ${searchPreposition} ${queryLocation}`,
+        includedType: placeType,
+        area: queryLocation,
+      })),
+      ...customIndustryQueries.map(query => ({
+        textQuery: `${query} ${searchPreposition} ${queryLocation}`,
+        includedType: '',
+        area: queryLocation,
+      })),
+    ];
   if (!searchQueries.length) {
     return {
       source: 'google_places',
@@ -887,7 +954,8 @@ async function searchGooglePlaces(input = {}) {
 
   for (const searchQuery of searchQueries) {
     let pageToken = '';
-    for (let page = 0; page < 3; page += 1) {
+    const maxPages = shouldExpandCountry ? 1 : 3;
+    for (let page = 0; page < maxPages; page += 1) {
       const requestBody = {
         textQuery: searchQuery.textQuery,
         pageSize: 20,
@@ -936,6 +1004,13 @@ async function searchGooglePlaces(input = {}) {
 
   return {
     source: 'google_places',
+    coverage: shouldExpandCountry ? {
+      mode: 'country_area_expansion',
+      country,
+      areasSearched: searchQueries.length,
+      areaLimit: GOOGLE_PLACES_COUNTRY_AREA_LIMIT,
+      note: 'Country searches are expanded across available states, counties, or regions and deduplicated.',
+    } : { mode: 'single_area', areasSearched: searchQueries.length },
     places: [...resultsById.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)),
   };
 }

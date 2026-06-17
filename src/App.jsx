@@ -13329,6 +13329,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
   const [searchStatus, setSearchStatus] = useState("idle");
   const [searchError, setSearchError] = useState("");
   const [resultSource, setResultSource] = useState("Choose category");
+  const [coverageSummary, setCoverageSummary] = useState(null);
   const autoSearchStartedRef = useRef(false);
   const [targetLeadListId, setTargetLeadListId] = useState("");
   const [createLeadListMode, setCreateLeadListMode] = useState(false);
@@ -13410,6 +13411,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       setResults([]);
       setActiveLocationId("");
       setResultSource("No category selected");
+      setCoverageSummary(null);
       setSearchStatus("idle");
       setSearchError(silent ? "" : "Choose at least one industry filter or enter a custom industry.");
       return;
@@ -13433,6 +13435,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       setActiveLocationId(nextResults[0]?.id || "");
       setSelectedLocationIds([]);
       setResultSource("Google Places");
+      setCoverageSummary(payload.coverage || null);
       setSearchStatus("ready");
     } catch (error) {
       const nextResults = createLockerSearchResults({ ...values, selectedTypes: types });
@@ -13440,6 +13443,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       setActiveLocationId(nextResults[0]?.id || "");
       setSelectedLocationIds([]);
       setResultSource("Demo data");
+      setCoverageSummary(null);
       setSearchError(silent ? "" : error?.message || "Google Places is not connected yet.");
       setSearchStatus("demo");
     }
@@ -13677,10 +13681,10 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
           {searchStatus === "searching" ? "Searching" : "Search places"}
         </button>
       </form>
-      {resultSource === "Google Places" && !normalizeLookupValue(searchValues.city) && !normalizeLookupValue(searchValues.postcode) ? (
+      {resultSource === "Google Places" && coverageSummary?.mode === "country_area_expansion" ? (
         <div className="locker-api-note">
-          <strong>Country-wide search.</strong>
-          <span>Google returns a ranked sample for broad country searches. Add a city, postcode, or county to exhaust a tighter area.</span>
+          <strong>Country coverage search.</strong>
+          <span>Searched {coverageSummary.areasSearched} regional area{coverageSummary.areasSearched === 1 ? "" : "s"} and merged duplicates. Add a city, postcode, or county when you need a tighter local sweep.</span>
         </div>
       ) : null}
       {searchError ? (

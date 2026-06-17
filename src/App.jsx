@@ -13687,6 +13687,12 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
           <span>Searched {coverageSummary.areasSearched} regional area{coverageSummary.areasSearched === 1 ? "" : "s"} and merged duplicates. Add a city, postcode, or county when you need a tighter local sweep.</span>
         </div>
       ) : null}
+      {resultSource === "Google Places" && coverageSummary?.mode === "city_area_expansion" ? (
+        <div className="locker-api-note">
+          <strong>City coverage search.</strong>
+          <span>Searched {coverageSummary.areasSearched} borough/district area{coverageSummary.areasSearched === 1 ? "" : "s"} and merged duplicates. Add a postcode or neighborhood when you need an even tighter sweep.</span>
+        </div>
+      ) : null}
       {searchError ? (
         <div className="locker-api-note">
           <strong>{hasSearchCategory ? "Search notice." : "Choose a category."}</strong>

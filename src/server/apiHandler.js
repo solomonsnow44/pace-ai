@@ -27,6 +27,20 @@ const SUPPORTED_CURRENCY_CODES = new Set(['EUR', 'GBP', 'USD']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GOOGLE_PLACES_COUNTRY_AREA_LIMIT = 60;
 
+const GOOGLE_PLACES_CITY_EXPANSIONS = {
+  'new york': ['Manhattan', 'Brooklyn', 'Queens', 'Bronx', 'Staten Island'],
+  'new york city': ['Manhattan', 'Brooklyn', 'Queens', 'Bronx', 'Staten Island'],
+  nyc: ['Manhattan', 'Brooklyn', 'Queens', 'Bronx', 'Staten Island'],
+  london: ['Central London', 'North London', 'South London', 'East London', 'West London', 'City of London', 'Camden', 'Westminster', 'Hackney', 'Tower Hamlets'],
+  dublin: ['Dublin City Centre', 'North Dublin', 'South Dublin', 'Dublin 1', 'Dublin 2', 'Dublin 4', 'Dublin 6', 'Dublin 8', 'Dublin 12', 'Dublin 24'],
+  madrid: ['Centro Madrid', 'Salamanca Madrid', 'Chamberi Madrid', 'Chamartin Madrid', 'Retiro Madrid', 'Arganzuela Madrid', 'Moncloa Madrid', 'Carabanchel Madrid'],
+  barcelona: ['Eixample Barcelona', 'Ciutat Vella Barcelona', 'Gracia Barcelona', 'Sants Barcelona', 'Sant Marti Barcelona', 'Les Corts Barcelona', 'Sarria Barcelona'],
+  paris: ['1st arrondissement Paris', '2nd arrondissement Paris', '3rd arrondissement Paris', '4th arrondissement Paris', '5th arrondissement Paris', '6th arrondissement Paris', '7th arrondissement Paris', '8th arrondissement Paris', '9th arrondissement Paris', '10th arrondissement Paris', '11th arrondissement Paris', '12th arrondissement Paris', '13th arrondissement Paris', '14th arrondissement Paris', '15th arrondissement Paris', '16th arrondissement Paris', '17th arrondissement Paris', '18th arrondissement Paris', '19th arrondissement Paris', '20th arrondissement Paris'],
+  berlin: ['Mitte Berlin', 'Friedrichshain Berlin', 'Kreuzberg Berlin', 'Prenzlauer Berg Berlin', 'Charlottenburg Berlin', 'Neukolln Berlin', 'Tempelhof Berlin', 'Spandau Berlin'],
+  chicago: ['The Loop Chicago', 'Near North Side Chicago', 'Lincoln Park Chicago', 'Lake View Chicago', 'West Town Chicago', 'Logan Square Chicago', 'Hyde Park Chicago', 'Englewood Chicago'],
+  'los angeles': ['Downtown Los Angeles', 'Hollywood Los Angeles', 'West Los Angeles', 'South Los Angeles', 'San Fernando Valley', 'Koreatown Los Angeles', 'Venice Los Angeles', 'Boyle Heights Los Angeles'],
+};
+
 function getSupabaseUrl() {
   return process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 }
@@ -844,6 +858,24 @@ function buildGooglePlacesAreaQueries({ baseQuery, country, includedType = '' })
   }));
 }
 
+function buildGooglePlacesCityQueries({ baseQuery, city, country, includedType = '' }) {
+  const cityKey = normalizeCountrySearchValue(city);
+  const expansions = GOOGLE_PLACES_CITY_EXPANSIONS[cityKey] || [];
+  const countrySuffix = country ? `, ${country}` : '';
+  const baseLocation = `${city}${countrySuffix}`;
+  const queries = [{ textQuery: `${baseQuery} near ${baseLocation}`, includedType, area: baseLocation }];
+
+  for (const area of expansions) {
+    queries.push({
+      textQuery: `${baseQuery} near ${area}${countrySuffix}`,
+      includedType,
+      area: `${area}${countrySuffix}`,
+    });
+  }
+
+  return queries;
+}
+
 async function proxyGooglePlacePhoto(req, res) {
   const apiKey = getGooglePlacesApiKey();
   if (!apiKey) {
@@ -900,6 +932,7 @@ async function searchGooglePlaces(input = {}) {
   const searchPreposition = hasLocalArea ? 'near' : 'in';
   const typeQueries = includedTypes;
   const shouldExpandCountry = Boolean(country && !hasLocalArea);
+  const shouldExpandCity = Boolean(city && !postcode && GOOGLE_PLACES_CITY_EXPANSIONS[normalizeCountrySearchValue(city)]?.length);
   const searchQueries = shouldExpandCountry
     ? [
       ...typeQueries.flatMap(placeType => buildGooglePlacesAreaQueries({
@@ -913,6 +946,21 @@ async function searchGooglePlaces(input = {}) {
         includedType: '',
       })),
     ]
+    : shouldExpandCity
+      ? [
+        ...typeQueries.flatMap(placeType => buildGooglePlacesCityQueries({
+          baseQuery: placeType.replaceAll('_', ' '),
+          city,
+          country,
+          includedType: placeType,
+        })),
+        ...customIndustryQueries.flatMap(query => buildGooglePlacesCityQueries({
+          baseQuery: query,
+          city,
+          country,
+          includedType: '',
+        })),
+      ]
     : [
       ...typeQueries.map(placeType => ({
         textQuery: `${placeType.replaceAll('_', ' ')} ${searchPreposition} ${queryLocation}`,
@@ -954,7 +1002,7 @@ async function searchGooglePlaces(input = {}) {
 
   for (const searchQuery of searchQueries) {
     let pageToken = '';
-    const maxPages = shouldExpandCountry ? 1 : 3;
+    const maxPages = shouldExpandCountry || shouldExpandCity ? 1 : 3;
     for (let page = 0; page < maxPages; page += 1) {
       const requestBody = {
         textQuery: searchQuery.textQuery,
@@ -1004,13 +1052,23 @@ async function searchGooglePlaces(input = {}) {
 
   return {
     source: 'google_places',
-    coverage: shouldExpandCountry ? {
-      mode: 'country_area_expansion',
-      country,
-      areasSearched: searchQueries.length,
-      areaLimit: GOOGLE_PLACES_COUNTRY_AREA_LIMIT,
-      note: 'Country searches are expanded across available states, counties, or regions and deduplicated.',
-    } : { mode: 'single_area', areasSearched: searchQueries.length },
+    coverage: shouldExpandCountry
+      ? {
+        mode: 'country_area_expansion',
+        country,
+        areasSearched: searchQueries.length,
+        areaLimit: GOOGLE_PLACES_COUNTRY_AREA_LIMIT,
+        note: 'Country searches are expanded across available states, counties, or regions and deduplicated.',
+      }
+      : shouldExpandCity
+        ? {
+          mode: 'city_area_expansion',
+          city,
+          country,
+          areasSearched: searchQueries.length,
+          note: 'City searches are expanded across known boroughs or districts and deduplicated.',
+        }
+        : { mode: 'single_area', areasSearched: searchQueries.length },
     places: [...resultsById.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)),
   };
 }

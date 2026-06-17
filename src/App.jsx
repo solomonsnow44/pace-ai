@@ -15907,23 +15907,10 @@ export default function App() {
 
   useEffect(() => {
     if (!supabase) return undefined;
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session?.user) {
-        handleAuthenticatedUser(data.session.user);
-        return;
-      }
-      setAuthReady(true);
-    });
-    const { data } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "TOKEN_REFRESHED") {
-        setLoggingOut(false);
-        return;
-      }
-      if (session?.user) {
-        handleAuthenticatedUser(session.user);
-        setLoggingOut(false);
-        return;
-      }
+    let cancelled = false;
+
+    const resetSignedOutState = () => {
+      if (cancelled) return;
       loadedAuthUserIdRef.current = "";
       setCrmData(createInitialCrmData());
       setDataUserId(null);
@@ -15941,8 +15928,51 @@ export default function App() {
       setShowHomePage(false);
       setAuthReady(true);
       setLoggingOut(false);
+    };
+
+    supabase.auth.getSession()
+      .then(async ({ data }) => {
+        if (cancelled) return;
+        if (data.session?.user) {
+          await handleAuthenticatedUser(data.session.user);
+          return;
+        }
+        if (!authLoadRef.current.promise && !loadedAuthUserIdRef.current) setAuthReady(true);
+      })
+      .catch(error => {
+        console.error("Could not restore Supabase session", error);
+        if (!cancelled) setAuthReady(true);
+      });
+
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (cancelled) return;
+      if (event === "SIGNED_OUT") {
+        resetSignedOutState();
+        return;
+      }
+      if (event === "TOKEN_REFRESHED") {
+        if (session?.user) {
+          setUser(current => current ? {
+            ...session.user,
+            crm_profile: current.crm_profile,
+          } : current);
+        }
+        setLoggingOut(false);
+        return;
+      }
+      if (session?.user) {
+        handleAuthenticatedUser(session.user);
+        setLoggingOut(false);
+        return;
+      }
+      if (event === "INITIAL_SESSION" && !authLoadRef.current.promise && !loadedAuthUserIdRef.current) {
+        setAuthReady(true);
+      }
     });
-    return () => data.subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      data.subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {

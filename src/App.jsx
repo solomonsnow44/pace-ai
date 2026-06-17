@@ -16074,6 +16074,9 @@ export default function App() {
       return;
     }
 
+    setAuthReady(false);
+    setLoggingOut(false);
+
     const loadPromise = loadAuthenticatedUser(nextUser);
     authLoadRef.current = { userId: nextUser.id, promise: loadPromise };
     try {
@@ -16118,15 +16121,6 @@ export default function App() {
         isOrgAdmin: Boolean(nextAdminSettings.isOrgAdmin) || ORG_ADMIN_ROLES.has(resolvedRole),
       };
 
-      setCrmData(refreshCrmData({
-        ...createInitialCrmData(),
-        workspaceUsers: mergedWorkspaceUsers,
-      }));
-      setAdminSettingsState({
-        settings: normalizedAdminSettings,
-        role: resolvedRole,
-        ...nextAccessState,
-      });
       const isFirstAuthenticatedLoad = !hasSavedUiState(nextUser.id);
       if (isFirstAuthenticatedLoad) {
         const urlView = readWorkspaceViewFromUrl();
@@ -16143,18 +16137,7 @@ export default function App() {
         if (uiState.selectedAccountId) setSelectedAccountId(uiState.selectedAccountId);
         if (uiState.selectedContactId) setSelectedContactId(uiState.selectedContactId);
       }
-      setDataOrgId(organizationId);
-      setDataUserId(nextUser.id);
-      setUser(nextUserWithProfile);
-      setCurrencyCode(nextUserWithProfile.crm_profile.currencyCode || "GBP");
-      setAircallData({ users: [], calls: [], dailyStats: [], loading: true });
-      setAuthReady(true);
-      setLoggingOut(false);
-      loadIntegrationCredentialsStatus().catch(error => {
-        console.error("Could not load integration credential status", error);
-      });
-
-      const [syncedCrmData, nextLeadLists, nextIntentData, nextLeadContactDatabase, nextPrivateContactNotes] = await Promise.all([
+      const [syncedCrmData, nextLeadLists, nextIntentData, nextLeadContactDatabase, nextPrivateContactNotes, nextAircallData] = await Promise.all([
         loadSyncedCrmData(nextUser.id, organizationId, workspaceUsers).catch(error => {
           console.error("Could not load synced CRM data", error);
           return createInitialCrmData();
@@ -16178,6 +16161,10 @@ export default function App() {
           console.error("Could not load private contact notes", error);
           return {};
         }),
+        loadAircallDashboardData(organizationId).catch(error => {
+          console.error("Could not load Aircall dashboard", error);
+          return { users: [], calls: [], dailyStats: [], error: error.message || "Could not load Aircall dashboard." };
+        }),
       ]);
       const nextCrmData = {
         ...syncedCrmData,
@@ -16188,13 +16175,23 @@ export default function App() {
       setIntentData(nextIntentData);
       setLeadContactDatabase(nextLeadContactDatabase);
       setPrivateContactNotes(nextPrivateContactNotes);
+      setAircallData(nextAircallData);
       setAdminSettingsState({
         settings: normalizedAdminSettings,
         role: resolvedRole,
         ...nextAccessState,
       });
+      setDataOrgId(organizationId);
+      setDataUserId(nextUser.id);
+      setUser(nextUserWithProfile);
+      setCurrencyCode(nextUserWithProfile.crm_profile.currencyCode || "GBP");
       setLeadListsError("");
       setIntentDataError("");
+      setAuthReady(true);
+      setLoggingOut(false);
+      loadIntegrationCredentialsStatus().catch(error => {
+        console.error("Could not load integration credential status", error);
+      });
     } catch (error) {
       console.error("Could not load synced CRM data", error);
       const fallbackWorkspaceUser = organizationId

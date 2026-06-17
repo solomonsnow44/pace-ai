@@ -940,6 +940,84 @@ async function runIntentResearchRoute(req, input = {}) {
   });
 }
 
+async function loadAircallDashboardRoute(req) {
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  const serviceClient = getServiceClient();
+  const url = new URL(req.url, 'http://localhost');
+  const callsLimit = Math.max(100, Math.min(Number(url.searchParams.get('callsLimit')) || 1500, 5000));
+  const canSeeWorkspaceAircall = isAdminRole(user.role);
+
+  let usersQuery = serviceClient
+    .from('aircall_users')
+    .select('id,organization_id,aircall_user_id,linked_user_id,email,name,first_name,last_name,availability_status,match_status,match_reason,match_confidence,last_seen_at')
+    .eq('organization_id', user.organizationId)
+    .order('name', { ascending: true });
+
+  let callsQuery = serviceClient
+    .from('aircall_contact_call_timeline')
+    .select('*')
+    .eq('organization_id', user.organizationId)
+    .order('started_at', { ascending: false })
+    .limit(callsLimit);
+
+  let statsQuery = serviceClient
+    .from('aircall_user_daily_stats')
+    .select('*')
+    .eq('organization_id', user.organizationId)
+    .order('call_date', { ascending: false })
+    .limit(180);
+
+  if (!canSeeWorkspaceAircall) {
+    const aircallUserId = String(user.aircallUserId || '').trim();
+    usersQuery = aircallUserId
+      ? usersQuery.or(`linked_user_id.eq.${user.id},aircall_user_id.eq.${aircallUserId}`)
+      : usersQuery.eq('linked_user_id', user.id);
+    callsQuery = aircallUserId
+      ? callsQuery.or(`user_id.eq.${user.id},aircall_user_id.eq.${aircallUserId}`)
+      : callsQuery.eq('user_id', user.id);
+    statsQuery = aircallUserId
+      ? statsQuery.or(`user_id.eq.${user.id},aircall_user_id.eq.${aircallUserId}`)
+      : statsQuery.eq('user_id', user.id);
+  }
+
+  const [usersResult, callsResult, statsResult] = await Promise.all([usersQuery, callsQuery, statsQuery]);
+  const missingAircallTables = [usersResult, callsResult, statsResult].some(result => ['42P01', '42703'].includes(result.error?.code));
+  if (missingAircallTables) return { users: [], calls: [], dailyStats: [], unavailable: true };
+
+  const failedResult = [usersResult, callsResult, statsResult].find(result => result.error);
+  if (failedResult?.error) throw failedResult.error;
+
+  let callRows = callsResult.data || [];
+  let callsSource = 'timeline';
+  if (!callRows.length) {
+    let fallbackQuery = serviceClient
+      .from('aircall_calls')
+      .select('id,organization_id,client_id,campaign_id,company_id,contact_id,user_id,aircall_user_id,aircall_call_id,aircall_call_uuid,direction,status,missed_call_reason,started_at,answered_at,ended_at,duration_seconds,external_phone_number,raw_digits,recording_url,recording_short_url,direct_link,tags,comments')
+      .eq('organization_id', user.organizationId)
+      .order('started_at', { ascending: false })
+      .limit(callsLimit);
+    if (!canSeeWorkspaceAircall) {
+      const aircallUserId = String(user.aircallUserId || '').trim();
+      fallbackQuery = aircallUserId
+        ? fallbackQuery.or(`user_id.eq.${user.id},aircall_user_id.eq.${aircallUserId}`)
+        : fallbackQuery.eq('user_id', user.id);
+    }
+    const fallbackResult = await fallbackQuery;
+    if (fallbackResult.error && !['42P01', '42703'].includes(fallbackResult.error.code)) throw fallbackResult.error;
+    if (fallbackResult.data?.length) {
+      callRows = fallbackResult.data;
+      callsSource = 'aircall_calls';
+    }
+  }
+
+  return {
+    users: usersResult.data || [],
+    calls: callRows,
+    callsSource,
+    dailyStats: statsResult.data || [],
+  };
+}
+
 async function handlePostRoute(req, res, handler, fallbackMessage) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { error: 'Method not allowed' });
@@ -1129,6 +1207,24 @@ export async function handleApiRequest(req, res) {
         allowSavedLeadNumbers: true,
       });
     }, 'Aircall dial failed');
+  }
+
+  if (pathname === '/api/aircall/dashboard') {
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'Method not allowed' });
+      return true;
+    }
+    try {
+      sendJson(res, 200, await loadAircallDashboardRoute(req));
+    } catch (error) {
+      console.error('Aircall dashboard load failed', {
+        message: error?.message || String(error),
+        statusCode: error?.statusCode,
+        path: req.url,
+      });
+      sendJson(res, error.statusCode || 500, { error: error.message || 'Aircall dashboard load failed' });
+    }
+    return true;
   }
 
   if (pathname === '/api/aircall/sync') {

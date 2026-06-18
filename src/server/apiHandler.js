@@ -863,11 +863,11 @@ function buildGooglePlacesCityQueries({ baseQuery, city, country, includedType =
   const expansions = GOOGLE_PLACES_CITY_EXPANSIONS[cityKey] || [];
   const countrySuffix = country ? `, ${country}` : '';
   const baseLocation = `${city}${countrySuffix}`;
-  const queries = [{ textQuery: `${baseQuery} near ${baseLocation}`, includedType, area: baseLocation }];
+  const queries = [{ textQuery: `${baseQuery} in ${baseLocation}`, includedType, area: baseLocation }];
 
   for (const area of expansions) {
     queries.push({
-      textQuery: `${baseQuery} near ${area}${countrySuffix}`,
+      textQuery: `${baseQuery} in ${area}${countrySuffix}`,
       includedType,
       area: `${area}${countrySuffix}`,
     });
@@ -929,7 +929,7 @@ async function searchGooglePlaces(input = {}) {
     : [];
   const hasLocalArea = Boolean(city || postcode);
   const queryLocation = [city, postcode, country].filter(Boolean).join(', ') || 'London, United Kingdom';
-  const searchPreposition = hasLocalArea ? 'near' : 'in';
+  const searchPreposition = 'in';
   const typeQueries = includedTypes;
   const shouldExpandCountry = Boolean(country && !hasLocalArea);
   const shouldExpandCity = Boolean(city && !postcode && GOOGLE_PLACES_CITY_EXPANSIONS[normalizeCountrySearchValue(city)]?.length);
@@ -977,7 +977,7 @@ async function searchGooglePlaces(input = {}) {
     return {
       source: 'google_places',
       places: [],
-      message: 'Choose at least one industry filter or enter a custom industry.',
+      message: 'Enter what you want to find, such as cafes, Starbucks, convenience stores, or restaurants.',
     };
   }
   const resultsById = new Map();
@@ -1002,7 +1002,7 @@ async function searchGooglePlaces(input = {}) {
 
   for (const searchQuery of searchQueries) {
     let pageToken = '';
-    const maxPages = shouldExpandCountry || shouldExpandCity ? 1 : 3;
+    const maxPages = 3;
     for (let page = 0; page < maxPages; page += 1) {
       const requestBody = {
         textQuery: searchQuery.textQuery,

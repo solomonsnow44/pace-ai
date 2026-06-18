@@ -32,7 +32,9 @@ import {
   LogIn,
   Mail,
   MapPin,
+  Maximize2,
   Megaphone,
+  Minimize2,
   Moon,
   PanelRight,
   Pencil,
@@ -57,6 +59,7 @@ import {
 import aircallLogoUrl from "./assets/aircall.png";
 import cognismLogoUrl from "./assets/cognism.png";
 import hubspotLogoUrl from "./assets/hubspot.png";
+import prospectingJourneyUrl from "./assets/prospecting-journey.png";
 import logoUrl from "../images/paceops-logo.jpeg";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -249,7 +252,7 @@ const demoAccounts = [
     name: "Target Account 03",
     domain: "account-03.example",
     owner: "Workspace Admin",
-    stage: "Lead In",
+    stage: "Research",
     status: "New",
     industry: "Subscription software",
     location: "London",
@@ -370,21 +373,69 @@ const demoContacts = [
 ];
 
 const pipelineColumns = [
-  { id: "lead", name: "Lead In" },
-  { id: "researching", name: "Researching" },
-  { id: "contacted", name: "Contacted" },
-  { id: "meeting", name: "Meeting" },
-  { id: "qualified", name: "Qualified" },
+  { id: "research", name: "Research" },
+  { id: "preparation", name: "Preparation" },
+  { id: "qualify", name: "Qualify" },
+  { id: "discover", name: "Discover" },
+  { id: "alignment", name: "Alignment" },
+  { id: "position", name: "Position" },
+  { id: "intent-to-buy", name: "Intent to Buy" },
 ];
 
 function pipelineStageIdForValue(value, stages = pipelineColumns) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized) return stages[0]?.id || pipelineColumns[0].id;
+  const stageAliases = {
+    lead: "research",
+    "lead in": "research",
+    researching: "research",
+    contacted: "discover",
+    meeting: "alignment",
+    qualified: "intent-to-buy",
+  };
+  const alias = stageAliases[normalized];
+  if (alias) {
+    const aliased = (stages || pipelineColumns).find(stage => String(stage.id).toLowerCase() === alias);
+    if (aliased) return aliased.id;
+  }
   const matched = (stages || pipelineColumns).find(stage => (
     String(stage.id).toLowerCase() === normalized
     || String(stage.name).trim().toLowerCase() === normalized
   ));
   return matched?.id || stages[0]?.id || pipelineColumns[0].id;
+}
+
+function makePipelineStageId(name, stages = []) {
+  const base = makeSlug(name || "stage") || "stage";
+  const existingIds = new Set(stages.map(stage => stage.id));
+  if (!existingIds.has(base)) return base;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!existingIds.has(candidate)) return candidate;
+  }
+}
+
+function normalizePipelineStages(stages) {
+  if (!Array.isArray(stages) || !stages.length) return cloneRecords(pipelineColumns);
+  const legacyDefaultIds = ["lead", "researching", "contacted", "meeting", "qualified"];
+  const legacyDefaultNames = ["Lead In", "Researching", "Contacted", "Meeting", "Qualified"];
+  const isLegacyDefault = stages.length === legacyDefaultIds.length && stages.every((stage, index) => (
+    String(stage?.id || "").toLowerCase() === legacyDefaultIds[index]
+    && String(stage?.name || "") === legacyDefaultNames[index]
+  ));
+  if (isLegacyDefault) return cloneRecords(pipelineColumns);
+
+  const usedIds = new Set();
+  return stages
+    .map((stage, index) => {
+      const fallback = pipelineColumns[index] || { id: `stage-${index + 1}`, name: `Stage ${index + 1}` };
+      const name = String(stage?.name || fallback.name).trim() || fallback.name;
+      let id = String(stage?.id || fallback.id || makePipelineStageId(name)).trim();
+      if (!id || usedIds.has(id)) id = makePipelineStageId(name, [...usedIds].map(existingId => ({ id: existingId })));
+      usedIds.add(id);
+      return { id, name };
+    })
+    .filter(stage => stage.name);
 }
 
 const demoDeals = [
@@ -509,7 +560,7 @@ const navItems = [
   { id: "lead-lists", label: "Lead Lists", icon: ListFilter, highlight: true },
   { id: "pipeline", label: "Pipeline", icon: KanbanSquare },
   { id: "research", label: "Research", icon: FileText },
-  { id: "locker-finder", label: "Locker Finder", icon: Earth, highlight: true },
+  { id: "locker-finder", label: "Location Finder", icon: Earth, highlight: true },
   { id: "integrations", label: "Integrations", icon: Plug, highlight: true },
   { id: "settings", label: "Settings", icon: Settings, highlight: true },
 ];
@@ -742,12 +793,7 @@ function normalizeCrmData(data) {
     weeklyReports: Array.isArray(data.weeklyReports) ? data.weeklyReports : initial.weeklyReports,
     lockerProspects: Array.isArray(data.lockerProspects) ? data.lockerProspects : initial.lockerProspects,
     integrations: hydrateIntegrations(Array.isArray(data.integrations) ? data.integrations : []),
-    pipelineStages: Array.isArray(data.pipelineStages) && data.pipelineStages.length
-      ? pipelineColumns.map(column => {
-        const saved = data.pipelineStages.find(item => item.id === column.id);
-        return { ...column, name: saved?.name || column.name };
-      })
-      : initial.pipelineStages,
+    pipelineStages: normalizePipelineStages(data.pipelineStages || initial.pipelineStages),
   };
 }
 
@@ -825,6 +871,7 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
     meetingsResult,
     actionNotesResult,
     actionNoteContactsResult,
+    pipelineStagesResult,
   ] = await Promise.all([
     fetchAllRows(() => supabase
       .from("clients")
@@ -872,10 +919,12 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
       .from("action_note_contacts")
       .select("action_note_id,organization_id,contact_id")
       .eq("organization_id", organizationId)),
+    supabase.rpc("get_shared_pipeline_stages"),
   ]);
 
   if (actionNotesResult.error) console.error("Could not load action notes", actionNotesResult.error);
   if (actionNoteContactsResult.error) console.error("Could not load action note contacts", actionNoteContactsResult.error);
+  if (pipelineStagesResult.error) console.error("Could not load pipeline stages", pipelineStagesResult.error);
   const results = [clientsResult, campaignsResult, companiesResult, contactsResult, campaignTargetsResult, clientMembersResult, campaignMembersResult, meetingsResult];
   const failedResult = results.find(result => result.error);
   if (failedResult?.error) throw failedResult.error;
@@ -930,6 +979,10 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
         health: clientCompanies.length || clientContacts.length ? "Active" : "Needs setup",
       };
     }),
+    pipelineStages: pipelineStagesResult.error ? pipelineColumns : (pipelineStagesResult.data || []).map(stage => ({
+      id: stage.stage_key,
+      name: stage.name,
+    })),
     companies: companies.map(company => ({
       id: company.id,
       clientId: company.client_id,
@@ -1055,6 +1108,19 @@ async function loadSyncedCrmData(_userId, organizationId, workspaceUsers = []) {
   if (!supabase || !organizationId) return createInitialCrmData();
   const relationalData = await loadRelationalCrmData(organizationId, workspaceUsers);
   return relationalData || createInitialCrmData();
+}
+
+async function saveSharedPipelineStages(stages) {
+  if (!supabase) return normalizePipelineStages(stages);
+  const payload = normalizePipelineStages(stages);
+  const { data, error } = await supabase.rpc("update_shared_pipeline_stages", {
+    stages: payload,
+  });
+  if (error) throw error;
+  return normalizePipelineStages((data || []).map(stage => ({
+    id: stage.stage_key,
+    name: stage.name,
+  })));
 }
 
 async function saveRelationalCampaign(organizationId, campaign) {
@@ -7630,11 +7696,14 @@ function ActionNoteManager({ account, contacts = [], actionNotes = [], activeCam
 
 function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenContact, onMovePipelineItem, onUpdateStages, onSaveActionNote, onDeleteActionNote }) {
   const { accounts, contacts, pipelineStages, actionNotes = [] } = useCrmData();
+  const activeStages = normalizePipelineStages(pipelineStages || pipelineColumns);
   const [pipelineMode, setPipelineMode] = useState("companies");
   const [draggedItem, setDraggedItem] = useState(null);
   const [dropStage, setDropStage] = useState("");
   const [editingStages, setEditingStages] = useState(false);
-  const [draftStages, setDraftStages] = useState(() => cloneRecords(pipelineStages || pipelineColumns));
+  const [draftStages, setDraftStages] = useState(() => cloneRecords(activeStages));
+  const [stageSaveStatus, setStageSaveStatus] = useState("idle");
+  const [stageSaveError, setStageSaveError] = useState("");
   const [selectedItem, setSelectedItem] = useState(null);
   if (activeClient?.id === "none" || activeCampaign?.id === "none") {
     return <ScopeSelectionPrompt />;
@@ -7653,8 +7722,12 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
     && (campaignContactIds.size ? campaignContactIds.has(contact.id) : scopedAccountIds.has(contact.accountId || contact.companyId))
   ));
   const records = pipelineMode === "companies"
-    ? scopedAccounts.map(account => ({ type: "company", id: account.id, stage: pipelineStageIdForValue(account.stage, pipelineStages || pipelineColumns), account }))
-    : scopedContacts.map(contact => ({ type: "contact", id: contact.id, stage: pipelineStageIdForValue(contact.stage, pipelineStages || pipelineColumns), contact, account: accounts.find(account => account.id === (contact.accountId || contact.companyId)) }));
+    ? scopedAccounts.map(account => ({ type: "company", id: account.id, stage: pipelineStageIdForValue(account.stage, activeStages), account }))
+    : scopedContacts.map(contact => ({ type: "contact", id: contact.id, stage: pipelineStageIdForValue(contact.stage, activeStages), contact, account: accounts.find(account => account.id === (contact.accountId || contact.companyId)) }));
+  const stageRecordCounts = records.reduce((counts, record) => {
+    counts[record.stage] = (counts[record.stage] || 0) + 1;
+    return counts;
+  }, {});
 
   function contactsForAccount(accountId) {
     return contacts.filter(contact => (contact.accountId || contact.companyId) === accountId);
@@ -7664,20 +7737,44 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
     return (actionNotes || []).filter(note => note.accountId === accountId || note.companyId === accountId);
   }
 
-  function saveStages() {
-    const nextStages = draftStages.map((stage, index) => ({
-      ...stage,
-      name: stage.name.trim() || pipelineColumns[index]?.name || stage.id,
-    }));
-    onUpdateStages(nextStages);
-    setEditingStages(false);
+  function addDraftStage() {
+    setDraftStages(current => {
+      const name = `Stage ${current.length + 1}`;
+      return [...current, { id: makePipelineStageId(name, current), name }];
+    });
+  }
+
+  function removeDraftStage(stageId) {
+    if (stageRecordCounts[stageId]) return;
+    setDraftStages(current => current.length > 1 ? current.filter(stage => stage.id !== stageId) : current);
+  }
+
+  async function saveStages() {
+    const nextStages = normalizePipelineStages(draftStages);
+    const duplicateName = nextStages.find((stage, index) => (
+      nextStages.findIndex(item => item.name.trim().toLowerCase() === stage.name.trim().toLowerCase()) !== index
+    ));
+    if (duplicateName) {
+      setStageSaveError("Stage names must be unique.");
+      return;
+    }
+    setStageSaveStatus("saving");
+    setStageSaveError("");
+    try {
+      await onUpdateStages(nextStages);
+      setEditingStages(false);
+      setStageSaveStatus("idle");
+    } catch (error) {
+      setStageSaveStatus("idle");
+      setStageSaveError(error?.message || "Could not save pipeline stages.");
+    }
   }
 
   return (
     <>
       <PageHeader
         eyebrow="Pipeline"
-        title="Opportunity board"
+        title="Permission to Operate"
         description={`${activeClient?.name || "Client account"} pipeline${activeCampaign?.name && activeCampaign.id !== "none" ? ` for ${activeCampaign.name}` : ""}.`}
       >
         <div className="pipeline-mode-toggle" role="tablist" aria-label="Pipeline records">
@@ -7697,7 +7794,10 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
           </button>
         </div>
         <button className="secondary-button" type="button" onClick={() => {
-          if (!editingStages) setDraftStages(cloneRecords(pipelineStages || pipelineColumns));
+          if (!editingStages) {
+            setDraftStages(cloneRecords(activeStages));
+            setStageSaveError("");
+          }
           setEditingStages(value => !value);
         }}>
           <Settings size={16} />
@@ -7708,31 +7808,58 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
         <section className="panel pipeline-settings-panel">
           <div className="panel-header">
             <div>
-              <span className="eyebrow">Pipeline stages</span>
-              <h2>Rename stages</h2>
+              <span className="eyebrow">PaceOps Alignment</span>
+              <h2>Stage settings</h2>
+            </div>
+            <button className="secondary-button" type="button" onClick={addDraftStage}>
+              <Plus size={16} />
+              Add stage
+            </button>
+          </div>
+          <div className="pipeline-alignment-layout">
+            <figure className="prospecting-journey-reference">
+              <img src={prospectingJourneyUrl} alt="The Prospecting Journey showing buyer behavior, PaceOps alignment, and selling behavior stages." />
+            </figure>
+            <div className="stage-editor-grid">
+              {draftStages.map((stage, index) => {
+                const hasRecords = Boolean(stageRecordCounts[stage.id]);
+                return (
+                  <div key={stage.id} className="stage-editor-row">
+                    <FormField label={`Stage ${index + 1}`}>
+                      <input
+                        value={stage.name}
+                        onChange={event => setDraftStages(current => current.map(item => item.id === stage.id ? { ...item, name: event.target.value } : item))}
+                      />
+                    </FormField>
+                    <button
+                      className="icon-button"
+                      type="button"
+                      title={hasRecords ? "Move records off this stage before removing it" : "Remove stage"}
+                      disabled={draftStages.length <= 1 || hasRecords}
+                      onClick={() => removeDraftStage(stage.id)}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
-          <div className="stage-editor-grid">
-            {draftStages.map((stage, index) => (
-              <FormField key={stage.id} label={`Stage ${index + 1}`}>
-                <input
-                  value={stage.name}
-                  onChange={event => setDraftStages(current => current.map(item => item.id === stage.id ? { ...item, name: event.target.value } : item))}
-                />
-              </FormField>
-            ))}
-          </div>
+          {stageSaveError ? <div className="form-error">{stageSaveError}</div> : null}
           <div className="stage-editor-actions">
             <button className="secondary-button" type="button" onClick={() => {
-              setDraftStages(cloneRecords(pipelineStages || pipelineColumns));
+              setDraftStages(cloneRecords(activeStages));
+              setStageSaveError("");
               setEditingStages(false);
-            }}>Cancel</button>
-            <button className="primary-button" type="button" onClick={saveStages}>Save stages</button>
+            }} disabled={stageSaveStatus === "saving"}>Cancel</button>
+            <button className="primary-button" type="button" onClick={saveStages} disabled={stageSaveStatus === "saving"}>
+              {stageSaveStatus === "saving" ? "Saving..." : "Save stages"}
+            </button>
           </div>
         </section>
       ) : null}
       <div className="pipeline-board">
-        {(pipelineStages || pipelineColumns).map(column => {
+        {activeStages.map(column => {
           const columnRecords = records.filter(record => record.stage === column.id);
           return (
             <section
@@ -9007,6 +9134,7 @@ function isLockerFinderLead(lead = {}) {
   const notes = String(lead.notes || "");
   return lead.dataSource === "google_places_location"
     || lead.sourceNote === "Saved from Locker Finder"
+    || lead.sourceNote === "Saved from Location Finder"
     || Boolean(lead.googlePlaceId)
     || notes.includes("Google Place ID:")
     || notes.includes("Host fit score:")
@@ -9052,8 +9180,8 @@ function exportLockerFinderListCsv(list = {}, leads = [], requestedFilename = ""
   const filename = sanitizeExportFilename(requestedFilename, `${list.name || "locker-finder-list"}-${timestamp}`, "csv");
   const rows = lockerFinderExportRows(leads);
   const titleRows = [
-    ["PaceOpsIQ - Locker Finder List"],
-    [`List: ${list.name || "Locker Finder"}`],
+    ["PaceOpsIQ - Location Finder List"],
+    [`List: ${list.name || "Location Finder"}`],
     [`Exported: ${timestamp}`],
     [],
   ].map(row => row.map(csvEscape).join(","));
@@ -9071,8 +9199,8 @@ function exportLockerFinderListExcel(list = {}, leads = [], requestedFilename = 
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
   const titleRows = [
-    ["PaceOpsIQ - Locker Finder List"],
-    [`List: ${list.name || "Locker Finder"}`],
+    ["PaceOpsIQ - Location Finder List"],
+    [`List: ${list.name || "Location Finder"}`],
     [`Exported: ${timestamp}`],
     [],
   ].map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("");
@@ -9086,10 +9214,10 @@ function exportLockerFinderListExcel(list = {}, leads = [], requestedFilename = 
 function exportLockerFinderLocations(locations = [], format = "csv", requestedFilename = "") {
   const leads = (locations || []).filter(Boolean).map(lockerLocationToLead);
   if (format === "xls") {
-    exportLockerFinderListExcel({ name: "Locker Finder Selected Locations" }, leads, requestedFilename);
+    exportLockerFinderListExcel({ name: "Location Finder Selected Locations" }, leads, requestedFilename);
     return;
   }
-  exportLockerFinderListCsv({ name: "Locker Finder Selected Locations" }, leads, requestedFilename);
+  exportLockerFinderListCsv({ name: "Location Finder Selected Locations" }, leads, requestedFilename);
 }
 
 const companyExportColumns = [
@@ -10467,7 +10595,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                   </button>
                   <button className="secondary-button" type="button" onClick={exportLockerFinderCsv} disabled={!lockerFinderExportLeads.length}>
                     <Download size={16} />
-                    {selectedLeads.length ? "Export selected locker CSV" : "Export locker CSV"}
+                    {selectedLeads.length ? "Export selected location CSV" : "Export location CSV"}
                   </button>
                   <button className="secondary-button" type="button" onClick={() => requestListExport("xls")} disabled={!exportableListLeads.length}>
                     <FileText size={16} />
@@ -12828,13 +12956,60 @@ const integrationCredentialForms = [
 
 const lockerFinderIndustries = [
   { id: "convenience_store", label: "Convenience stores", weight: 96 },
+  { id: "restaurant", label: "Restaurants", weight: 95 },
+  { id: "cafe", label: "Cafes", weight: 94 },
   { id: "gas_station", label: "Petrol stations", weight: 94 },
   { id: "supermarket", label: "Supermarkets", weight: 86 },
   { id: "train_station", label: "Train stations", weight: 84 },
+  { id: "pharmacy", label: "Pharmacies", weight: 82 },
+  { id: "hotel", label: "Hotels", weight: 80 },
+  { id: "gym", label: "Gyms", weight: 79 },
   { id: "parking", label: "Car parks", weight: 78 },
   { id: "shopping_mall", label: "Retail parks", weight: 76 },
   { id: "store", label: "Retail stores", weight: 70 },
   { id: "bar", label: "Pubs", weight: 66 },
+];
+
+const outboundIndustrySuggestions = [
+  "Restaurants",
+  "Restaurant branches",
+  "Starbucks",
+  "Cafes",
+  "Coffee shops",
+  "Fast food restaurants",
+  "Takeaways",
+  "Bars",
+  "Pubs",
+  "Hotels",
+  "Hospitality venues",
+  "Retail branches",
+  "Supermarkets",
+  "Convenience stores",
+  "Pharmacies",
+  "Gyms",
+  "Leisure centres",
+  "Care homes",
+  "Dental clinics",
+  "Salons",
+  "Estate agents",
+  "Car dealerships",
+  "Warehouses",
+  "Distribution centres",
+  "Offices",
+  "Bank branches",
+];
+
+const locationFinderQuickSearches = [
+  "Convenience stores",
+  "Petrol stations",
+  "Supermarkets",
+  "Cafes",
+  "Restaurants",
+  "Pharmacies",
+  "Hotels",
+  "Gyms",
+  "Retail parks",
+  "Car parks",
 ];
 
 const lockerFinderSeedLocations = [
@@ -12972,7 +13147,7 @@ function htmlEscape(value) {
     .replaceAll("'", "&#39;");
 }
 
-function buildLockerFinderReportHtml({ title = "Locker Finder Location Pack", mapImage = "", locations = [], searchValues = {}, generatedAt = new Date() } = {}) {
+function buildLockerFinderReportHtml({ title = "Location Finder Pack", mapImage = "", locations = [], searchValues = {}, generatedAt = new Date() } = {}) {
   const generatedDate = generatedAt instanceof Date ? generatedAt : new Date(generatedAt);
   const area = [searchValues.city, searchValues.postcode, searchValues.country].map(normalizeLookupValue).filter(Boolean).join(", ");
   const rows = locations.map((location, index) => {
@@ -13043,9 +13218,9 @@ function buildLockerFinderReportHtml({ title = "Locker Finder Location Pack", ma
   <main>
     <section class="hero">
       <div>
-        <p class="eyebrow">PaceOpsIQ - Locker Finder List</p>
+        <p class="eyebrow">PaceOpsIQ - Location Finder List</p>
         <h1>${htmlEscape(title)}</h1>
-        <p>${htmlEscape(area || "Target area")} outbound pack for parcel locker host outreach.</p>
+        <p>${htmlEscape(area || "Target area")} outbound pack for location-led outreach.</p>
       </div>
       <div class="stats">
         <span><strong>${locations.length}</strong><small>Locations</small></span>
@@ -13086,7 +13261,7 @@ function lockerLocationToLead(location = {}) {
       Number(location.score) ? `Host fit score: ${location.score}` : "",
     ].filter(Boolean).join("\n"),
     dataSource: "google_places_location",
-    sourceNote: "Saved from Locker Finder",
+    sourceNote: "Saved from Location Finder",
     googlePlaceId: location.placeId || "",
     website,
     placeType: location.placeType || "",
@@ -13097,19 +13272,22 @@ function lockerLocationToLead(location = {}) {
   };
 }
 
-function createLockerSearchResults({ city, country, postcode, selectedTypes }) {
+function createLockerSearchResults({ city, country, postcode, customIndustry }) {
   const cityQuery = String(city || "").trim().toLowerCase();
   const countryQuery = String(country || "").trim().toLowerCase();
   const postcodeQuery = String(postcode || "").trim().toLowerCase();
-  const selectedTypeSet = new Set(selectedTypes);
+  const searchQuery = String(customIndustry || "").trim().toLowerCase();
   const matchingSeeds = lockerFinderSeedLocations.filter(location => {
     const cityMatches = !cityQuery || location.city.toLowerCase().includes(cityQuery) || cityQuery.includes(location.city.toLowerCase());
     const countryMatches = !countryQuery || location.country.toLowerCase().includes(countryQuery) || countryQuery.includes("uk") || countryQuery.includes("ireland");
     const postcodeMatches = !postcodeQuery || location.postcode.toLowerCase().startsWith(postcodeQuery.slice(0, 3));
-    const typeMatches = !selectedTypeSet.size || selectedTypeSet.has(location.placeType);
-    return cityMatches && countryMatches && postcodeMatches && typeMatches;
+    const queryMatches = !searchQuery
+      || location.name.toLowerCase().includes(searchQuery)
+      || location.industry.toLowerCase().includes(searchQuery)
+      || location.placeType.replaceAll("_", " ").includes(searchQuery);
+    return cityMatches && countryMatches && postcodeMatches && queryMatches;
   });
-  const seeds = matchingSeeds.length ? matchingSeeds : lockerFinderSeedLocations.filter(location => !selectedTypeSet.size || selectedTypeSet.has(location.placeType));
+  const seeds = matchingSeeds.length ? matchingSeeds : lockerFinderSeedLocations;
   return seeds.map((location, index) => ({
     ...location,
     placeId: `mock-${location.id}`,
@@ -13130,6 +13308,9 @@ function LockerMap({
   drawingEnabled = false,
   annotationColor = "#0c69c8",
   clearDrawingSignal = 0,
+  resizeSignal = 0,
+  fullscreen = false,
+  onToggleFullscreen,
 }) {
   const mapContainerRef = useRef(null);
   const annotationCanvasRef = useRef(null);
@@ -13169,6 +13350,11 @@ function LockerMap({
     if (!mapRef.current) return;
     window.setTimeout(() => mapRef.current?.invalidateSize(), 0);
   }, []);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    window.setTimeout(() => mapRef.current?.invalidateSize(), 80);
+  }, [resizeSignal]);
 
   useEffect(() => {
     const canvas = annotationCanvasRef.current;
@@ -13302,6 +13488,10 @@ function LockerMap({
   return (
     <div ref={mapCaptureRef} className={`locker-map-canvas ${drawingEnabled ? "drawing" : ""}`}>
       <div ref={mapContainerRef} className="locker-real-map" />
+      <button className="locker-map-fullscreen-button" type="button" onClick={onToggleFullscreen}>
+        {fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+        <span>{fullscreen ? "Exit full screen" : "Full screen"}</span>
+      </button>
       <canvas
         ref={annotationCanvasRef}
         className="locker-annotation-canvas"
@@ -13323,12 +13513,11 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
     postcode: "",
     customIndustry: "",
   });
-  const [selectedTypes, setSelectedTypes] = useState([]);
   const [results, setResults] = useState([]);
   const [activeLocationId, setActiveLocationId] = useState(results[0]?.id || "");
   const [searchStatus, setSearchStatus] = useState("idle");
   const [searchError, setSearchError] = useState("");
-  const [resultSource, setResultSource] = useState("Choose category");
+  const [resultSource, setResultSource] = useState("Enter search");
   const [coverageSummary, setCoverageSummary] = useState(null);
   const autoSearchStartedRef = useRef(false);
   const [targetLeadListId, setTargetLeadListId] = useState("");
@@ -13346,6 +13535,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
   const [reportError, setReportError] = useState("");
   const [leadListSaveStatus, setLeadListSaveStatus] = useState("idle");
   const [leadListSaveError, setLeadListSaveError] = useState("");
+  const [mapFullscreen, setMapFullscreen] = useState(false);
   const mapCaptureRef = useRef(null);
   const activeLocation = results.find(location => location.id === activeLocationId) || results[0] || null;
   const selectedLocations = results.filter(location => selectedLocationIds.includes(location.id));
@@ -13360,10 +13550,16 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
   const averageScore = filteredProspectCount
     ? Math.round(results.reduce((sum, location) => sum + Number(location.score || 0), 0) / filteredProspectCount)
     : 0;
-  const hasSearchCategory = selectedTypes.length > 0 || String(searchValues.customIndustry || "").trim().length > 0;
+  const hasSearchCategory = String(searchValues.customIndustry || "").trim().length > 0;
   const countryOptions = useMemo(() => locationLibrary?.Country?.getAllCountries?.() || [], [locationLibrary]);
   const countryInput = String(searchValues.country || "").trim().toLowerCase();
   const cityInput = String(searchValues.city || "").trim().toLowerCase();
+  const activeCustomIndustryQuery = String(searchValues.customIndustry || "").split(",").pop().trim().toLowerCase();
+  const matchingIndustryOptions = useMemo(() => {
+    return outboundIndustrySuggestions
+      .filter(industry => !activeCustomIndustryQuery || industry.toLowerCase().includes(activeCustomIndustryQuery))
+      .slice(0, 10);
+  }, [activeCustomIndustryQuery]);
   const matchingCountryOptions = useMemo(() => {
     if (!countryInput) return countryOptions.slice(0, 20);
     return countryOptions
@@ -13400,20 +13596,29 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       .catch(() => setLocationLibrary(null));
   }, [locationLibrary]);
 
-  const executeSearch = useCallback(async (values = searchValues, types = selectedTypes, { silent = false } = {}) => {
+  useEffect(() => {
+    if (!mapFullscreen) return undefined;
+    const closeOnEscape = event => {
+      if (event.key === "Escape") setMapFullscreen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [mapFullscreen]);
+
+  const executeSearch = useCallback(async (values = searchValues, { silent = false } = {}) => {
     setSearchStatus("searching");
     setSearchError("");
     const customIndustryQueries = String(values.customIndustry || "")
       .split(",")
       .map(value => value.trim())
       .filter(Boolean);
-    if (!types.length && !customIndustryQueries.length) {
+    if (!customIndustryQueries.length) {
       setResults([]);
       setActiveLocationId("");
-      setResultSource("No category selected");
+      setResultSource("No search entered");
       setCoverageSummary(null);
       setSearchStatus("idle");
-      setSearchError(silent ? "" : "Choose at least one industry filter or enter a custom industry.");
+      setSearchError(silent ? "" : "Enter what you want to find, such as cafes, Starbucks, convenience stores, or restaurants.");
       return;
     }
     try {
@@ -13424,7 +13629,6 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
           city: values.city,
           country: values.country,
           postcode: values.postcode,
-          placeTypes: types,
           customIndustryQueries,
         }),
       });
@@ -13438,7 +13642,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       setCoverageSummary(payload.coverage || null);
       setSearchStatus("ready");
     } catch (error) {
-      const nextResults = createLockerSearchResults({ ...values, selectedTypes: types });
+      const nextResults = createLockerSearchResults(values);
       setResults(nextResults);
       setActiveLocationId(nextResults[0]?.id || "");
       setSelectedLocationIds([]);
@@ -13447,23 +13651,33 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       setSearchError(silent ? "" : error?.message || "Google Places is not connected yet.");
       setSearchStatus("demo");
     }
-  }, [searchValues, selectedTypes]);
+  }, [searchValues]);
 
   useEffect(() => {
     if (autoSearchStartedRef.current) return;
     autoSearchStartedRef.current = true;
-    executeSearch(searchValues, selectedTypes, { silent: true });
-  }, [executeSearch, searchValues, selectedTypes]);
+    executeSearch(searchValues, { silent: true });
+  }, [executeSearch, searchValues]);
 
   async function runSearch(event) {
     event.preventDefault();
-    await executeSearch(searchValues, selectedTypes);
+    await executeSearch(searchValues);
   }
 
-  function toggleType(type) {
-    setSelectedTypes(current => current.includes(type)
-      ? current.filter(item => item !== type)
-      : [...current, type]);
+  function toggleQuickSearch(query) {
+    const queryKey = normalizeLookupValue(query).toLowerCase();
+    if (!queryKey) return;
+    setSearchValues(current => {
+      const currentQueries = String(current.customIndustry || "")
+        .split(",")
+        .map(value => value.trim())
+        .filter(Boolean);
+      const hasQuery = currentQueries.some(value => value.toLowerCase() === queryKey);
+      const nextQueries = hasQuery
+        ? currentQueries.filter(value => value.toLowerCase() !== queryKey)
+        : [...currentQueries, query];
+      return { ...current, customIndustry: nextQueries.join(", ") };
+    });
   }
 
   const toggleLocationSelection = useCallback((locationId) => {
@@ -13498,7 +13712,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
         area: [searchValues.city, searchValues.postcode, searchValues.country].map(normalizeLookupValue).filter(Boolean).join(", "),
         locationCount: cleanLocations.length,
         includesAnnotatedMap: true,
-        note: "A Locker Finder visual report was generated for this saved list from the current map view.",
+        note: "A Location Finder visual report was generated for this saved list from the current map view.",
       } : null;
       let savedList;
       if (existingList) {
@@ -13524,7 +13738,6 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
             country: searchValues.country,
             postcode: searchValues.postcode,
             customIndustry: searchValues.customIndustry,
-            placeTypes: selectedTypes,
             clientId: activeClient?.id !== "none" ? activeClient?.id || "" : "",
             visualReport: visualReportMetadata,
           },
@@ -13589,7 +13802,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       const areaName = [searchValues.city, searchValues.postcode, searchValues.country].map(normalizeLookupValue).filter(Boolean).join(" ");
       const filenameBase = sanitizeExportFilename(`${areaName || "locker-finder"}-visual-report-${timestamp.toISOString().slice(0, 10)}`, "locker-finder-visual-report", "html").replace(/\.html$/i, "");
       const html = buildLockerFinderReportHtml({
-        title: `${searchValues.city || "Target area"} Locker Finder Report`,
+        title: `${searchValues.city || "Target area"} Location Finder Report`,
         mapImage,
         locations: cleanLocations,
         searchValues,
@@ -13607,9 +13820,9 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
   return (
     <>
       <PageHeader
-        eyebrow="Locker Finder"
-        title="Parcel locker location finder"
-        description="Find convenience-led host locations for Quadient Parcel Pending outreach, then save the strongest places to a call list."
+        eyebrow="Location Finder"
+        title="Outbound location finder"
+        description="Find restaurants, cafes, branches, venues, and other local business locations by area, then save the strongest places to a call list."
       >
         <StatusBadge tone={resultSource === "Google Places" ? "success" : "neutral"}>
           {resultSource === "Google Places" ? "Google Places live" : resultSource}
@@ -13620,8 +13833,8 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
         <div>
           <span className="locker-hero-icon"><Earth size={24} /></span>
           <div>
-            <h2>Map-led host discovery</h2>
-            <p>Search target cities, segment by host industry, inspect place data, and save call-ready prospects with postcode or eircode included.</p>
+            <h2>Market-to-meeting territory builder</h2>
+            <p>Size branch-heavy markets, identify high-fit locations, and turn local business data into BDR-ready call lists for hospitality, retail, and field-led sales motions.</p>
           </div>
         </div>
         <div className="locker-hero-stats">
@@ -13631,7 +13844,19 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
         </div>
       </section>
 
-      <form className="locker-search-panel" onSubmit={runSearch}>
+      <form className="locker-search-panel unified-location-search-panel" onSubmit={runSearch}>
+        <label className="location-query-field">
+          <span>What to find</span>
+          <input
+            list="locker-industry-options"
+            value={searchValues.customIndustry}
+            onChange={event => setSearchValues(current => ({ ...current, customIndustry: event.target.value }))}
+            placeholder="Cafes, Starbucks, convenience stores, restaurants"
+          />
+        </label>
+        <datalist id="locker-industry-options">
+          {matchingIndustryOptions.map(industry => <option key={industry} value={industry} />)}
+        </datalist>
         <label>
           <span>Country</span>
           <input
@@ -13642,7 +13867,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
               ensureLocationLibrary();
               setSearchValues(current => ({ ...current, country: event.target.value }));
             }}
-            placeholder="United Kingdom"
+            placeholder="United States, United Kingdom"
           />
         </label>
         <datalist id="locker-country-options">
@@ -13651,7 +13876,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
           ))}
         </datalist>
         <label>
-          <span>City / target area</span>
+          <span>City / state / target area</span>
           <input
             list="locker-city-options"
             value={searchValues.city}
@@ -13660,7 +13885,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
               ensureLocationLibrary();
               setSearchValues(current => ({ ...current, city: event.target.value }));
             }}
-            placeholder="London, London Greenwood"
+            placeholder="London, California, Texas"
           />
         </label>
         <datalist id="locker-city-options">
@@ -13669,18 +13894,36 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
           ))}
         </datalist>
         <label>
-          <span>Postcode / Eircode area</span>
+          <span>Postcode / Eircode</span>
           <input value={searchValues.postcode} onChange={event => setSearchValues(current => ({ ...current, postcode: event.target.value }))} placeholder="NW1, SE1, D01" />
-        </label>
-        <label>
-          <span>Custom industry / location type</span>
-          <input value={searchValues.customIndustry} onChange={event => setSearchValues(current => ({ ...current, customIndustry: event.target.value }))} placeholder="Gyms, laundrettes, universities" />
         </label>
         <button className="primary-button" type="submit" disabled={!hasSearchCategory || searchStatus === "searching"}>
           {searchStatus === "searching" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Search size={16} />}
           {searchStatus === "searching" ? "Searching" : "Search places"}
         </button>
       </form>
+      <div className="location-quick-search-row" aria-label="Quick searches">
+        <span>Quick searches</span>
+        <div>
+          {locationFinderQuickSearches.map(query => {
+            const selectedQueries = String(searchValues.customIndustry || "")
+              .split(",")
+              .map(value => value.trim().toLowerCase())
+              .filter(Boolean);
+            const isActive = selectedQueries.includes(query.toLowerCase());
+            return (
+              <button
+                key={query}
+                className={isActive ? "active" : ""}
+                type="button"
+                onClick={() => toggleQuickSearch(query)}
+              >
+                {query}
+              </button>
+            );
+          })}
+        </div>
+      </div>
       {resultSource === "Google Places" && coverageSummary?.mode === "country_area_expansion" ? (
         <div className="locker-api-note">
           <strong>Country coverage search.</strong>
@@ -13695,23 +13938,10 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       ) : null}
       {searchError ? (
         <div className="locker-api-note">
-          <strong>{hasSearchCategory ? "Search notice." : "Choose a category."}</strong>
+          <strong>{hasSearchCategory ? "Search notice." : "Enter a search."}</strong>
           <span>{searchError}</span>
         </div>
       ) : null}
-
-      <div className="locker-type-strip" aria-label="Host industry filters">
-        {lockerFinderIndustries.map(industry => (
-          <button
-            key={industry.id}
-            className={selectedTypes.includes(industry.id) ? "active" : ""}
-            type="button"
-            onClick={() => toggleType(industry.id)}
-          >
-            {industry.label}
-          </button>
-        ))}
-      </div>
 
       <section className="locker-list-target-panel">
         <div>
@@ -13755,7 +13985,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       ) : null}
 
       <div className="locker-workspace">
-        <section className="locker-map-panel" aria-label="Candidate map">
+        <section className={`locker-map-panel ${mapFullscreen ? "fullscreen" : ""}`} aria-label="Candidate map">
           <div className="locker-map-toolbar">
             <div>
               <strong>{searchValues.city || "Target city"}</strong>
@@ -13846,6 +14076,9 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
             drawingEnabled={drawingEnabled}
             annotationColor={annotationColor}
             clearDrawingSignal={clearDrawingSignal}
+            resizeSignal={mapFullscreen ? 1 : 0}
+            fullscreen={mapFullscreen}
+            onToggleFullscreen={() => setMapFullscreen(value => !value)}
           />
           {!results.length ? (
             <div className="locker-map-empty">
@@ -14884,6 +15117,18 @@ function HomePage({ isDark, onThemeToggle, onAuthenticate, user, onBackToWorkspa
   );
 }
 
+function ProspectIqLoadingScreen({ isDark, message = "Loading ProspectIQ", detail = "Preparing your workspace" }) {
+  return (
+    <div className={`auth-app app-loading-screen ${isDark ? "dark" : "light"}`} role="status" aria-live="polite">
+      <div className="app-loading-card">
+        <LoaderCircle className="button-spinner" size={24} aria-hidden="true" />
+        <strong>{message}</strong>
+        <span>{detail}</span>
+      </div>
+    </div>
+  );
+}
+
 function RightDrawer({ open, isDark, onThemeToggle, onOpenHome, onLogout, loggingOut }) {
   if (!open) return null;
 
@@ -14984,13 +15229,13 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
     case "campaign":
       return { clientId, name: "", channel: "Research-led outbound", status: "active", nextAction: "Define company focus and first call block", memberIds: [], imageUrl: "", imagePath: "", imageName: "" };
     case "campaign-company":
-      return { clientId, campaignId: context.campaignId || "", mode: "existing", search: "", selectedCompanyIds: [], importRows: [], name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || "Lead In", status: "New", nextAction: "Map buying committee", insight: "" };
+      return { clientId, campaignId: context.campaignId || "", mode: "existing", search: "", selectedCompanyIds: [], importRows: [], name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || pipelineColumns[0].name, status: "New", nextAction: "Map buying committee", insight: "" };
     case "account":
-      return { clientId, name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || "Lead In", status: "New", nextAction: "Map buying committee", insight: "" };
+      return { clientId, name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || pipelineColumns[0].name, status: "New", nextAction: "Map buying committee", insight: "" };
     case "contact":
       return { accountId, accountName: data.accounts.find(account => account.id === accountId)?.name || "", name: "", role: "", email: "", mobile: "", directDial: "", status: "New" };
     case "deal":
-      return { accountId, contactId, stage: "lead", value: "0", due: "Today", owner: "Workspace user" };
+      return { accountId, contactId, stage: pipelineColumns[0].id, value: "0", due: "Today", owner: "Workspace user" };
     case "call":
       return { contactId, outcome: "Connected", notes: "" };
     case "file":
@@ -16771,9 +17016,7 @@ export default function App() {
   }
 
   if (!authReady) {
-    return (
-      <div className={`auth-app initial-auth-hold ${isDark ? "dark" : "light"}`} aria-hidden="true" />
-    );
+    return <ProspectIqLoadingScreen isDark={isDark} />;
   }
 
   if (!user) {
@@ -17444,7 +17687,7 @@ export default function App() {
         name: companyName,
         domain: "No domain",
         owner: "Workspace user",
-        stage: current.pipelineStages?.[0]?.name || "Lead In",
+        stage: current.pipelineStages?.[0]?.name || pipelineColumns[0].name,
         status: "New",
         industry: "Unspecified",
         location: normalizeLookupValue(lead.location) || "Unspecified",
@@ -17491,8 +17734,9 @@ export default function App() {
   }
 
   async function handleMovePipelineItem(type, id, stage) {
-    const normalizedStage = pipelineStageIdForValue(stage, crmData.pipelineStages || pipelineColumns);
-    const column = (crmData.pipelineStages || pipelineColumns).find(item => item.id === normalizedStage);
+    const activeStages = normalizePipelineStages(crmData.pipelineStages || pipelineColumns);
+    const normalizedStage = pipelineStageIdForValue(stage, activeStages);
+    const column = activeStages.find(item => item.id === normalizedStage);
 
     if (type === "company") {
       const account = crmData.accounts.find(item => item.id === id);
@@ -17554,7 +17798,7 @@ export default function App() {
         location: normalizeLookupValue(row.location) || "Unspecified",
         employees: normalizeLookupValue(row.employees) || "Unknown",
         value: parseImportNumber(row.value),
-        stage: normalizeLookupValue(row.stage) || crmData.pipelineStages?.[0]?.name || "Lead In",
+        stage: normalizeLookupValue(row.stage) || crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
         status: normalizeLookupValue(row.status) || "New",
         nextAction: normalizeLookupValue(row.nextAction) || "Map buying committee",
         insight: normalizeLookupValue(row.insight) || `Imported from ${row.sourceFile || "CSV"}.`,
@@ -17685,7 +17929,7 @@ export default function App() {
       location: event.rawData?.geography || "Unspecified",
       employees: "Unknown",
       value: 0,
-      stage: "Lead In",
+      stage: pipelineColumns[0].name,
       status: "New",
       nextAction: `Review intent signal: ${titleCase(String(event.eventType || "event").replaceAll("_", " "))}`,
       insight: event.summary || event.title || "Promoted from Intent Research.",
@@ -17706,7 +17950,7 @@ export default function App() {
       domain: event.companyDomain || extractDomain(event.companyWebsite) || "No domain",
       website: event.companyWebsite || "",
       owner: "Workspace user",
-      stage: "lead",
+      stage: pipelineColumns[0].id,
       status: "New",
       industry: event.rawData?.industry || "Unspecified",
       location: event.rawData?.geography || "Unspecified",
@@ -17755,7 +17999,7 @@ export default function App() {
       mobile: person.phone || "",
       directDial: person.phone || "",
       status: "New",
-      stage: "lead",
+      stage: pipelineColumns[0].id,
     });
     const { data, error } = await supabase
       .from("intent_people")
@@ -17783,7 +18027,7 @@ export default function App() {
       role: person.title || "",
       linkedin: person.linkedinUrl || "",
       status: "New",
-      stage: "lead",
+      stage: pipelineColumns[0].id,
       owner: "Workspace user",
       lastTouch: "Promoted from Intent Research",
     };
@@ -17803,12 +18047,14 @@ export default function App() {
     return { companyId };
   }
 
-  function handleUpdatePipelineStages(stages) {
+  async function handleUpdatePipelineStages(stages) {
+    const savedStages = dataOrgId ? await saveSharedPipelineStages(stages) : normalizePipelineStages(stages);
     updateData(current => ({
       ...current,
-      pipelineStages: stages,
-      activities: [makeActivity("Pipeline", "Pipeline stages renamed", "Workspace"), ...current.activities],
+      pipelineStages: savedStages,
+      activities: [makeActivity("Pipeline", "Pipeline stages updated", "Workspace"), ...current.activities],
     }));
+    return savedStages;
   }
 
   async function handleWorkflowSubmit(type, values, context = {}) {
@@ -17853,7 +18099,7 @@ export default function App() {
             location: values.location || "Unspecified",
             employees: values.employees || "Unknown",
             value: Number(values.value) || 0,
-            stage: values.stage || "Lead In",
+            stage: values.stage || pipelineColumns[0].name,
             status: values.status || "New",
             nextAction: values.nextAction || "Map buying committee",
             insight: values.insight || "Research signal will be added by the team.",
@@ -17865,7 +18111,7 @@ export default function App() {
             name: accountName,
             domain: values.domain || "No domain",
             owner: "Workspace user",
-            stage: values.stage || "Lead In",
+            stage: values.stage || pipelineColumns[0].name,
             status: values.status || "New",
             industry: values.industry || "Unspecified",
             location: values.location || "Unspecified",
@@ -17911,7 +18157,7 @@ export default function App() {
             location: normalizeLookupValue(row.location) || "Unspecified",
             employees: normalizeLookupValue(row.employees) || "Unknown",
             value: parseImportNumber(row.value),
-            stage: normalizeLookupValue(row.stage) || crmData.pipelineStages?.[0]?.name || "Lead In",
+            stage: normalizeLookupValue(row.stage) || crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
             status: normalizeLookupValue(row.status) || "New",
             nextAction: normalizeLookupValue(row.nextAction) || "Map buying committee",
             insight: normalizeLookupValue(row.insight) || `Imported from ${row.sourceFile || "CSV"}.`,
@@ -18030,7 +18276,7 @@ export default function App() {
         location: values.location || "Unspecified",
         employees: values.employees || "Unknown",
         value: Number(values.value) || 0,
-        stage: values.stage || "Lead In",
+        stage: values.stage || pipelineColumns[0].name,
         status: values.status || "New",
         nextAction: values.nextAction || "Map buying committee",
         insight: values.insight || "Research signal will be added by the team.",
@@ -18054,7 +18300,7 @@ export default function App() {
           location: "Unspecified",
           employees: "Unknown",
           value: 0,
-          stage: crmData.pipelineStages?.[0]?.name || "Lead In",
+          stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
           status: "New",
           nextAction: "Review new contact",
           insight: "Created from contact form.",
@@ -18066,7 +18312,7 @@ export default function App() {
           name: accountName,
           domain: "No domain",
           owner: "Workspace user",
-          stage: crmData.pipelineStages?.[0]?.name || "Lead In",
+          stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
           status: "New",
           industry: "Unspecified",
           location: "Unspecified",
@@ -18365,7 +18611,7 @@ export default function App() {
             name: values.name.trim() || "Untitled company",
             domain: values.domain || "No domain",
             owner: "Workspace user",
-            stage: values.stage || "Lead In",
+            stage: values.stage || pipelineColumns[0].name,
             status: values.status || "New",
             industry: values.industry || "Unspecified",
             location: values.location || "Unspecified",
@@ -18409,7 +18655,7 @@ export default function App() {
             name: accountName,
             domain: "No domain",
             owner: "Workspace user",
-            stage: current.pipelineStages?.[0]?.name || "Lead In",
+            stage: current.pipelineStages?.[0]?.name || pipelineColumns[0].name,
             status: "New",
             industry: "Unspecified",
             location: "Unspecified",

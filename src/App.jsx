@@ -52,6 +52,7 @@ import {
   Target,
   Trash2,
   Upload,
+  UserPlus,
   UserRound,
   Users,
   X,
@@ -59,7 +60,6 @@ import {
 import aircallLogoUrl from "./assets/aircall.png";
 import cognismLogoUrl from "./assets/cognism.png";
 import hubspotLogoUrl from "./assets/hubspot.png";
-import prospectingJourneyUrl from "./assets/prospecting-journey.png";
 import logoUrl from "../images/paceops-logo.jpeg";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -756,6 +756,8 @@ function createInitialCrmData() {
     lockerProspects: cloneRecords(initialLockerProspects),
     integrations: hydrateIntegrations(),
     pipelineStages: cloneRecords(pipelineColumns),
+    pipelineBoards: [],
+    pipelineBoardInvites: [],
   };
 }
 
@@ -794,6 +796,8 @@ function normalizeCrmData(data) {
     lockerProspects: Array.isArray(data.lockerProspects) ? data.lockerProspects : initial.lockerProspects,
     integrations: hydrateIntegrations(Array.isArray(data.integrations) ? data.integrations : []),
     pipelineStages: normalizePipelineStages(data.pipelineStages || initial.pipelineStages),
+    pipelineBoards: Array.isArray(data.pipelineBoards) ? data.pipelineBoards : initial.pipelineBoards,
+    pipelineBoardInvites: Array.isArray(data.pipelineBoardInvites) ? data.pipelineBoardInvites : initial.pipelineBoardInvites,
   };
 }
 
@@ -843,6 +847,10 @@ function findRecordOwnerUser(record = {}, members = [], workspaceUsers = []) {
     || workspaceUserById.get(record.ownerId)
     || (members || []).map(member => workspaceUserById.get(member.user_id || member.userId)).find(Boolean)
     || null;
+}
+
+function isMissingRelationError(error) {
+  return error?.code === "42P01" || /relation .* does not exist/i.test(error?.message || "");
 }
 
 async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
@@ -922,10 +930,12 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
     supabase.rpc("get_shared_pipeline_stages"),
   ]);
 
+  if (clientMembersResult.error && !isMissingRelationError(clientMembersResult.error)) console.error("Could not load client members", clientMembersResult.error);
+  if (campaignMembersResult.error && !isMissingRelationError(campaignMembersResult.error)) console.error("Could not load campaign members", campaignMembersResult.error);
   if (actionNotesResult.error) console.error("Could not load action notes", actionNotesResult.error);
   if (actionNoteContactsResult.error) console.error("Could not load action note contacts", actionNoteContactsResult.error);
   if (pipelineStagesResult.error) console.error("Could not load pipeline stages", pipelineStagesResult.error);
-  const results = [clientsResult, campaignsResult, companiesResult, contactsResult, campaignTargetsResult, clientMembersResult, campaignMembersResult, meetingsResult];
+  const results = [clientsResult, campaignsResult, companiesResult, contactsResult, campaignTargetsResult, meetingsResult];
   const failedResult = results.find(result => result.error);
   if (failedResult?.error) throw failedResult.error;
 
@@ -1241,6 +1251,7 @@ async function replaceRelationalClientMembers(organizationId, clientId, memberId
     .eq("organization_id", organizationId)
     .eq("client_id", clientId);
 
+  if (isMissingRelationError(deleteError)) return;
   if (deleteError) throw deleteError;
   if (!nextMemberIds.length) return;
 
@@ -1251,6 +1262,7 @@ async function replaceRelationalClientMembers(organizationId, clientId, memberId
     role: "member",
   }));
   const { error } = await supabase.from("client_members").insert(rows);
+  if (isMissingRelationError(error)) return;
   if (error) throw error;
 }
 
@@ -1263,6 +1275,7 @@ async function replaceRelationalCampaignMembers(organizationId, campaign, member
     .eq("organization_id", organizationId)
     .eq("campaign_id", campaign.id);
 
+  if (isMissingRelationError(deleteError)) return;
   if (deleteError) throw deleteError;
   if (!nextMemberIds.length) return;
 
@@ -1274,6 +1287,7 @@ async function replaceRelationalCampaignMembers(organizationId, campaign, member
     role: "member",
   }));
   const { error } = await supabase.from("campaign_members").insert(rows);
+  if (isMissingRelationError(error)) return;
   if (error) throw error;
 }
 
@@ -1933,14 +1947,27 @@ function scopeCrmDataForWorkspaceUser(data, workspaceUser = {}, accessState = {}
     meetings: [],
     researchItems: [],
     scriptItems: [],
-    actionNotes: [],
-    weeklyReports: [],
-    lockerProspects: [],
+      actionNotes: [],
+      weeklyReports: [],
+      lockerProspects: [],
+      pipelineBoards: [],
+      pipelineBoardInvites: [],
   };
   }
 
+  const invitedCampaignIds = new Set((data.pipelineBoardInvites || [])
+    .filter(invite => invite.inviteeId === userId && invite.status === "pending")
+    .map(invite => invite.campaignId)
+    .filter(Boolean));
+  const boardCampaignIds = new Set((data.pipelineBoards || [])
+    .filter(board => recordHasMember(board, userId) || board.createdBy === userId)
+    .map(board => board.campaignId)
+    .filter(Boolean));
   const campaignIds = new Set((data.campaigns || [])
-    .filter(campaign => normalizeCampaignStatus(campaign.status) === "active" && recordHasMember(campaign, userId))
+    .filter(campaign => (
+      normalizeCampaignStatus(campaign.status) === "active"
+      && (recordHasMember(campaign, userId) || invitedCampaignIds.has(campaign.id) || boardCampaignIds.has(campaign.id))
+    ))
     .map(campaign => campaign.id));
   const directClientIds = new Set((data.clients || []).filter(client => recordHasMember(client, userId)).map(client => client.id));
   const clientIds = new Set([
@@ -1984,6 +2011,8 @@ function scopeCrmDataForWorkspaceUser(data, workspaceUser = {}, accessState = {}
     )),
     weeklyReports: (data.weeklyReports || []).filter(report => clientIds.has(report.clientId) || campaignIds.has(report.campaignId)),
     lockerProspects: (data.lockerProspects || []).filter(prospect => !prospect.clientId || clientIds.has(prospect.clientId)),
+    pipelineBoards: (data.pipelineBoards || []).filter(board => campaignIds.has(board.campaignId) && (recordHasMember(board, userId) || board.createdBy === userId)),
+    pipelineBoardInvites: (data.pipelineBoardInvites || []).filter(invite => invite.inviteeId === userId || invite.inviterId === userId),
   });
 }
 
@@ -3416,12 +3445,29 @@ function TopBar({
   effectiveAccess,
 }) {
   const { clients, campaigns } = useCrmData();
+  const searchRef = useRef(null);
   const activeClientCampaigns = activeClient?.id && activeClient.id !== "none"
     ? campaigns.filter(campaign => campaign.clientId === activeClient.id)
     : [];
   const campaignSelectValue = activeClientCampaigns.some(campaign => campaign.id === activeCampaign.id)
     ? activeCampaign.id
     : "none";
+
+  useEffect(() => {
+    if (!search) return undefined;
+    function handlePointerDown(event) {
+      if (searchRef.current && !searchRef.current.contains(event.target)) onSearchChange("");
+    }
+    function handleKeyDown(event) {
+      if (event.key === "Escape") onSearchChange("");
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onSearchChange, search]);
 
   return (
     <header className="topbar">
@@ -3456,7 +3502,7 @@ function TopBar({
         </div>
       </div>
 
-      <div className="global-search">
+      <div className="global-search" ref={searchRef}>
         <Search size={18} />
         <input
           value={search}
@@ -3856,7 +3902,7 @@ function ClientMembershipModal({ client, campaigns, workspaceUsers, currentUserI
   );
 }
 
-function CampaignMembershipModal({ campaign, workspaceUsers, currentUserId = "", onClose, onSave }) {
+function CampaignMembershipModal({ campaign, workspaceUsers, currentUserId = "", scopeLabel = "Campaign", canGrantAccess = true, onClose, onSave }) {
   const [query, setQuery] = useState("");
   const [campaignMemberIds, setCampaignMemberIds] = useState(() => {
     const ids = Array.isArray(campaign.memberIds) ? campaign.memberIds : [];
@@ -3870,6 +3916,7 @@ function CampaignMembershipModal({ campaign, workspaceUsers, currentUserId = "",
   });
 
   function toggleCampaignMember(userId) {
+    if (!canGrantAccess && userId !== currentUserId) return;
     setCampaignMemberIds(current => current.includes(userId)
       ? current.filter(id => id !== userId)
       : [...current, userId]);
@@ -3882,7 +3929,7 @@ function CampaignMembershipModal({ campaign, workspaceUsers, currentUserId = "",
       <div className="workflow-modal membership-modal" role="dialog" aria-modal="true" aria-labelledby="campaign-members-title">
         <div className="modal-header">
           <div>
-            <span className="eyebrow">Campaign access</span>
+            <span className="eyebrow">{scopeLabel} access</span>
             <h2 id="campaign-members-title">{campaign.name}</h2>
           </div>
           <button className="icon-action" type="button" onClick={onClose} aria-label="Close">
@@ -3891,7 +3938,7 @@ function CampaignMembershipModal({ campaign, workspaceUsers, currentUserId = "",
         </div>
         <div className="membership-summary-strip">
           <div>
-            <span>Campaign members</span>
+            <span>{scopeLabel} members</span>
             <strong>{campaignMemberIds.length}</strong>
           </div>
           <div>
@@ -3900,7 +3947,7 @@ function CampaignMembershipModal({ campaign, workspaceUsers, currentUserId = "",
           </div>
           <div>
             <span>Scope</span>
-            <strong>Campaign</strong>
+            <strong>{scopeLabel}</strong>
           </div>
         </div>
         <div className="membership-toolbar">
@@ -3914,6 +3961,7 @@ function CampaignMembershipModal({ campaign, workspaceUsers, currentUserId = "",
           <div className="membership-matrix-body">
             {filteredUsers.map(user => {
               const selected = campaignMemberIds.includes(user.id);
+              const canToggleUser = canGrantAccess || user.id === currentUserId;
               return (
                 <article key={user.id} className="membership-member-row">
                   <div className="membership-person">
@@ -3927,17 +3975,18 @@ function CampaignMembershipModal({ campaign, workspaceUsers, currentUserId = "",
                   <div className="membership-access-controls">
                     <div className="membership-control-row">
                       <div>
-                        <strong>Can work on this campaign</strong>
+                        <strong>Can work on this {scopeLabel.toLowerCase()}</strong>
                         <small>{campaign.name}</small>
                       </div>
                       <button
                         className={`membership-toggle ${selected ? "selected" : ""}`}
                         type="button"
                         aria-pressed={selected}
+                        disabled={!canToggleUser}
                         onClick={() => toggleCampaignMember(user.id)}
                       >
                         {selected ? <CheckCircle2 size={16} /> : <Circle size={16} />}
-                        {selected ? "Yes" : "No"}
+                        {selected ? (user.id === currentUserId && !canGrantAccess ? "Remove me" : "Yes") : "No"}
                       </button>
                     </div>
                   </div>
@@ -7694,9 +7743,29 @@ function ActionNoteManager({ account, contacts = [], actionNotes = [], activeCam
   );
 }
 
-function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenContact, onMovePipelineItem, onUpdateStages, onSaveActionNote, onDeleteActionNote }) {
-  const { accounts, contacts, pipelineStages, actionNotes = [] } = useCrmData();
+function PipelinePage({
+  activeClient,
+  activeCampaign,
+  currentUser,
+  currentUserId = "",
+  workspaceUsers = [],
+  canManageCrmRecords = false,
+  onOpenAccount,
+  onOpenContact,
+  onMovePipelineItem,
+  onUpdateStages,
+  onSaveActionNote,
+  onDeleteActionNote,
+  onManageCampaignMembers,
+  onCreatePipelineBoard,
+  onUpdatePipelineBoardMembers,
+  onCreatePipelineBoardInvite,
+  onResolvePipelineBoardInvite,
+}) {
+  const { accounts, contacts, pipelineStages, actionNotes = [], pipelineBoards = [], pipelineBoardInvites = [] } = useCrmData();
   const activeStages = normalizePipelineStages(pipelineStages || pipelineColumns);
+  const pipelineBoardRef = useRef(null);
+  const [activePipelineBoardId, setActivePipelineBoardId] = useState("default");
   const [pipelineMode, setPipelineMode] = useState("companies");
   const [draggedItem, setDraggedItem] = useState(null);
   const [dropStage, setDropStage] = useState("");
@@ -7705,9 +7774,40 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
   const [stageSaveStatus, setStageSaveStatus] = useState("idle");
   const [stageSaveError, setStageSaveError] = useState("");
   const [selectedItem, setSelectedItem] = useState(null);
+  const [pipelineSearch, setPipelineSearch] = useState("");
+  const [managingBoardAccess, setManagingBoardAccess] = useState(false);
+  const [duplicateStatus, setDuplicateStatus] = useState("idle");
+  const [duplicateError, setDuplicateError] = useState("");
+  const [namingBoard, setNamingBoard] = useState(false);
+  const [draftBoardName, setDraftBoardName] = useState("");
+  const [invitingBoardUsers, setInvitingBoardUsers] = useState(false);
+  const [reviewingBoardInvites, setReviewingBoardInvites] = useState(false);
+  const [inviteError, setInviteError] = useState("");
+
+  useEffect(() => {
+    setActivePipelineBoardId("default");
+    setManagingBoardAccess(false);
+    setNamingBoard(false);
+  }, [activeCampaign?.id]);
+
   if (activeClient?.id === "none" || activeCampaign?.id === "none") {
     return <ScopeSelectionPrompt />;
   }
+  const defaultPipelineBoard = {
+    id: "default",
+    name: activeCampaign?.name ? `${activeCampaign.name} board` : "Campaign board",
+    memberIds: Array.isArray(activeCampaign?.memberIds) ? activeCampaign.memberIds : [],
+    createdBy: activeCampaign?.createdBy || "",
+    isDefault: true,
+  };
+  const boardCopies = (pipelineBoards || []).filter(board => (
+    board.campaignId === activeCampaign.id
+    && (canManageCrmRecords || board.createdBy === currentUserId || !Array.isArray(board.memberIds) || !board.memberIds.length || board.memberIds.includes(currentUserId))
+  ));
+  const pipelineBoardOptions = [defaultPipelineBoard, ...boardCopies];
+  const selectedPipelineBoard = pipelineBoardOptions.find(board => board.id === activePipelineBoardId) || defaultPipelineBoard;
+  const selectedBoardIsDefault = selectedPipelineBoard.id === "default";
+  const selectedBoardStageOverrides = selectedBoardIsDefault ? {} : (selectedPipelineBoard.stageOverrides || {});
   const campaignCompanyIds = new Set(Array.isArray(activeCampaign?.companyIds) ? activeCampaign.companyIds : []);
   const campaignContactIds = new Set(Array.isArray(activeCampaign?.contactIds) ? activeCampaign.contactIds : []);
   const clientAccounts = activeClient?.id && activeClient.id !== "none"
@@ -7721,13 +7821,65 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
     contact.clientId === activeClient?.id
     && (campaignContactIds.size ? campaignContactIds.has(contact.id) : scopedAccountIds.has(contact.accountId || contact.companyId))
   ));
+  function stageForBoardRecord(type, id, baseStage) {
+    return pipelineStageIdForValue(selectedBoardStageOverrides[`${type}:${id}`] || baseStage, activeStages);
+  }
+
   const records = pipelineMode === "companies"
-    ? scopedAccounts.map(account => ({ type: "company", id: account.id, stage: pipelineStageIdForValue(account.stage, activeStages), account }))
-    : scopedContacts.map(contact => ({ type: "contact", id: contact.id, stage: pipelineStageIdForValue(contact.stage, activeStages), contact, account: accounts.find(account => account.id === (contact.accountId || contact.companyId)) }));
+    ? scopedAccounts.map(account => ({ type: "company", id: account.id, stage: stageForBoardRecord("company", account.id, account.stage), account }))
+    : scopedContacts.map(contact => ({ type: "contact", id: contact.id, stage: stageForBoardRecord("contact", contact.id, contact.stage), contact, account: accounts.find(account => account.id === (contact.accountId || contact.companyId)) }));
+  const normalizedPipelineSearch = normalizeLookupValue(pipelineSearch).toLowerCase();
+  const visibleRecords = normalizedPipelineSearch
+    ? records.filter(record => {
+      const accountContacts = record.account ? contactsForAccount(record.account.id) : [];
+      const searchText = record.type === "company"
+        ? [
+          record.account.name,
+          record.account.domain,
+          record.account.industry,
+          record.account.location,
+          record.account.status,
+          record.account.nextAction,
+          record.account.insight,
+          ...accountContacts.flatMap(contact => [contact.name, contact.role, contact.email, contact.mobile, contact.directDial])
+        ]
+        : [
+          record.contact.name,
+          record.contact.role,
+          record.contact.email,
+          record.contact.mobile,
+          record.contact.directDial,
+          record.contact.status,
+          record.account?.name,
+          record.account?.domain,
+          record.account?.industry,
+          record.account?.location
+        ];
+      return searchText.some(value => normalizeLookupValue(value).toLowerCase().includes(normalizedPipelineSearch));
+    })
+    : records;
   const stageRecordCounts = records.reduce((counts, record) => {
     counts[record.stage] = (counts[record.stage] || 0) + 1;
     return counts;
   }, {});
+  const boardMembers = workspaceMembersForRecord(selectedPipelineBoard, workspaceUsers);
+  const userDisplayName = formatWorkspaceOwnerLabel(currentUser, "Workspace user");
+  const userRoleLabel = formatWorkspaceOwnerRoleLabel(currentUser, "");
+  const currentUserIsBoardMember = boardMembers.some(member => member.id === currentUserId);
+  const canGrantBoardAccess = selectedBoardIsDefault
+    ? Boolean(canManageCrmRecords && onManageCampaignMembers)
+    : Boolean((canManageCrmRecords || selectedPipelineBoard.createdBy === currentUserId) && onUpdatePipelineBoardMembers);
+  const canManageBoardAccess = Boolean(canGrantBoardAccess || currentUserIsBoardMember);
+  const canInviteBoardUsers = Boolean(!canGrantBoardAccess && currentUserIsBoardMember && onCreatePipelineBoardInvite);
+  const selectedBoardInviteKey = selectedBoardIsDefault ? `default:${activeCampaign.id}` : selectedPipelineBoard.id;
+  const pendingBoardInvites = (pipelineBoardInvites || []).filter(invite => (
+    invite.status === "pending"
+    && invite.inviteeId === currentUserId
+    && (invite.campaignId === activeCampaign.id || invite.clientId === activeClient.id)
+  ));
+  const selectedBoardPendingInviteIds = new Set((pipelineBoardInvites || [])
+    .filter(invite => invite.status === "pending" && invite.boardId === selectedBoardInviteKey)
+    .map(invite => invite.inviteeId));
 
   function contactsForAccount(accountId) {
     return contacts.filter(contact => (contact.accountId || contact.companyId) === accountId);
@@ -7747,6 +7899,23 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
   function removeDraftStage(stageId) {
     if (stageRecordCounts[stageId]) return;
     setDraftStages(current => current.length > 1 ? current.filter(stage => stage.id !== stageId) : current);
+  }
+
+  function autoScrollPipelineBoard(event) {
+    const board = pipelineBoardRef.current;
+    if (!board || !draggedItem) return;
+    const rect = board.getBoundingClientRect();
+    const edgeSize = Math.min(140, rect.width * 0.22);
+    const leftDistance = event.clientX - rect.left;
+    const rightDistance = rect.right - event.clientX;
+    const maxStep = 28;
+    let scrollStep = 0;
+    if (leftDistance < edgeSize) {
+      scrollStep = -Math.ceil(((edgeSize - leftDistance) / edgeSize) * maxStep);
+    } else if (rightDistance < edgeSize) {
+      scrollStep = Math.ceil(((edgeSize - rightDistance) / edgeSize) * maxStep);
+    }
+    if (scrollStep) board.scrollLeft += scrollStep;
   }
 
   async function saveStages() {
@@ -7770,6 +7939,65 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
     }
   }
 
+  async function duplicateBoard() {
+    if (!onCreatePipelineBoard || duplicateStatus === "saving") return;
+    const defaultName = `${selectedPipelineBoard.name || activeCampaign.name || "Pipeline board"} copy`;
+    setDraftBoardName(defaultName);
+    setDuplicateError("");
+    setNamingBoard(true);
+  }
+
+  async function createNamedBoard(event) {
+    event.preventDefault();
+    if (!onCreatePipelineBoard || duplicateStatus === "saving") return;
+    const name = normalizeLookupValue(draftBoardName);
+    if (!name) {
+      setDuplicateError("Name this board before creating it.");
+      return;
+    }
+    setDuplicateStatus("saving");
+    setDuplicateError("");
+    try {
+      const stageOverrides = Object.fromEntries(records.map(record => [`${record.type}:${record.id}`, record.stage]));
+      const savedBoard = await onCreatePipelineBoard({
+        name,
+        campaignId: activeCampaign.id,
+        clientId: activeCampaign.clientId || activeClient.id,
+        sourceBoardId: selectedBoardIsDefault ? "" : selectedPipelineBoard.id,
+        createdBy: currentUserId,
+        memberIds: uniqueIds([
+          ...(Array.isArray(selectedPipelineBoard.memberIds) ? selectedPipelineBoard.memberIds : []),
+          currentUserId,
+        ]),
+        stageOverrides,
+      });
+      if (savedBoard?.id) setActivePipelineBoardId(savedBoard.id);
+      setNamingBoard(false);
+      setDuplicateStatus("idle");
+    } catch (error) {
+      setDuplicateStatus("idle");
+      setDuplicateError(error?.message || "Could not duplicate this board.");
+    }
+  }
+
+  async function inviteExistingUserToBoard(userId) {
+    if (!onCreatePipelineBoardInvite || !userId) return;
+    setInviteError("");
+    try {
+      await onCreatePipelineBoardInvite({
+        boardId: selectedBoardInviteKey,
+        boardName: selectedPipelineBoard.name,
+        campaignId: activeCampaign.id,
+        clientId: activeClient.id,
+        isDefaultBoard: selectedBoardIsDefault,
+        inviteeId: userId,
+        inviterId: currentUserId,
+      });
+    } catch (error) {
+      setInviteError(error?.message || "Could not invite this user.");
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -7777,6 +8005,51 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
         title="Permission to Operate"
         description={`${activeClient?.name || "Client account"} pipeline${activeCampaign?.name && activeCampaign.id !== "none" ? ` for ${activeCampaign.name}` : ""}.`}
       >
+        <button className="secondary-button" type="button" onClick={duplicateBoard} disabled={duplicateStatus === "saving" || !onCreatePipelineBoard}>
+          <Copy size={16} />
+          {duplicateStatus === "saving" ? "Duplicating..." : "Duplicate board"}
+        </button>
+        <button className="secondary-button" type="button" onClick={() => setManagingBoardAccess(true)} disabled={!canManageBoardAccess}>
+          <Users size={16} />
+          Manage access
+        </button>
+        {canInviteBoardUsers ? (
+          <button className="secondary-button" type="button" onClick={() => setInvitingBoardUsers(true)}>
+            <UserPlus size={16} />
+            Invite users
+          </button>
+        ) : null}
+        <button className="secondary-button pipeline-invite-button" type="button" onClick={() => setReviewingBoardInvites(true)} disabled={!pendingBoardInvites.length}>
+          <Mail size={16} />
+          Invites
+          {pendingBoardInvites.length ? <span>{pendingBoardInvites.length}</span> : null}
+        </button>
+        <button className="secondary-button" type="button" onClick={() => {
+          if (!editingStages) {
+            setDraftStages(cloneRecords(activeStages));
+            setStageSaveError("");
+          }
+          setEditingStages(value => !value);
+        }}>
+          <Settings size={16} />
+          Stage settings
+        </button>
+      </PageHeader>
+      <section className="pipeline-collaboration-strip" aria-label="Pipeline board access">
+        <div>
+          <span className="eyebrow">Board access</span>
+          <strong>{boardMembers.length} collaborator{boardMembers.length === 1 ? "" : "s"}</strong>
+        </div>
+        <label className="pipeline-board-selector">
+          <span>Board</span>
+          <select value={selectedPipelineBoard.id} onChange={event => setActivePipelineBoardId(event.target.value)}>
+            {pipelineBoardOptions.map(board => <option key={board.id} value={board.id}>{board.name}</option>)}
+          </select>
+          <ChevronDown size={14} />
+        </label>
+      </section>
+      {duplicateError ? <div className="form-error">{duplicateError}</div> : null}
+      <div className="pipeline-board-toolbar">
         <div className="pipeline-mode-toggle" role="tablist" aria-label="Pipeline records">
           <button className={pipelineMode === "companies" ? "active" : ""} type="button" role="tab" aria-selected={pipelineMode === "companies"} onClick={() => {
             setPipelineMode("companies");
@@ -7793,17 +8066,25 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
             People
           </button>
         </div>
-        <button className="secondary-button" type="button" onClick={() => {
-          if (!editingStages) {
-            setDraftStages(cloneRecords(activeStages));
-            setStageSaveError("");
-          }
-          setEditingStages(value => !value);
-        }}>
-          <Settings size={16} />
-          Stage settings
-        </button>
-      </PageHeader>
+        <div className="pipeline-bottom-search" role="search" aria-label="Search pipeline">
+        <label>
+          <Search size={16} />
+          <input
+            type="search"
+            value={pipelineSearch}
+            onChange={event => setPipelineSearch(event.target.value)}
+            placeholder={`Search ${pipelineMode === "companies" ? "companies" : "people"} in this pipeline`}
+          />
+        </label>
+        <span className="pipeline-search-count">{visibleRecords.length} of {records.length}</span>
+        {pipelineSearch ? (
+          <button className="secondary-button" type="button" onClick={() => setPipelineSearch("")}>
+            <X size={16} />
+            Clear
+          </button>
+        ) : null}
+        </div>
+      </div>
       {editingStages ? (
         <section className="panel pipeline-settings-panel">
           <div className="panel-header">
@@ -7816,11 +8097,7 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
               Add stage
             </button>
           </div>
-          <div className="pipeline-alignment-layout">
-            <figure className="prospecting-journey-reference">
-              <img src={prospectingJourneyUrl} alt="The Prospecting Journey showing buyer behavior, PaceOps alignment, and selling behavior stages." />
-            </figure>
-            <div className="stage-editor-grid">
+          <div className="stage-editor-grid">
               {draftStages.map((stage, index) => {
                 const hasRecords = Boolean(stageRecordCounts[stage.id]);
                 return (
@@ -7843,7 +8120,6 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
                   </div>
                 );
               })}
-            </div>
           </div>
           {stageSaveError ? <div className="form-error">{stageSaveError}</div> : null}
           <div className="stage-editor-actions">
@@ -7858,9 +8134,13 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
           </div>
         </section>
       ) : null}
-      <div className="pipeline-board">
+      <div
+        ref={pipelineBoardRef}
+        className={`pipeline-board ${draggedItem ? "drag-active" : ""}`}
+        onDragOver={autoScrollPipelineBoard}
+      >
         {activeStages.map(column => {
-          const columnRecords = records.filter(record => record.stage === column.id);
+          const columnRecords = visibleRecords.filter(record => record.stage === column.id);
           return (
             <section
               key={column.id}
@@ -7880,7 +8160,7 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
                 const item = draggedItem || (type && id ? { type, id } : null);
                 setDraggedItem(null);
                 setDropStage("");
-                if (item?.id) onMovePipelineItem(item.type, item.id, column.id);
+                if (item?.id) onMovePipelineItem(item.type, item.id, column.id, selectedBoardIsDefault ? "" : selectedPipelineBoard.id);
               }}
             >
               <div className="pipeline-column-head">
@@ -8011,6 +8291,138 @@ function PipelinePage({ activeClient, activeCampaign, onOpenAccount, onOpenConta
               )}
             </div>
           </div>
+        </section>
+      ) : null}
+      {managingBoardAccess ? (
+        <CampaignMembershipModal
+          campaign={selectedBoardIsDefault ? activeCampaign : selectedPipelineBoard}
+          workspaceUsers={workspaceUsers}
+          currentUserId={currentUserId}
+          scopeLabel="Board"
+          canGrantAccess={canGrantBoardAccess}
+          onClose={() => setManagingBoardAccess(false)}
+          onSave={async values => {
+            if (selectedBoardIsDefault) {
+              await onManageCampaignMembers(activeCampaign, values);
+            } else {
+              await onUpdatePipelineBoardMembers(selectedPipelineBoard, values);
+            }
+            setManagingBoardAccess(false);
+          }}
+        />
+      ) : null}
+      {invitingBoardUsers ? (
+        <section className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) setInvitingBoardUsers(false);
+        }}>
+          <div className="workflow-modal membership-modal" role="dialog" aria-modal="true" aria-labelledby="pipeline-board-invite-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Board invite</span>
+                <h2 id="pipeline-board-invite-title">Invite existing users</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setInvitingBoardUsers(false)} aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="membership-matrix">
+              <div className="membership-matrix-body">
+                {(workspaceUsers || []).filter(user => !user.isTestAccount && user.id !== currentUserId).map(user => {
+                  const alreadyMember = boardMembers.some(member => member.id === user.id);
+                  const alreadyPending = selectedBoardPendingInviteIds.has(user.id);
+                  const disabled = alreadyMember || alreadyPending;
+                  return (
+                    <article key={user.id} className="membership-member-row">
+                      <div className="membership-person">
+                        <span className="record-avatar">{user.initials || accountInitial(user.name)}</span>
+                        <div>
+                          <strong>{user.name}</strong>
+                          <small>{user.email || formatRole(user.roleKey || user.role)}</small>
+                        </div>
+                        <StatusBadge>{alreadyMember ? "On board" : alreadyPending ? "Pending" : formatRole(user.roleKey || user.role)}</StatusBadge>
+                      </div>
+                      <button className="secondary-button" type="button" disabled={disabled} onClick={() => inviteExistingUserToBoard(user.id)}>
+                        <UserPlus size={16} />
+                        Invite
+                      </button>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+            {inviteError ? <div className="form-error">{inviteError}</div> : null}
+            <div className="modal-actions">
+              <button className="primary-button" type="button" onClick={() => setInvitingBoardUsers(false)}>Done</button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+      {reviewingBoardInvites ? (
+        <section className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget) setReviewingBoardInvites(false);
+        }}>
+          <div className="workflow-modal membership-modal" role="dialog" aria-modal="true" aria-labelledby="pipeline-board-inbox-title">
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Board invites</span>
+                <h2 id="pipeline-board-inbox-title">Accept board invites</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setReviewingBoardInvites(false)} aria-label="Close">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="membership-matrix">
+              <div className="membership-matrix-body">
+                {pendingBoardInvites.map(invite => (
+                  <article key={invite.id} className="membership-member-row">
+                    <div className="membership-person">
+                      <span className="record-avatar">{accountInitial(invite.boardName || "Board")}</span>
+                      <div>
+                        <strong>{invite.boardName || "Pipeline board"}</strong>
+                        <small>{activeCampaign.name}</small>
+                      </div>
+                      <StatusBadge>Pending</StatusBadge>
+                    </div>
+                    <div className="pipeline-invite-actions">
+                      <button className="secondary-button" type="button" onClick={() => onResolvePipelineBoardInvite(invite.id, "declined")}>Decline</button>
+                      <button className="primary-button" type="button" onClick={() => {
+                        onResolvePipelineBoardInvite(invite.id, "accepted");
+                        setActivePipelineBoardId(invite.isDefaultBoard ? "default" : invite.boardId);
+                      }}>Accept</button>
+                    </div>
+                  </article>
+                ))}
+                {!pendingBoardInvites.length ? <EmptyState icon={Mail} title="No board invites" text="Board invites from teammates will appear here." /> : null}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+      {namingBoard ? (
+        <section className="modal-backdrop" role="presentation" onMouseDown={event => {
+          if (event.target === event.currentTarget && duplicateStatus !== "saving") setNamingBoard(false);
+        }}>
+          <form className="workflow-modal pipeline-board-name-modal" role="dialog" aria-modal="true" aria-labelledby="pipeline-board-name-title" onSubmit={createNamedBoard}>
+            <div className="modal-header">
+              <div>
+                <span className="eyebrow">Board copy</span>
+                <h2 id="pipeline-board-name-title">Name this board</h2>
+              </div>
+              <button className="icon-action" type="button" onClick={() => setNamingBoard(false)} aria-label="Close" disabled={duplicateStatus === "saving"}>
+                <X size={16} />
+              </button>
+            </div>
+            <FormField label="Board name">
+              <input value={draftBoardName} onChange={event => setDraftBoardName(event.target.value)} placeholder="CEO + COO pipeline board" autoFocus />
+            </FormField>
+            <p className="modal-helper-text">This creates a board-only copy for this pipeline. It will not create a new campaign.</p>
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setNamingBoard(false)} disabled={duplicateStatus === "saving"}>Cancel</button>
+              <button className="primary-button" type="submit" disabled={duplicateStatus === "saving"}>
+                {duplicateStatus === "saving" ? "Creating..." : "Create board"}
+              </button>
+            </div>
+          </form>
         </section>
       ) : null}
     </>
@@ -13506,7 +13918,13 @@ function LockerMap({
   );
 }
 
-function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppendToLeadList, onUpdateLeadList, onOpenLeadLists }) {
+function leadListIsVisibleToUser(list = {}, currentUserId = "") {
+  if (!currentUserId) return true;
+  const assignedUserIds = Array.isArray(list.assignedUserIds) ? list.assignedUserIds : [];
+  return assignedUserIds.includes(currentUserId) || list.createdBy === currentUserId;
+}
+
+function LockerFinderPage({ activeClient, leadLists = [], currentUserId = "", onSaveLeadList, onAppendToLeadList, onUpdateLeadList, onOpenLeadLists }) {
   const [searchValues, setSearchValues] = useState({
     city: "London",
     country: "United Kingdom",
@@ -13539,13 +13957,16 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
   const mapCaptureRef = useRef(null);
   const activeLocation = results.find(location => location.id === activeLocationId) || results[0] || null;
   const selectedLocations = results.filter(location => selectedLocationIds.includes(location.id));
-  const savedPlaceIds = useMemo(() => new Set((leadLists || [])
+  const userLeadLists = useMemo(() => (
+    (leadLists || []).filter(list => leadListIsVisibleToUser(list, currentUserId))
+  ), [leadLists, currentUserId]);
+  const userSavedPlaceIds = useMemo(() => new Set(userLeadLists
     .flatMap(list => list.leads || [])
     .map(lead => lead.googlePlaceId)
-    .filter(Boolean)), [leadLists]);
+    .filter(Boolean)), [userLeadLists]);
   const savedKeys = useMemo(() => new Set(results
-    .filter(location => savedPlaceIds.has(location.placeId))
-    .map(lockerProspectKey)), [results, savedPlaceIds]);
+    .filter(location => userSavedPlaceIds.has(location.placeId))
+    .map(lockerProspectKey)), [results, userSavedPlaceIds]);
   const filteredProspectCount = results.length;
   const averageScore = filteredProspectCount
     ? Math.round(results.reduce((sum, location) => sum + Number(location.score || 0), 0) / filteredProspectCount)
@@ -13730,7 +14151,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
       } else {
         savedList = await onSaveLeadList({
           name: listName,
-          assignedUserIds: [],
+          assignedUserIds: currentUserId ? [currentUserId] : [],
           leads,
           filters: {
             source: "locker_finder",
@@ -13840,7 +14261,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
         <div className="locker-hero-stats">
           <span><strong>{filteredProspectCount}</strong><small>Map results</small></span>
           <span><strong>{averageScore}</strong><small>Avg host fit</small></span>
-          <span><strong>{savedPlaceIds.size}</strong><small>In lead lists</small></span>
+          <span><strong>{userSavedPlaceIds.size}</strong><small>In your lead lists</small></span>
         </div>
       </section>
 
@@ -13949,7 +14370,7 @@ function LockerFinderPage({ activeClient, leadLists = [], onSaveLeadList, onAppe
             <span>Save to lead list</span>
             <select value={targetLeadListId} onChange={event => setTargetLeadListId(event.target.value)} disabled={createLeadListMode}>
               <option value="">Choose lead list</option>
-              {leadLists.map(list => <option key={list.id} value={list.id}>{list.name}</option>)}
+              {userLeadLists.map(list => <option key={list.id} value={list.id}>{list.name}</option>)}
             </select>
           </label>
           {createLeadListMode ? (
@@ -17424,6 +17845,98 @@ export default function App() {
       .catch(error => console.error("Could not save campaign members to Supabase", error));
   }
 
+  async function handleCreatePipelineBoard(values = {}) {
+    const name = normalizeLookupValue(values.name);
+    if (!name) throw new Error("Name this board before creating it.");
+    const board = {
+      id: makeId("pipeline-board"),
+      name,
+      clientId: values.clientId || activeClient.id,
+      campaignId: values.campaignId || activeCampaign.id,
+      sourceBoardId: values.sourceBoardId || "",
+      createdBy: values.createdBy || effectiveWorkspaceUser?.id || "",
+      memberIds: uniqueIds(values.memberIds || []),
+      stageOverrides: values.stageOverrides || {},
+      createdAt: new Date().toISOString(),
+    };
+    updateData(current => ({
+      ...current,
+      pipelineBoards: [board, ...(current.pipelineBoards || [])],
+      activities: [makeActivity("Pipeline", `Board created: ${board.name}`, board.name), ...current.activities],
+    }));
+    setActiveView("pipeline");
+    return board;
+  }
+
+  async function handleUpdatePipelineBoardMembers(board, values = {}) {
+    if (!board?.id) return;
+    const nextMemberIds = uniqueIds(values.memberIds || []);
+    updateData(current => ({
+      ...current,
+      pipelineBoards: (current.pipelineBoards || []).map(item => item.id === board.id ? { ...item, memberIds: nextMemberIds } : item),
+      activities: [makeActivity("Pipeline", `Board members updated: ${board.name}`, board.name), ...current.activities],
+    }));
+  }
+
+  async function handleCreatePipelineBoardInvite(values = {}) {
+    if (!values.inviteeId) throw new Error("Choose a workspace user to invite.");
+    const duplicate = (crmData.pipelineBoardInvites || []).find(invite => (
+      invite.status === "pending"
+      && invite.boardId === values.boardId
+      && invite.inviteeId === values.inviteeId
+    ));
+    if (duplicate) return duplicate;
+    const invite = {
+      id: makeId("pipeline-board-invite"),
+      boardId: values.boardId,
+      boardName: values.boardName || "Pipeline board",
+      campaignId: values.campaignId || activeCampaign.id,
+      clientId: values.clientId || activeClient.id,
+      isDefaultBoard: Boolean(values.isDefaultBoard),
+      inviteeId: values.inviteeId,
+      inviterId: values.inviterId || effectiveWorkspaceUser?.id || "",
+      status: "pending",
+      createdAt: new Date().toISOString(),
+    };
+    updateData(current => ({
+      ...current,
+      pipelineBoardInvites: [invite, ...(current.pipelineBoardInvites || [])],
+      activities: [makeActivity("Pipeline", `Board invite sent: ${invite.boardName}`, invite.boardName), ...current.activities],
+    }));
+    return invite;
+  }
+
+  async function handleResolvePipelineBoardInvite(inviteId, status) {
+    const invite = (crmData.pipelineBoardInvites || []).find(item => item.id === inviteId);
+    if (!invite || invite.status !== "pending") return;
+    const nextStatus = status === "accepted" ? "accepted" : "declined";
+    const nextMemberId = invite.inviteeId;
+    updateData(current => {
+      const nextInvites = (current.pipelineBoardInvites || []).map(item => item.id === inviteId ? { ...item, status: nextStatus, respondedAt: new Date().toISOString() } : item);
+      if (nextStatus !== "accepted") {
+        return { ...current, pipelineBoardInvites: nextInvites };
+      }
+      if (invite.isDefaultBoard) {
+        return {
+          ...current,
+          pipelineBoardInvites: nextInvites,
+          campaigns: current.campaigns.map(campaign => campaign.id === invite.campaignId
+            ? { ...campaign, memberIds: uniqueIds([...(campaign.memberIds || []), nextMemberId]) }
+            : campaign),
+          activities: [makeActivity("Pipeline", `Board invite accepted: ${invite.boardName}`, invite.boardName), ...current.activities],
+        };
+      }
+      return {
+        ...current,
+        pipelineBoardInvites: nextInvites,
+        pipelineBoards: (current.pipelineBoards || []).map(board => board.id === invite.boardId
+          ? { ...board, memberIds: uniqueIds([...(board.memberIds || []), nextMemberId]) }
+          : board),
+        activities: [makeActivity("Pipeline", `Board invite accepted: ${invite.boardName}`, invite.boardName), ...current.activities],
+      };
+    });
+  }
+
   function openAircallForUser(userId) {
     setSelectedAircallUserId(userId || "all");
     navigateTo("aircall", {}, { preserveAircallUserFilter: true });
@@ -17733,10 +18246,25 @@ export default function App() {
     });
   }
 
-  async function handleMovePipelineItem(type, id, stage) {
+  async function handleMovePipelineItem(type, id, stage, boardId = "") {
     const activeStages = normalizePipelineStages(crmData.pipelineStages || pipelineColumns);
     const normalizedStage = pipelineStageIdForValue(stage, activeStages);
     const column = activeStages.find(item => item.id === normalizedStage);
+    if (boardId) {
+      updateData(current => ({
+        ...current,
+        pipelineBoards: (current.pipelineBoards || []).map(board => board.id === boardId
+          ? {
+            ...board,
+            stageOverrides: {
+              ...(board.stageOverrides || {}),
+              [`${type}:${id}`]: normalizedStage,
+            },
+          }
+          : board),
+      }));
+      return;
+    }
 
     if (type === "company") {
       const account = crmData.accounts.find(item => item.id === id);
@@ -18846,11 +19374,29 @@ export default function App() {
       case "aircall":
         return <AircallDashboardPage aircallData={aircallData} workspaceUsers={workspaceUsers} contacts={contacts} onOpenContact={openContact} canSync={effectiveAccessState.isAdmin} onSyncAircall={handleSyncAircall} onBookMeeting={handleBookMeeting} currentUserId={effectiveWorkspaceUser?.id || ""} currentAircallUserId={effectiveWorkspaceUser?.aircallUserId || ""} selectedAircallUserId={selectedAircallUserId} isAdmin={effectiveAccessState.isAdmin} />;
       case "pipeline":
-        return <PipelinePage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onOpenContact={openContact} onMovePipelineItem={handleMovePipelineItem} onUpdateStages={handleUpdatePipelineStages} onSaveActionNote={handleSaveActionNote} onDeleteActionNote={handleDeleteActionNote} />;
+        return <PipelinePage
+          activeClient={activeClient}
+          activeCampaign={activeCampaign}
+          currentUser={effectiveWorkspaceUser}
+          currentUserId={effectiveWorkspaceUser?.id || ""}
+          workspaceUsers={workspaceUsers}
+          canManageCrmRecords={canManageCrmRecords}
+          onOpenAccount={openAccount}
+          onOpenContact={openContact}
+          onMovePipelineItem={handleMovePipelineItem}
+          onUpdateStages={handleUpdatePipelineStages}
+          onSaveActionNote={handleSaveActionNote}
+          onDeleteActionNote={handleDeleteActionNote}
+          onManageCampaignMembers={handleUpdateCampaignMembership}
+          onCreatePipelineBoard={handleCreatePipelineBoard}
+          onUpdatePipelineBoardMembers={handleUpdatePipelineBoardMembers}
+          onCreatePipelineBoardInvite={handleCreatePipelineBoardInvite}
+          onResolvePipelineBoardInvite={handleResolvePipelineBoardInvite}
+        />;
       case "research":
         return <ResearchPage activeClient={activeClient} activeCampaign={activeCampaign} onOpenAccount={openAccount} onEditAccount={editAccount} onAddSource={() => openWorkflow("file", { returnTo: "research" })} onGenerateScripts={handleGenerateResearchScripts} onSaveScript={handleSaveResearchScript} onDeleteScript={handleDeleteResearchScript} onSaveActionNote={handleSaveActionNote} onDeleteActionNote={handleDeleteActionNote} />;
       case "locker-finder":
-        return <LockerFinderPage activeClient={activeClient} leadLists={leadLists} onSaveLeadList={handleSaveLeadList} onAppendToLeadList={handleAppendToLeadList} onUpdateLeadList={handleUpdateLeadList} onOpenLeadLists={() => openView("lead-lists")} />;
+        return <LockerFinderPage activeClient={activeClient} leadLists={leadLists} currentUserId={effectiveWorkspaceUser?.id || ""} onSaveLeadList={handleSaveLeadList} onAppendToLeadList={handleAppendToLeadList} onUpdateLeadList={handleUpdateLeadList} onOpenLeadLists={() => openView("lead-lists")} />;
       // Calls workspace disabled:
       // case "calls":
       //   return <CallsPage onOpenContact={openContact} onLogCall={handleLogCall} onStartCallBlock={() => openWorkflow("call")} />;

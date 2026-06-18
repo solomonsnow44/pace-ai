@@ -5706,6 +5706,12 @@ textarea::placeholder {
   padding-bottom: 8px;
   scroll-behavior: auto;
   overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.pipeline-board::-webkit-scrollbar {
+  display: none;
 }
 
 .pipeline-board.drag-active {
@@ -5943,8 +5949,7 @@ textarea::placeholder {
 .pipeline-column {
   flex: 0 0 clamp(220px, 18vw, 280px);
   width: clamp(220px, 18vw, 280px);
-  height: clamp(560px, calc(100vh - 310px), 760px);
-  min-height: 0;
+  min-height: min(820px, max(620px, calc(100vh - 230px)));
   --pipeline-stage-accent: var(--accent);
   --pipeline-stage-soft: var(--accent-soft);
   border: 1px solid color-mix(in srgb, var(--pipeline-stage-accent) 32%, var(--border));
@@ -6021,27 +6026,9 @@ textarea::placeholder {
 
 .pipeline-column-cards {
   min-height: 0;
-  flex: 1;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  flex: 1 1 auto;
+  overflow: visible;
   padding: 2px 2px 4px;
-  scrollbar-gutter: stable;
-}
-
-.pipeline-column-cards::-webkit-scrollbar,
-.pipeline-detail-scroll::-webkit-scrollbar {
-  width: 8px;
-}
-
-.pipeline-column-cards::-webkit-scrollbar-track,
-.pipeline-detail-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.pipeline-column-cards::-webkit-scrollbar-thumb,
-.pipeline-detail-scroll::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: var(--border-strong);
 }
 
 .pipeline-card {

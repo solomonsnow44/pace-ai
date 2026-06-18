@@ -7748,6 +7748,7 @@ function PipelinePage({
   canManageCrmRecords = false,
   onOpenAccount,
   onOpenContact,
+  onNewContact,
   onMovePipelineItem,
   onUpdateStages,
   onSaveActionNote,
@@ -8163,42 +8164,44 @@ function PipelinePage({
                 <strong>{column.name}</strong>
                 <span>{columnRecords.length}</span>
               </div>
-              {columnRecords.map(record => {
-                const accountContacts = record.account ? contactsForAccount(record.account.id) : [];
-                const contactCount = accountContacts.length;
-                const title = record.type === "company" ? record.account.name : record.contact.name;
-                const subtitle = record.type === "company"
-                  ? `${contactCount} contact${contactCount === 1 ? "" : "s"}`
-                  : record.account?.name || "No company";
-                return (
-                  <article
-                    key={`${record.type}:${record.id}`}
-                    className={`pipeline-card ${draggedItem?.type === record.type && draggedItem?.id === record.id ? "dragging" : ""}`}
-                    draggable
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelectedItem(record)}
-                    onKeyDown={event => {
-                      if (event.key === "Enter") setSelectedItem(record);
-                    }}
-                    onDragStart={event => {
-                      setDraggedItem({ type: record.type, id: record.id });
-                      event.dataTransfer.effectAllowed = "move";
-                      event.dataTransfer.setData("text/plain", `${record.type}:${record.id}`);
-                    }}
-                    onDragEnd={() => {
-                      setDraggedItem(null);
-                      setDropStage("");
-                    }}
-                  >
-                    <strong>{title}</strong>
-                    <span>{subtitle}</span>
-                    <div>
-                      <small>{record.type === "company" ? record.account.industry || "No industry" : record.contact.role || "No role"}</small>
-                    </div>
-                  </article>
-                );
-              })}
+              <div className="pipeline-column-cards">
+                {columnRecords.map(record => {
+                  const accountContacts = record.account ? contactsForAccount(record.account.id) : [];
+                  const contactCount = accountContacts.length;
+                  const title = record.type === "company" ? record.account.name : record.contact.name;
+                  const subtitle = record.type === "company"
+                    ? `${contactCount} contact${contactCount === 1 ? "" : "s"}`
+                    : record.account?.name || "No company";
+                  return (
+                    <article
+                      key={`${record.type}:${record.id}`}
+                      className={`pipeline-card ${draggedItem?.type === record.type && draggedItem?.id === record.id ? "dragging" : ""}`}
+                      draggable
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedItem(record)}
+                      onKeyDown={event => {
+                        if (event.key === "Enter") setSelectedItem(record);
+                      }}
+                      onDragStart={event => {
+                        setDraggedItem({ type: record.type, id: record.id });
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", `${record.type}:${record.id}`);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedItem(null);
+                        setDropStage("");
+                      }}
+                    >
+                      <strong>{title}</strong>
+                      <span>{subtitle}</span>
+                      <div>
+                        <small>{record.type === "company" ? record.account.industry || "No industry" : record.contact.role || "No role"}</small>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
             </section>
           );
         })}
@@ -8228,19 +8231,29 @@ function PipelinePage({
                     <Building2 size={16} />
                     Open company
                   </button>
+                  <button className="secondary-button" type="button" onClick={() => {
+                    setSelectedItem(null);
+                    onNewContact?.(selectedItem.account.id);
+                  }}>
+                    <UserPlus size={16} />
+                    Add contact
+                  </button>
                 </div>
                 <div className="pipeline-linked-list">
                   {contactsForAccount(selectedItem.account.id).map(contact => (
-                    <button key={contact.id} type="button" onClick={() => {
-                      setSelectedItem(null);
-                      onOpenContact(contact.id);
-                    }}>
-                      <span>{accountInitial(contact.name)}</span>
-                      <div>
-                        <strong>{contact.name}</strong>
-                        <small>{contact.role || contact.email || "Contact"}</small>
-                      </div>
-                    </button>
+                    <div key={contact.id} className="pipeline-linked-row">
+                      <button className="pipeline-linked-main" type="button" onClick={() => {
+                        setSelectedItem(null);
+                        onOpenContact(contact.id);
+                      }}>
+                        <span>{accountInitial(contact.name)}</span>
+                        <div>
+                          <strong>{contact.name}</strong>
+                          <small>{contact.role || contact.email || "Contact"}</small>
+                        </div>
+                      </button>
+                      <AircallDialButton contact={contact} compact />
+                    </div>
                   ))}
                 </div>
                 <ActionNoteManager
@@ -8271,6 +8284,7 @@ function PipelinePage({
                       Open company
                     </button>
                   ) : null}
+                  <AircallDialButton contact={selectedItem.contact} compact />
                 </div>
                 {selectedItem.account ? (
                   <ActionNoteManager
@@ -19561,6 +19575,7 @@ export default function App() {
           canManageCrmRecords={canManageCrmRecords}
           onOpenAccount={openAccount}
           onOpenContact={openContact}
+          onNewContact={(accountId) => openWorkflow("contact", { accountId })}
           onMovePipelineItem={handleMovePipelineItem}
           onUpdateStages={handleUpdatePipelineStages}
           onSaveActionNote={handleSaveActionNote}

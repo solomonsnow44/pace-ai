@@ -5943,11 +5943,14 @@ textarea::placeholder {
 .pipeline-column {
   flex: 0 0 clamp(220px, 18vw, 280px);
   width: clamp(220px, 18vw, 280px);
-  min-height: 560px;
+  height: clamp(560px, calc(100vh - 310px), 760px);
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
   padding: 10px;
+  display: flex;
+  flex-direction: column;
   transition: border-color 0.14s ease, background 0.14s ease;
 }
 
@@ -5957,6 +5960,7 @@ textarea::placeholder {
 }
 
 .pipeline-column-head {
+  flex: 0 0 auto;
   min-height: 38px;
   display: flex;
   align-items: center;
@@ -5974,6 +5978,31 @@ textarea::placeholder {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.pipeline-column-cards {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 2px 2px 4px;
+  scrollbar-gutter: stable;
+}
+
+.pipeline-column-cards::-webkit-scrollbar,
+.pipeline-detail-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.pipeline-column-cards::-webkit-scrollbar-track,
+.pipeline-detail-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pipeline-column-cards::-webkit-scrollbar-thumb,
+.pipeline-detail-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--border-strong);
 }
 
 .pipeline-card {
@@ -6036,7 +6065,15 @@ textarea::placeholder {
   margin-top: 12px;
 }
 
-.pipeline-linked-list button {
+.pipeline-linked-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.pipeline-linked-main {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -6051,14 +6088,14 @@ textarea::placeholder {
   transition: border-color 0.14s ease, background 0.14s ease, transform 0.14s ease;
 }
 
-.pipeline-linked-list button:hover,
-.pipeline-linked-list button:focus-visible {
+.pipeline-linked-main:hover,
+.pipeline-linked-main:focus-visible {
   border-color: var(--accent);
   background: var(--card);
   transform: translateY(-1px);
 }
 
-.pipeline-linked-list button > span {
+.pipeline-linked-main > span {
   width: 30px;
   height: 30px;
   border-radius: 8px;
@@ -6068,6 +6105,10 @@ textarea::placeholder {
   color: var(--accent);
   font-size: 11px;
   font-weight: 800;
+}
+
+.pipeline-linked-row .aircall-dial {
+  flex: 0 0 auto;
 }
 
 .pipeline-linked-list strong,

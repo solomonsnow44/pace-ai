@@ -3945,10 +3945,6 @@ function CampaignMembershipModal({ campaign, workspaceUsers, currentUserId = "",
             <span>Workspace users</span>
             <strong>{workspaceUsers.length}</strong>
           </div>
-          <div>
-            <span>Scope</span>
-            <strong>{scopeLabel}</strong>
-          </div>
         </div>
         <div className="membership-toolbar">
           <label className="membership-search">
@@ -9742,6 +9738,32 @@ function LeadLookupCopyCell({ icon: CopyIcon, label, value, copied = false, onCo
   );
 }
 
+function ExportMenu({ label = "Export", disabled = false, options = [] }) {
+  const enabledOptions = options.filter(Boolean);
+  return (
+    <details className="export-menu">
+      <summary className={`secondary-button ${disabled ? "disabled" : ""}`} onClick={event => {
+        if (disabled || !enabledOptions.length) event.preventDefault();
+      }}>
+        <Download size={16} />
+        {label}
+        <ChevronDown size={14} />
+      </summary>
+      <div className="export-menu-panel">
+        {enabledOptions.map(option => (
+          <button key={option.label} type="button" onClick={event => {
+            event.currentTarget.closest("details")?.removeAttribute("open");
+            option.onClick?.();
+          }} disabled={option.disabled}>
+            {option.icon ? createElement(option.icon, { size: 16 }) : <FileText size={16} />}
+            <span>{option.label}</span>
+          </button>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function TeamStatusBadge({ status }) {
   const normalizedStatus = String(status || "").toLowerCase();
   const tone = ["active", "online"].includes(normalizedStatus) ? "success" : "neutral";
@@ -9969,10 +9991,10 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
     setSaveListOpen(true);
   }
 
-  function exportContactsCsv() {
+  function exportContacts(format = "csv") {
     if (!exportableContacts.length) return;
     const base = selectedContacts.length ? "selected-contacts" : "matching-contacts";
-    exportCognismResults(exportableContacts.map(contactToLead), "csv", [], defaultLeadExportFilename(base, "csv"));
+    exportCognismResults(exportableContacts.map(contactToLead), format, [], defaultLeadExportFilename(base, format));
   }
 
   async function saveSelectedContactsAsList() {
@@ -10065,10 +10087,15 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
         title="Contacts"
         description="Search, filter, copy, and open saved contacts from a spreadsheet-style CRM contact list."
       >
-        <button className="secondary-button" type="button" onClick={exportContactsCsv} disabled={!exportableContacts.length}>
-          <FileText size={16} />
-          {selectedContacts.length ? "Export selected CSV" : "Export matching CSV"}
-        </button>
+        <ExportMenu
+          label={selectedContacts.length ? "Export selected" : "Export matching"}
+          disabled={!exportableContacts.length}
+          options={[
+            { label: "CSV", icon: FileText, onClick: () => exportContacts("csv") },
+            { label: "Excel", icon: FileText, onClick: () => exportContacts("xls") },
+            { label: "JSON", icon: FileText, onClick: () => exportContacts("json") },
+          ]}
+        />
         <button className="primary-button" type="button" onClick={openContactListSave} disabled={!selectedContacts.length}>
           <ListFilter size={16} />
           Save lead list
@@ -10456,6 +10483,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
   const [accessDrafts, setAccessDrafts] = useState({});
   const [accessStatus, setAccessStatus] = useState("idle");
   const [shareOpen, setShareOpen] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const [listNameDrafts, setListNameDrafts] = useState({});
   const [listNameStatus, setListNameStatus] = useState("idle");
   const [leadEditDrafts, setLeadEditDrafts] = useState({});
@@ -10479,6 +10507,9 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
     ? lockerFinderExportSourceLeads
     : lockerFinderExportSourceLeads.filter(isLockerFinderLead);
   const exportScopeText = selectedLeads.length ? `${selectedLeads.length} selected` : "All visible";
+  const totalLeadRows = leadLists.reduce((total, list) => total + (Array.isArray(list.leads) ? list.leads.length : 0), 0);
+  const assignedListCount = leadLists.filter(list => Array.isArray(list.assignedUserIds) && list.assignedUserIds.length).length;
+  const hubspotExportedCount = displayedLeads.filter(lead => lead.hubspotExportStatus === "exported").length;
   const accessUserIds = selectedList ? (accessDrafts[selectedList.id] || selectedList.assignedUserIds || []) : [];
   const selectedListNameDraft = selectedList ? (listNameDrafts[selectedList.id] ?? selectedList.name) : "";
   const cleanManualLeads = manualLeads
@@ -10945,7 +10976,33 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
           <Plus size={16} />
           Add leads
         </button>
+        <button className="secondary-button" type="button" onClick={() => setEditMode(current => !current)}>
+          <Database size={16} />
+          {editMode ? "Done editing" : "Edit mode"}
+        </button>
       </PageHeader>
+      <div className="lead-database-strip" aria-label="Saved lead list health">
+        <div>
+          <ListFilter size={16} aria-hidden="true" />
+          <span>Saved lists</span>
+          <strong>{leadLists.length} lists</strong>
+        </div>
+        <div className="active">
+          <Users size={16} aria-hidden="true" />
+          <span>Lead rows</span>
+          <strong>{totalLeadRows} leads</strong>
+        </div>
+        <div>
+          <ShieldCheck size={16} aria-hidden="true" />
+          <span>Assigned</span>
+          <strong>{assignedListCount} lists</strong>
+        </div>
+        <div>
+          <HubSpotLogoIcon size={16} aria-hidden="true" />
+          <span>HubSpot</span>
+          <strong>{hubspotExportedCount} exported</strong>
+        </div>
+      </div>
       {error ? <div className="form-error">{error}</div> : null}
       <div className="lead-list-layout">
         <section className="panel lead-list-index">
@@ -10985,50 +11042,51 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
               <div className="panel-header">
                 <div>
                   <span className="eyebrow">Selected list</span>
-                  <label className="save-list-inline lead-list-name-editor">
-                    <span>List name</span>
-                    <input
-                      value={selectedListNameDraft}
-                      onChange={event => {
-                        setListNameDrafts(current => ({ ...current, [selectedList.id]: event.target.value }));
-                        setListNameStatus("idle");
-                      }}
-                    />
-                  </label>
+                  {editMode ? (
+                    <label className="save-list-inline lead-list-name-editor">
+                      <span>List name</span>
+                      <input
+                        value={selectedListNameDraft}
+                        onChange={event => {
+                          setListNameDrafts(current => ({ ...current, [selectedList.id]: event.target.value }));
+                          setListNameStatus("idle");
+                        }}
+                      />
+                    </label>
+                  ) : (
+                    <h2>{selectedList.name}</h2>
+                  )}
                 </div>
                 <div className="export-actions compact-export-actions">
-                  <button className="secondary-button" type="button" onClick={saveSelectedListName} disabled={listNameStatus === "saving" || selectedListNameDraft.trim() === selectedList.name}>
-                    {listNameStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <CheckCircle2 size={16} />}
-                    {listNameStatus === "saving" ? "Saving" : listNameStatus === "saved" ? "Saved name" : "Save name"}
-                  </button>
-                  <button className="secondary-button" type="button" onClick={() => requestListExport("csv")} disabled={!exportableListLeads.length}>
-                    <FileText size={16} />
-                    {selectedLeads.length ? "Export selected CSV" : "Export CSV"}
-                  </button>
-                  <button className="secondary-button" type="button" onClick={exportLockerFinderCsv} disabled={!lockerFinderExportLeads.length}>
-                    <Download size={16} />
-                    {selectedLeads.length ? "Export selected location CSV" : "Export location CSV"}
-                  </button>
-                  <button className="secondary-button" type="button" onClick={() => requestListExport("xls")} disabled={!exportableListLeads.length}>
-                    <FileText size={16} />
-                    {selectedLeads.length ? "Export selected Excel" : "Export Excel"}
-                  </button>
-                  <button className="secondary-button" type="button" onClick={() => requestListExport("json")} disabled={!exportableListLeads.length}>
-                    <FileText size={16} />
-                    {selectedLeads.length ? "Export selected JSON" : "Export JSON"}
-                  </button>
-                  <button className="secondary-button" type="button" onClick={requestListHubSpotExport} disabled={listHubspotExportStatus === "exporting" || !displayedLeads.length}>
-                    <HubSpotLogoIcon size={16} />
-                    {listHubspotExportStatus === "exporting" ? "Exporting" : listHubspotExportStatus === "exported" ? "Exported" : selectedLeads.length ? "Export selected to HubSpot" : "Export to HubSpot"}
-                  </button>
-                  <button className="secondary-button" type="button" onClick={() => setShareOpen(true)}>
-                    <Users size={16} />
-                    Share
-                  </button>
-                  <button className="secondary-button danger-button" type="button" onClick={requestDeleteSelectedList} disabled={deleteStatus === "deleting"}>
-                    <Circle size={16} />
-                    {deleteStatus === "deleting" ? "Deleting" : "Delete list"}
-                  </button>
+                  {editMode ? (
+                    <button className="secondary-button" type="button" onClick={saveSelectedListName} disabled={listNameStatus === "saving" || selectedListNameDraft.trim() === selectedList.name}>
+                      {listNameStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <CheckCircle2 size={16} />}
+                      {listNameStatus === "saving" ? "Saving" : listNameStatus === "saved" ? "Saved name" : "Save name"}
+                    </button>
+                  ) : null}
+                  <ExportMenu
+                    label={selectedLeads.length ? "Export selected" : "Export list"}
+                    disabled={!exportableListLeads.length}
+                    options={[
+                      { label: "CSV", icon: FileText, onClick: () => requestListExport("csv") },
+                      { label: "Location CSV", icon: Download, onClick: exportLockerFinderCsv, disabled: !lockerFinderExportLeads.length },
+                      { label: "Excel", icon: FileText, onClick: () => requestListExport("xls") },
+                      { label: "JSON", icon: FileText, onClick: () => requestListExport("json") },
+                      { label: listHubspotExportStatus === "exporting" ? "Exporting to HubSpot" : "HubSpot", icon: HubSpotLogoIcon, onClick: requestListHubSpotExport, disabled: listHubspotExportStatus === "exporting" || !displayedLeads.length },
+                    ]}
+                  />
+                  {editMode ? (
+                    <>
+                      <button className="secondary-button" type="button" onClick={() => setShareOpen(true)}>
+                        <Users size={16} />
+                        Share
+                      </button>
+                      <button className="secondary-button danger-button" type="button" onClick={requestDeleteSelectedList} disabled={deleteStatus === "deleting"}>
+                        <Circle size={16} />
+                        {deleteStatus === "deleting" ? "Deleting" : "Delete list"}
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               </div>
               <div className="lead-list-meta">
@@ -11059,7 +11117,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                 </div>
               </div>
               <div className="table-wrap saved-lead-list-table-wrap">
-                <table className="data-table cognism-table saved-lead-list-table">
+                <table className={`data-table cognism-table saved-lead-list-table ${editMode ? "editing" : ""}`}>
                   <colgroup>
                     <col className="saved-lead-list-col-select" />
                     <col className="saved-lead-list-col-contact" />
@@ -11074,7 +11132,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                     <col className="saved-lead-list-col-notes" />
                     <col className="saved-lead-list-col-saved" />
                     <col className="saved-lead-list-col-hubspot" />
-                    <col className="saved-lead-list-col-actions" />
+                    {editMode ? <col className="saved-lead-list-col-actions" /> : null}
                   </colgroup>
                   <thead>
                     <tr>
@@ -11091,7 +11149,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                       <th>Notes</th>
                       <th>Saved</th>
                       <th>HubSpot</th>
-                      <th>Actions</th>
+                      {editMode ? <th>Actions</th> : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -11113,25 +11171,33 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                           <div className="lookup-name-action-cell lookup-name-action-cell-with-linkedin">
                             <AircallDialButton contact={{ id: lead.dbContactId || buildLeadIdentityKey(lead) }} phoneNumber={draft.manualMobile || draft.manualDirectDial || ""} source="lead_database" label="Call" compact />
                             <LeadLookupLinkedInButton contact={draft} />
-                            <input className="table-input" value={draft.contactName || ""} onChange={event => updateLeadEditDraft(lead, "contactName", event.target.value)} placeholder="Contact name" />
+                            {editMode ? (
+                              <input className="table-input" value={draft.contactName || ""} onChange={event => updateLeadEditDraft(lead, "contactName", event.target.value)} placeholder="Contact name" />
+                            ) : (
+                              <strong>{lead.contactName || "Unknown contact"}</strong>
+                            )}
                           </div>
                         </td>
-                        <td><input className="table-input" value={draft.company || ""} onChange={event => updateLeadEditDraft(lead, "company", event.target.value)} placeholder="Company" /></td>
-                        <td><input className="table-input" value={draft.jobTitle || ""} onChange={event => updateLeadEditDraft(lead, "jobTitle", event.target.value)} placeholder="Job title" /></td>
-                        <td><input className="table-input" value={draft.location || ""} onChange={event => updateLeadEditDraft(lead, "location", event.target.value)} placeholder="Location" /></td>
+                        <td>{editMode ? <input className="table-input" value={draft.company || ""} onChange={event => updateLeadEditDraft(lead, "company", event.target.value)} placeholder="Company" /> : lead.company || "Not available"}</td>
+                        <td>{editMode ? <input className="table-input" value={draft.jobTitle || ""} onChange={event => updateLeadEditDraft(lead, "jobTitle", event.target.value)} placeholder="Job title" /> : lead.jobTitle || "Not available"}</td>
+                        <td>{editMode ? <input className="table-input" value={draft.location || ""} onChange={event => updateLeadEditDraft(lead, "location", event.target.value)} placeholder="Location" /> : lead.location || "Not available"}</td>
                         <td>
-                          <LinkedInProfileField
-                            value={draft.linkedinProfileUrl}
-                            onChange={event => updateLeadEditDraft(lead, "linkedinProfileUrl", event.target.value)}
-                            onOpen={() => window.open(buildLinkedInTargetUrl(draft), "_blank", "noopener,noreferrer")}
-                            canSearch={Boolean(draft.contactName || draft.company)}
-                          />
+                          {editMode ? (
+                            <LinkedInProfileField
+                              value={draft.linkedinProfileUrl}
+                              onChange={event => updateLeadEditDraft(lead, "linkedinProfileUrl", event.target.value)}
+                              onOpen={() => window.open(buildLinkedInTargetUrl(draft), "_blank", "noopener,noreferrer")}
+                              canSearch={Boolean(draft.contactName || draft.company)}
+                            />
+                          ) : lead.linkedinProfileUrl ? (
+                            <a href={lead.linkedinProfileUrl} target="_blank" rel="noreferrer">Open profile</a>
+                          ) : "Not available"}
                         </td>
-                        <td><input className="table-input" value={draft.manualEmail || ""} onChange={event => updateLeadEditDraft(lead, "manualEmail", event.target.value)} placeholder="name@company.com" /></td>
-                        <td><input className="table-input" value={draft.manualMobile || ""} onChange={event => updateLeadEditDraft(lead, "manualMobile", event.target.value)} placeholder="+353 mobile" /></td>
-                        <td><input className="table-input" value={draft.manualDirectDial || ""} onChange={event => updateLeadEditDraft(lead, "manualDirectDial", event.target.value)} placeholder="+353 direct" /></td>
+                        <td>{editMode ? <input className="table-input" value={draft.manualEmail || ""} onChange={event => updateLeadEditDraft(lead, "manualEmail", event.target.value)} placeholder="name@company.com" /> : lead.manualEmail || "Not available"}</td>
+                        <td>{editMode ? <input className="table-input" value={draft.manualMobile || ""} onChange={event => updateLeadEditDraft(lead, "manualMobile", event.target.value)} placeholder="+353 mobile" /> : getDisplayPhoneNumber(lead.manualMobile) || "Not available"}</td>
+                        <td>{editMode ? <input className="table-input" value={draft.manualDirectDial || ""} onChange={event => updateLeadEditDraft(lead, "manualDirectDial", event.target.value)} placeholder="+353 direct" /> : getDisplayPhoneNumber(lead.manualDirectDial) || "Not available"}</td>
                         <td><AircallDialButton contact={{ id: lead.dbContactId || buildLeadIdentityKey(lead) }} phoneNumber={draft.manualMobile || draft.manualDirectDial || ""} source="lead_database" label="Call" compact /></td>
-                        <td><textarea className="table-textarea" value={draft.notes || ""} onChange={event => updateLeadEditDraft(lead, "notes", event.target.value)} placeholder="Notes" /></td>
+                        <td>{editMode ? <textarea className="table-textarea" value={draft.notes || ""} onChange={event => updateLeadEditDraft(lead, "notes", event.target.value)} placeholder="Notes" /> : lead.notes || "No notes"}</td>
                         <td><DataSourceBadge lead={lead} /></td>
                         <td>
                           {lead.hubspotExportStatus ? (
@@ -11144,18 +11210,20 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                             <StatusBadge>Not exported</StatusBadge>
                           )}
                         </td>
-                        <td>
-                          <div className="row-actions">
-                            <button className="secondary-button" type="button" onClick={() => saveLeadEdit(lead)} disabled={leadEditStatuses[key] === "saving" || leadEditStatuses[key] === "removing"}>
-                              {leadEditStatuses[key] === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Database size={16} />}
-                              {leadEditStatuses[key] === "saving" ? "Saving" : leadEditStatuses[key] === "saved" ? "Saved" : "Save"}
-                            </button>
-                            <button className="secondary-button danger-button" type="button" onClick={() => requestRemoveLeadFromList(lead)} disabled={leadEditStatuses[key] === "removing"}>
-                              {leadEditStatuses[key] === "removing" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Circle size={16} />}
-                              {leadEditStatuses[key] === "removing" ? "Removing" : "Remove"}
-                            </button>
-                          </div>
-                        </td>
+                        {editMode ? (
+                          <td>
+                            <div className="row-actions">
+                              <button className="secondary-button" type="button" onClick={() => saveLeadEdit(lead)} disabled={leadEditStatuses[key] === "saving" || leadEditStatuses[key] === "removing"}>
+                                {leadEditStatuses[key] === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Database size={16} />}
+                                {leadEditStatuses[key] === "saving" ? "Saving" : leadEditStatuses[key] === "saved" ? "Saved" : "Save"}
+                              </button>
+                              <button className="secondary-button danger-button" type="button" onClick={() => requestRemoveLeadFromList(lead)} disabled={leadEditStatuses[key] === "removing"}>
+                                {leadEditStatuses[key] === "removing" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Circle size={16} />}
+                                {leadEditStatuses[key] === "removing" ? "Removing" : "Remove"}
+                              </button>
+                            </div>
+                          </td>
+                        ) : null}
                       </tr>
                       );
                     })}

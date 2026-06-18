@@ -6047,10 +6047,15 @@ textarea::placeholder {
   align-items: center;
   gap: 10px;
   text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease, transform 0.14s ease;
 }
 
-.pipeline-linked-list button:hover {
+.pipeline-linked-list button:hover,
+.pipeline-linked-list button:focus-visible {
   border-color: var(--accent);
+  background: var(--card);
+  transform: translateY(-1px);
 }
 
 .pipeline-linked-list button > span {
@@ -6691,13 +6696,14 @@ textarea::placeholder {
 }
 
 .membership-summary-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  align-items: stretch;
   gap: 10px;
   margin: 14px 0 12px;
 }
 
 .membership-summary-strip > div {
+  flex: 1 1 0;
   min-height: 64px;
   display: grid;
   align-content: center;
@@ -7368,10 +7374,90 @@ textarea::placeholder {
   margin-bottom: 12px;
 }
 
+.export-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.export-menu summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.export-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.export-menu summary.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.export-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 210px;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  padding: 6px;
+}
+
+.export-menu-panel button {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  color: var(--text);
+  padding: 7px 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.export-menu-panel button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.export-menu-panel button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .compact-export-actions .primary-button,
 .compact-export-actions .secondary-button {
   height: 38px;
   min-height: 38px;
+}
+
+.compact-export-actions {
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.compact-export-actions .secondary-button,
+.compact-export-actions .primary-button,
+.compact-export-actions .export-menu summary {
+  max-width: 190px;
+}
+
+.compact-export-actions .secondary-button,
+.compact-export-actions .primary-button,
+.export-menu summary,
+.export-menu-panel button {
+  white-space: nowrap;
+}
+
+.compact-export-actions .secondary-button,
+.compact-export-actions .primary-button,
+.export-menu summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .save-list-inline {
@@ -8337,11 +8423,19 @@ textarea::placeholder {
 }
 
 .lead-list-card strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text);
 }
 
 .lead-list-card span,
 .lead-list-card small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-weight: 800;
 }
@@ -8362,6 +8456,11 @@ textarea::placeholder {
   width: 2620px;
   min-width: 2620px;
   table-layout: fixed;
+}
+
+.saved-lead-list-table:not(.editing) {
+  width: 2180px;
+  min-width: 2180px;
 }
 
 .saved-lead-list-col-select {
@@ -8419,6 +8518,13 @@ textarea::placeholder {
 .saved-lead-list-table th,
 .saved-lead-list-table td {
   min-width: 0;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.saved-lead-list-table:not(.editing) td {
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .saved-lead-list-table .table-input,

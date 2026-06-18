@@ -1,211 +1,69 @@
-create or replace function public.ensure_default_pipeline() returns uuid
+create or replace function public.default_shared_pipeline_stages() returns jsonb
+language sql
+stable
+as $$
+  select jsonb_build_array(
+    jsonb_build_object('id', 'research', 'name', 'Research', 'stage_order', 1, 'probability', 10),
+    jsonb_build_object('id', 'preparation', 'name', 'Preparation', 'stage_order', 2, 'probability', 20),
+    jsonb_build_object('id', 'qualify', 'name', 'Qualify', 'stage_order', 3, 'probability', 35),
+    jsonb_build_object('id', 'discover', 'name', 'Discover', 'stage_order', 4, 'probability', 50),
+    jsonb_build_object('id', 'alignment', 'name', 'Alignment', 'stage_order', 5, 'probability', 65),
+    jsonb_build_object('id', 'position', 'name', 'Position', 'stage_order', 6, 'probability', 80),
+    jsonb_build_object('id', 'intent-to-buy', 'name', 'Intent to Buy', 'stage_order', 7, 'probability', 90)
+  );
+$$;
+
+create or replace function public.get_shared_pipeline_stages()
+returns table(id uuid, stage_key text, name text, stage_order integer, probability integer)
 language plpgsql
 security definer
 set search_path to 'public'
 as $$
 declare
-  current_user_id uuid := auth.uid();
   current_org_id uuid;
-  client_id uuid;
-  workspace_id uuid;
-  v_pipeline_id uuid;
+  stored_stages jsonb;
 begin
-  if current_user_id is null then
+  if auth.uid() is null then
     raise exception 'Authentication required';
   end if;
 
-  select organization_id
+  select u.organization_id
   into current_org_id
-  from public.users
-  where id = current_user_id
-    and status = 'active';
+  from public.users u
+  where u.id = auth.uid()
+    and u.status = 'active';
 
   if current_org_id is null then
     raise exception 'Active CRM user not found';
   end if;
 
-  select c.id
-  into client_id
-  from public.clients c
-  where c.organization_id = current_org_id
-    and c.slug = 'default'
-  limit 1;
-
-  if client_id is null then
-    insert into public.clients (
-      organization_id,
-      name,
-      slug,
-      owner_id,
-      status,
-      settings
-    )
-    values (
-      current_org_id,
-      'Default client',
-      'default',
-      current_user_id,
-      'active',
-      '{"shared_pipeline": true}'::jsonb
-    )
-    returning id into client_id;
-  end if;
-
-  insert into public.client_members (
-    organization_id,
-    client_id,
-    user_id,
-    role
-  )
-  values (
-    current_org_id,
-    client_id,
-    current_user_id,
-    'owner'
-  )
-  on conflict (client_id, user_id) do nothing;
-
-  select w.id
-  into workspace_id
-  from public.workspaces w
-  where w.organization_id = current_org_id
-    and w.client_id = client_id
-    and w.slug = 'default'
-  limit 1;
-
-  if workspace_id is null then
-    insert into public.workspaces (
-      organization_id,
-      client_id,
-      name,
-      slug,
-      owner_id,
-      status,
-      settings
-    )
-    values (
-      current_org_id,
-      client_id,
-      'Default workspace',
-      'default',
-      current_user_id,
-      'active',
-      '{"shared_pipeline": true}'::jsonb
-    )
-    returning id into workspace_id;
-  end if;
-
-  insert into public.workspace_members (
-    organization_id,
-    client_id,
-    workspace_id,
-    user_id,
-    role
-  )
-  values (
-    current_org_id,
-    client_id,
-    workspace_id,
-    current_user_id,
-    'admin'
-  )
-  on conflict (workspace_id, user_id) do nothing;
-
-  select p.id
-  into v_pipeline_id
-  from public.pipelines p
-  where p.organization_id = current_org_id
-    and p.client_id = client_id
-    and p.workspace_id = workspace_id
-    and p.is_default = true
-  limit 1;
-
-  if v_pipeline_id is null then
-    insert into public.pipelines (
-      organization_id,
-      client_id,
-      workspace_id,
-      name,
-      is_default,
-      status,
-      created_by
-    )
-    values (
-      current_org_id,
-      client_id,
-      workspace_id,
-      'Default pipeline',
-      true,
-      'active',
-      current_user_id
-    )
-    returning id into v_pipeline_id;
-  end if;
-
-  insert into public.pipeline_stages (
-    organization_id,
-    client_id,
-    workspace_id,
-    pipeline_id,
-    name,
-    stage_order,
-    probability
-  )
-  values
-    (current_org_id, client_id, workspace_id, v_pipeline_id, 'Research', 1, 10),
-    (current_org_id, client_id, workspace_id, v_pipeline_id, 'Preparation', 2, 20),
-    (current_org_id, client_id, workspace_id, v_pipeline_id, 'Qualify', 3, 35),
-    (current_org_id, client_id, workspace_id, v_pipeline_id, 'Discover', 4, 50),
-    (current_org_id, client_id, workspace_id, v_pipeline_id, 'Alignment', 5, 65),
-    (current_org_id, client_id, workspace_id, v_pipeline_id, 'Position', 6, 80),
-    (current_org_id, client_id, workspace_id, v_pipeline_id, 'Intent to Buy', 7, 90)
-  on conflict (pipeline_id, stage_order) do nothing;
-
-  return v_pipeline_id;
-end;
-$$;
-
-create or replace function public.get_shared_pipeline_stages() returns table(id uuid, stage_key text, name text, stage_order integer, probability integer)
-language plpgsql
-security definer
-set search_path to 'public'
-as $$
-declare
-  v_pipeline_id uuid;
-begin
-  v_pipeline_id := public.ensure_default_pipeline();
+  select coalesce(o.metadata->'pipeline_stages', public.default_shared_pipeline_stages())
+  into stored_stages
+  from public.organizations o
+  where o.id = current_org_id;
 
   return query
   select
-    ps.id,
-    case ps.stage_order
-      when 1 then 'research'
-      when 2 then 'preparation'
-      when 3 then 'qualify'
-      when 4 then 'discover'
-      when 5 then 'alignment'
-      when 6 then 'position'
-      when 7 then 'intent-to-buy'
-      else 'stage-' || ps.stage_order::text
-    end as stage_key,
-    ps.name,
-    ps.stage_order,
-    ps.probability
-  from public.pipeline_stages ps
-  where ps.pipeline_id = v_pipeline_id
-  order by ps.stage_order;
+    ('00000000-0000-4000-8000-' || lpad(item.ordinality::text, 12, '0'))::uuid as id,
+    coalesce(nullif(trim(item.value->>'id'), ''), 'stage-' || item.ordinality::text) as stage_key,
+    coalesce(nullif(trim(item.value->>'name'), ''), 'Stage ' || item.ordinality::text) as name,
+    item.ordinality::integer as stage_order,
+    least(100, greatest(0, coalesce((item.value->>'probability')::integer, item.ordinality::integer * 10))) as probability
+  from jsonb_array_elements(stored_stages) with ordinality as item(value, ordinality)
+  order by item.ordinality;
 end;
 $$;
 
-create or replace function public.update_shared_pipeline_stages(stages jsonb) returns table(id uuid, stage_key text, name text, stage_order integer, probability integer)
+create or replace function public.update_shared_pipeline_stages(stages jsonb)
+returns table(id uuid, stage_key text, name text, stage_order integer, probability integer)
 language plpgsql
 security definer
 set search_path to 'public'
 as $$
 declare
-  v_pipeline_id uuid;
+  current_org_id uuid;
   stage_count integer;
-  pipeline_scope record;
+  normalized_stages jsonb;
 begin
   if auth.uid() is null then
     raise exception 'Authentication required';
@@ -215,12 +73,15 @@ begin
     raise exception 'Stages must be a JSON array';
   end if;
 
-  v_pipeline_id := public.ensure_default_pipeline();
+  select u.organization_id
+  into current_org_id
+  from public.users u
+  where u.id = auth.uid()
+    and u.status = 'active';
 
-  select p.organization_id, p.client_id, p.workspace_id
-  into pipeline_scope
-  from public.pipelines p
-  where p.id = v_pipeline_id;
+  if current_org_id is null then
+    raise exception 'Active CRM user not found';
+  end if;
 
   create temporary table tmp_stage_updates (
     stage_order integer primary key,
@@ -237,8 +98,8 @@ begin
     least(100, greatest(0, coalesce((item.value->>'probability')::integer, item.ordinality::integer * 10)))
   from jsonb_array_elements(stages) with ordinality as item(value, ordinality);
 
-  delete from tmp_stage_updates
-  where name is null;
+  delete from tmp_stage_updates tsu
+  where tsu.name is null;
 
   select count(*) into stage_count from tmp_stage_updates;
 
@@ -248,48 +109,29 @@ begin
 
   if exists (
     select 1
-    from tmp_stage_updates
-    group by lower(name)
+    from tmp_stage_updates tsu
+    group by lower(tsu.name)
     having count(*) > 1
   ) then
     raise exception 'Stage names must be unique';
   end if;
 
-  update public.pipeline_stages ps
-  set name = 'tmp-' || ps.id::text,
-      updated_at = now()
-  where ps.pipeline_id = v_pipeline_id;
-
-  delete from public.pipeline_stages ps
-  where ps.pipeline_id = v_pipeline_id
-    and not exists (
-      select 1
-      from tmp_stage_updates tsu
-      where tsu.stage_order = ps.stage_order
-    );
-
-  insert into public.pipeline_stages (
-    organization_id,
-    client_id,
-    workspace_id,
-    pipeline_id,
-    name,
-    stage_order,
-    probability
+  select jsonb_agg(
+    jsonb_build_object(
+      'id', tsu.stage_key,
+      'name', tsu.name,
+      'stage_order', tsu.stage_order,
+      'probability', tsu.probability
+    )
+    order by tsu.stage_order
   )
-  select
-    pipeline_scope.organization_id,
-    pipeline_scope.client_id,
-    pipeline_scope.workspace_id,
-    v_pipeline_id,
-    tsu.name,
-    tsu.stage_order,
-    tsu.probability
-  from tmp_stage_updates tsu
-  on conflict (pipeline_id, stage_order) do update
-  set name = excluded.name,
-      probability = excluded.probability,
-      updated_at = now();
+  into normalized_stages
+  from tmp_stage_updates tsu;
+
+  update public.organizations
+  set metadata = coalesce(organizations.metadata, '{}'::jsonb) || jsonb_build_object('pipeline_stages', normalized_stages),
+      updated_at = now()
+  where organizations.id = current_org_id;
 
   return query
   select *
@@ -297,56 +139,18 @@ begin
 end;
 $$;
 
-do $$
-declare
-  target_pipeline_id uuid;
-begin
-  for target_pipeline_id in
-    select pipeline_id
-    from public.pipeline_stages
-    group by pipeline_id
-    having array_agg(name order by stage_order) = array['Lead In','Researching','Contacted','Meeting','Qualified']
-  loop
-    update public.pipeline_stages
-    set name = case stage_order
-      when 1 then 'Research'
-      when 2 then 'Preparation'
-      when 3 then 'Qualify'
-      when 4 then 'Discover'
-      when 5 then 'Alignment'
-      else name
-    end,
-    updated_at = now()
-    where pipeline_id = target_pipeline_id
-      and stage_order between 1 and 5;
+update public.organizations
+set metadata = coalesce(metadata, '{}'::jsonb)
+  || jsonb_build_object('pipeline_stages', public.default_shared_pipeline_stages()),
+  updated_at = now()
+where not (coalesce(metadata, '{}'::jsonb) ? 'pipeline_stages');
 
-    insert into public.pipeline_stages (
-      organization_id,
-      client_id,
-      workspace_id,
-      pipeline_id,
-      name,
-      stage_order,
-      probability
-    )
-    select p.organization_id, p.client_id, p.workspace_id, p.id, 'Position', 6, 80
-    from public.pipelines p
-    where p.id = target_pipeline_id
-    on conflict (pipeline_id, stage_order) do nothing;
-
-    insert into public.pipeline_stages (
-      organization_id,
-      client_id,
-      workspace_id,
-      pipeline_id,
-      name,
-      stage_order,
-      probability
-    )
-    select p.organization_id, p.client_id, p.workspace_id, p.id, 'Intent to Buy', 7, 90
-    from public.pipelines p
-    where p.id = target_pipeline_id
-    on conflict (pipeline_id, stage_order) do nothing;
-  end loop;
-end;
-$$;
+grant all on function public.default_shared_pipeline_stages() to anon;
+grant all on function public.default_shared_pipeline_stages() to authenticated;
+grant all on function public.default_shared_pipeline_stages() to service_role;
+grant all on function public.get_shared_pipeline_stages() to anon;
+grant all on function public.get_shared_pipeline_stages() to authenticated;
+grant all on function public.get_shared_pipeline_stages() to service_role;
+grant all on function public.update_shared_pipeline_stages(jsonb) to anon;
+grant all on function public.update_shared_pipeline_stages(jsonb) to authenticated;
+grant all on function public.update_shared_pipeline_stages(jsonb) to service_role;

@@ -5945,18 +5945,54 @@ textarea::placeholder {
   width: clamp(220px, 18vw, 280px);
   height: clamp(560px, calc(100vh - 310px), 760px);
   min-height: 0;
-  border: 1px solid var(--border);
+  --pipeline-stage-accent: var(--accent);
+  --pipeline-stage-soft: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--pipeline-stage-accent) 32%, var(--border));
   border-radius: 8px;
-  background: var(--surface);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pipeline-stage-soft) 62%, transparent), transparent 120px),
+    var(--surface);
   padding: 10px;
   display: flex;
   flex-direction: column;
   transition: border-color 0.14s ease, background 0.14s ease;
 }
 
+.pipeline-column:nth-child(6n + 1) {
+  --pipeline-stage-accent: #2563eb;
+  --pipeline-stage-soft: rgba(37, 99, 235, 0.12);
+}
+
+.pipeline-column:nth-child(6n + 2) {
+  --pipeline-stage-accent: #0f766e;
+  --pipeline-stage-soft: rgba(15, 118, 110, 0.12);
+}
+
+.pipeline-column:nth-child(6n + 3) {
+  --pipeline-stage-accent: #a16207;
+  --pipeline-stage-soft: rgba(161, 98, 7, 0.13);
+}
+
+.pipeline-column:nth-child(6n + 4) {
+  --pipeline-stage-accent: #7c3aed;
+  --pipeline-stage-soft: rgba(124, 58, 237, 0.12);
+}
+
+.pipeline-column:nth-child(6n + 5) {
+  --pipeline-stage-accent: #be123c;
+  --pipeline-stage-soft: rgba(190, 18, 60, 0.11);
+}
+
+.pipeline-column:nth-child(6n) {
+  --pipeline-stage-accent: #15803d;
+  --pipeline-stage-soft: rgba(21, 128, 61, 0.12);
+}
+
 .pipeline-column.drop-target {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--pipeline-stage-accent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pipeline-stage-soft) 76%, transparent), transparent 140px),
+    color-mix(in srgb, var(--pipeline-stage-soft) 54%, var(--surface));
 }
 
 .pipeline-column-head {
@@ -5966,6 +6002,9 @@ textarea::placeholder {
   align-items: center;
   justify-content: space-between;
   color: var(--text);
+  border-bottom: 2px solid color-mix(in srgb, var(--pipeline-stage-accent) 52%, transparent);
+  margin-bottom: 8px;
+  padding-bottom: 8px;
 }
 
 .pipeline-column-head span {
@@ -5974,8 +6013,8 @@ textarea::placeholder {
   border-radius: 999px;
   display: grid;
   place-items: center;
-  background: var(--soft);
-  color: var(--muted);
+  background: color-mix(in srgb, var(--pipeline-stage-accent) 16%, var(--card));
+  color: var(--pipeline-stage-accent);
   font-size: 12px;
   font-weight: 800;
 }

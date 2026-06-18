@@ -9860,6 +9860,9 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
   const [contactListCampaignIds, setContactListCampaignIds] = useState([]);
   const [contactListStatus, setContactListStatus] = useState("idle");
   const [contactListError, setContactListError] = useState("");
+  const [contactHubspotExportStatus, setContactHubspotExportStatus] = useState("idle");
+  const [contactHubspotExportSummary, setContactHubspotExportSummary] = useState("");
+  const [contactHubspotExportDialog, setContactHubspotExportDialog] = useState(null);
   const leadLookupCompanyOptions = [...new Set(contactDatabase.map(contact => normalizeLookupValue(contact.company)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const industryByCompany = new Map(accounts.map(account => [normalizeLookupValue(account.name).toLowerCase(), normalizeLookupValue(account.industry)]));
   const leadLookupIndustryOptions = [...new Set(contactDatabase
@@ -9997,6 +10000,83 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
     exportCognismResults(exportableContacts.map(contactToLead), format, [], defaultLeadExportFilename(base, format));
   }
 
+  async function exportContactsToHubSpot() {
+    if (!exportableContacts.length) {
+      setContactListError("Select or filter at least one contact before exporting to HubSpot.");
+      return;
+    }
+    setContactHubspotExportStatus("exporting");
+    setContactHubspotExportSummary("");
+    setContactListError("");
+    try {
+      const { data } = supabase ? await supabase.auth.getSession() : { data: null };
+      const token = data?.session?.access_token;
+      if (!token) throw new Error("Sign in before exporting to HubSpot.");
+      const hubspotRows = exportableContacts.map(contact => {
+        const lead = contactToLead(contact);
+        return {
+          rowId: buildLeadIdentityKey(lead),
+          dbContactId: lead.dbContactId,
+          hubspotContactId: lead.hubspotContactId,
+          contactName: lead.contactName,
+          company: lead.company,
+          jobTitle: lead.jobTitle,
+          location: lead.location,
+          manualEmail: lead.manualEmail,
+          manualMobile: lead.manualMobile,
+          manualDirectDial: lead.manualDirectDial,
+        };
+      });
+      const response = await fetch("/api/hubspot/contacts/export", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ rows: hubspotRows }),
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || "HubSpot export failed.");
+      const resultsByRowId = new Map((payload.results || []).map(result => [result.rowId, result]));
+      for (const contact of exportableContacts) {
+        const lead = contactToLead(contact);
+        const exportResult = resultsByRowId.get(buildLeadIdentityKey(lead));
+        if (!exportResult) continue;
+        await onSaveLeadContact({
+          ...lead,
+          hubspotContactId: exportResult.hubspotContactId,
+          hubspotExportedAt: exportResult.hubspotExportedAt,
+          hubspotExportStatus: exportResult.hubspotExportStatus,
+          hubspotExportError: exportResult.hubspotExportError,
+        }, { allowPreviewOnly: true, skipConflictPrompt: true });
+      }
+      const failedCount = (payload.results || []).filter(result => result.hubspotExportStatus === "error").length;
+      const exportedCount = (payload.results || []).filter(result => result.hubspotExportStatus === "exported").length;
+      const failures = buildHubSpotExportFailures(hubspotRows, payload.results || []);
+      const summary = `${exportedCount} exported to HubSpot${failedCount ? `, ${failedCount} failed` : ""}.`;
+      setContactHubspotExportStatus(failedCount ? "error" : "exported");
+      setContactHubspotExportSummary(summary);
+      setContactHubspotExportDialog({
+        open: true,
+        status: failedCount ? "error" : "success",
+        summary,
+        detail: failedCount ? "Review the failed row below, fix the contact data if needed, then export again." : `${exportableContacts.length} contact${exportableContacts.length === 1 ? "" : "s"} sent to HubSpot.`,
+        failures,
+      });
+      if (failedCount) setContactListError(`${failedCount} HubSpot export${failedCount === 1 ? "" : "s"} failed. Check the export result.`);
+    } catch (exportError) {
+      setContactHubspotExportStatus("error");
+      setContactHubspotExportSummary("");
+      setContactHubspotExportDialog({
+        open: true,
+        status: "error",
+        summary: exportError.message || "HubSpot export failed.",
+        detail: "No successful export response was received from HubSpot.",
+      });
+      setContactListError(exportError.message || "HubSpot export failed.");
+    }
+  }
+
   async function saveSelectedContactsAsList() {
     if (!contactListName.trim()) {
       setContactListError("Name this lead list before saving.");
@@ -10094,6 +10174,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
             { label: "CSV", icon: FileText, onClick: () => exportContacts("csv") },
             { label: "Excel", icon: FileText, onClick: () => exportContacts("xls") },
             { label: "JSON", icon: FileText, onClick: () => exportContacts("json") },
+            { label: contactHubspotExportStatus === "exporting" ? "Exporting to HubSpot" : "Export to HubSpot", icon: HubSpotLogoIcon, onClick: exportContactsToHubSpot, disabled: contactHubspotExportStatus === "exporting" || !exportableContacts.length },
           ]}
         />
         <button className="primary-button" type="button" onClick={openContactListSave} disabled={!selectedContacts.length}>
@@ -10105,6 +10186,11 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
           {editMode ? "Done editing" : "Edit mode"}
         </button>
       </PageHeader>
+      {contactHubspotExportSummary ? (
+        <div className={`form-success ${contactHubspotExportStatus === "error" ? "warning" : ""}`}>
+          {contactHubspotExportSummary}
+        </div>
+      ) : null}
       <div className="lead-database-strip" aria-label="Saved contact health">
         <div>
           <Users size={16} aria-hidden="true" />
@@ -10468,6 +10554,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
           </section>
         </div>
       ) : null}
+      <HubSpotExportResultModal result={contactHubspotExportDialog} onClose={() => setContactHubspotExportDialog(null)} />
     </>
   );
 }
@@ -10484,6 +10571,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
   const [accessStatus, setAccessStatus] = useState("idle");
   const [shareOpen, setShareOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [listExpanded, setListExpanded] = useState(false);
   const [listNameDrafts, setListNameDrafts] = useState({});
   const [listNameStatus, setListNameStatus] = useState("idle");
   const [leadEditDrafts, setLeadEditDrafts] = useState({});
@@ -10535,7 +10623,17 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
 
   useEffect(() => {
     setSelectedLeadIds([]);
+    setListExpanded(false);
   }, [selectedList?.id]);
+
+  useEffect(() => {
+    if (!listExpanded) return undefined;
+    function handleKeyDown(event) {
+      if (event.key === "Escape") setListExpanded(false);
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [listExpanded]);
 
   function setSelectedListAccessUserIds(updater) {
     if (!selectedList) return;
@@ -10649,13 +10747,13 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
     }
   }
 
-  async function deleteSelectedList() {
-    if (!selectedList) return;
+  async function deleteSelectedList(listToDelete = selectedList) {
+    if (!listToDelete) return;
     setDeleteStatus("deleting");
     setManualError("");
     try {
-      await onDeleteLeadList(selectedList);
-      setSelectedListId("");
+      await onDeleteLeadList(listToDelete);
+      if (selectedList?.id === listToDelete.id) setSelectedListId("");
       setDeleteStatus("deleted");
     } catch (deleteError) {
       setDeleteStatus("error");
@@ -10730,14 +10828,14 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
     }
   }
 
-  function requestDeleteSelectedList() {
-    if (!selectedList) return;
+  function requestDeleteSelectedList(listToDelete = selectedList) {
+    if (!listToDelete) return;
     confirmListAction({
       title: "Delete lead list",
-      message: `Delete "${selectedList.name}"? This removes the saved list, but does not delete lead records from the database.`,
+      message: `Delete "${listToDelete.name}"? This removes the saved list, but does not delete lead records from the database.`,
       confirmLabel: "Delete list",
       danger: true,
-      onConfirm: deleteSelectedList,
+      onConfirm: () => deleteSelectedList(listToDelete),
     });
   }
 
@@ -11004,7 +11102,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
         </div>
       </div>
       {error ? <div className="form-error">{error}</div> : null}
-      <div className="lead-list-layout">
+      <div className={`lead-list-layout ${listExpanded ? "expanded" : ""}`}>
         <section className="panel lead-list-index">
           <div className="panel-header">
             <div>
@@ -11018,16 +11116,25 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
               {leadLists.map(list => {
                 const users = userNamesForIds(list.assignedUserIds, workspaceUsers);
                 return (
-                  <button
+                  <div
                     key={list.id}
-                    type="button"
                     className={`lead-list-card ${selectedList?.id === list.id ? "selected" : ""}`}
-                    onClick={() => setSelectedListId(list.id)}
                   >
-                    <strong>{list.name}</strong>
-                    <span>{list.leads.length} leads</span>
-                    <small>{users.length ? users.map(user => user.name).join(", ") : "No assigned users found"}</small>
-                  </button>
+                    <button type="button" className="lead-list-card-main" onClick={() => setSelectedListId(list.id)}>
+                      <strong>{list.name}</strong>
+                      <span>{list.leads.length} leads</span>
+                      <small>{users.length ? users.map(user => user.name).join(", ") : "No assigned users found"}</small>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button lead-list-card-delete"
+                      onClick={() => requestDeleteSelectedList(list)}
+                      disabled={deleteStatus === "deleting"}
+                      aria-label={`Delete ${list.name}`}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -11036,7 +11143,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
           )}
         </section>
 
-        <section className="panel lead-list-detail">
+        <section className={`panel lead-list-detail ${listExpanded ? "expanded" : ""}`}>
           {selectedList ? (
             <>
               <div className="panel-header">
@@ -11058,6 +11165,10 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                   )}
                 </div>
                 <div className="export-actions compact-export-actions">
+                  <button className="secondary-button" type="button" onClick={() => setListExpanded(current => !current)}>
+                    {listExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                    {listExpanded ? "Exit full view" : "Expand list"}
+                  </button>
                   {editMode ? (
                     <button className="secondary-button" type="button" onClick={saveSelectedListName} disabled={listNameStatus === "saving" || selectedListNameDraft.trim() === selectedList.name}>
                       {listNameStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <CheckCircle2 size={16} />}
@@ -11068,11 +11179,10 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                     label={selectedLeads.length ? "Export selected" : "Export list"}
                     disabled={!exportableListLeads.length}
                     options={[
-                      { label: "CSV", icon: FileText, onClick: () => requestListExport("csv") },
-                      { label: "Location CSV", icon: Download, onClick: exportLockerFinderCsv, disabled: !lockerFinderExportLeads.length },
+                      { label: "CSV", icon: FileText, onClick: selectedListLooksLocker ? exportLockerFinderCsv : () => requestListExport("csv"), disabled: selectedListLooksLocker ? !lockerFinderExportLeads.length : !exportableListLeads.length },
                       { label: "Excel", icon: FileText, onClick: () => requestListExport("xls") },
                       { label: "JSON", icon: FileText, onClick: () => requestListExport("json") },
-                      { label: listHubspotExportStatus === "exporting" ? "Exporting to HubSpot" : "HubSpot", icon: HubSpotLogoIcon, onClick: requestListHubSpotExport, disabled: listHubspotExportStatus === "exporting" || !displayedLeads.length },
+                      { label: listHubspotExportStatus === "exporting" ? "Exporting to HubSpot" : "Export to HubSpot", icon: HubSpotLogoIcon, onClick: requestListHubSpotExport, disabled: listHubspotExportStatus === "exporting" || !displayedLeads.length },
                     ]}
                   />
                   {editMode ? (

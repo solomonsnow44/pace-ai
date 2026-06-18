@@ -7974,6 +7974,30 @@ textarea::placeholder {
   gap: 14px;
 }
 
+.lead-list-layout.expanded {
+  display: block;
+}
+
+.lead-list-layout.expanded .lead-list-index {
+  display: none;
+}
+
+.lead-list-detail.expanded {
+  position: fixed;
+  inset: 14px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.lead-list-detail.expanded .saved-lead-list-table-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
 .lead-lookup-panel {
   margin-bottom: 14px;
 }
@@ -8406,14 +8430,15 @@ textarea::placeholder {
 .lead-list-card {
   width: 100%;
   display: grid;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
   color: var(--text);
   padding: 11px;
   text-align: left;
-  cursor: pointer;
 }
 
 .lead-list-card:hover,
@@ -8422,7 +8447,32 @@ textarea::placeholder {
   background: var(--accent-soft);
 }
 
-.lead-list-card strong {
+.lead-list-card-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lead-list-card-delete {
+  width: 32px;
+  height: 32px;
+  color: var(--muted);
+}
+
+.lead-list-card-delete:hover {
+  border-color: rgba(220, 38, 38, 0.3);
+  background: rgba(220, 38, 38, 0.08);
+  color: #dc2626;
+}
+
+.lead-list-card strong,
+.lead-list-card-main strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -8431,7 +8481,9 @@ textarea::placeholder {
 }
 
 .lead-list-card span,
-.lead-list-card small {
+.lead-list-card small,
+.lead-list-card-main span,
+.lead-list-card-main small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

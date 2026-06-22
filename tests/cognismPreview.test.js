@@ -44,6 +44,7 @@ test("preview route helper caps maxPerCompany and estimated credits stay 0", asy
               hasEmail: true,
               hasMobilePhoneNumbers: false,
               hasDirectPhoneNumbers: true,
+              profileImageUrl: "https://cdn.example.com/preview.jpg",
               account: { name: "Microsoft" },
             },
             {
@@ -76,6 +77,7 @@ test("preview route helper caps maxPerCompany and estimated credits stay 0", asy
   assert.equal(payload.results.length, 2);
   assert.equal(payload.results[0].emailAvailable, true);
   assert.equal(payload.results[0].directDialAvailable, true);
+  assert.equal(payload.results[0].profilePictureUrl, "https://cdn.example.com/preview.jpg");
   assert.ok(calledUrls.every(url => !/redeem|reveal|export|enrich/i.test(url)));
 });
 
@@ -183,6 +185,7 @@ test("redeem helper posts redeem IDs and maps returned contact data", async () =
                   directPhoneNumbers: [
                     { number: "+1 508-434-4950", label: "DIRECT_DIAL" },
                   ],
+                  photoUrl: "https://cdn.example.com/megan.jpg",
                   account: { name: "Stripe" },
                 },
               ],
@@ -201,6 +204,7 @@ test("redeem helper posts redeem IDs and maps returned contact data", async () =
   assert.equal(payload.redeemed[0].manualEmail, "megan@example.com");
   assert.equal(payload.redeemed[0].manualMobile, "+1 630-542-1120");
   assert.equal(payload.redeemed[0].manualDirectDial, "+1 508-434-4950");
+  assert.equal(payload.redeemed[0].profilePictureUrl, "https://cdn.example.com/megan.jpg");
 });
 
 test("redeem helper reads Cognism result arrays and surfaces response errors", async () => {

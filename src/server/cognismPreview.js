@@ -245,13 +245,14 @@ export function mapCognismPreviewContact(company, contact, targetTitles) {
     location: location || (contact.hasCity || contact.hasState || contact.hasCountry ? "Available" : "Not available"),
     linkedinAvailable: Boolean(contact.hasLinkedinUrl || contact.hasLinkedInUrl),
     linkedinProfileUrl: compactString(contact.linkedinUrl || contact.linkedInUrl || contact.linkedinProfileUrl),
+    profilePictureUrl: extractProfilePictureUrl(contact),
     emailAvailable: Boolean(contact.hasEmail),
     mobileAvailable: Boolean(contact.hasMobilePhoneNumbers),
     directDialAvailable: Boolean(contact.hasDirectPhoneNumbers),
     matchScore: scoreContact(contact, targetTitles),
     cognismContactId: compactString(contact.id || contact.contactId || contact.redeemId),
     cognismRedeemId: redeemId,
-    dataSource: "cognism_preview",
+    dataSource: "cognism",
   };
 }
 
@@ -272,7 +273,7 @@ function createLocalPreviewResults(companies, targetTitles, maxPerCompany, requi
         matchScore: 0.5,
         cognismContactId: `local-preview:${safeCompany.toLowerCase()}:${index + 1}`,
         cognismRedeemId: `local-preview:${safeCompany.toLowerCase()}:${index + 1}`,
-        dataSource: "cognism_preview",
+        dataSource: "cognism",
       };
     });
   });
@@ -358,6 +359,31 @@ function extractEmail(record = {}) {
   return compactString(candidates.find(Boolean));
 }
 
+function extractProfilePictureUrl(record = {}) {
+  const candidates = [
+    record.profilePictureUrl,
+    record.profile_picture_url,
+    record.profileImageUrl,
+    record.profile_image_url,
+    record.photoUrl,
+    record.photo_url,
+    record.pictureUrl,
+    record.picture_url,
+    record.avatarUrl,
+    record.avatar_url,
+    record.imageUrl,
+    record.image_url,
+    record.linkedinProfilePictureUrl,
+    record.linkedin_profile_picture_url,
+    record.linkedinImageUrl,
+    record.linkedin_image_url,
+    record.person?.profilePictureUrl,
+    record.person?.profileImageUrl,
+    record.person?.photoUrl,
+  ];
+  return compactString(candidates.find(Boolean));
+}
+
 function phoneNumberValue(phone) {
   if (!phone) return "";
   if (typeof phone === "string") return compactString(phone);
@@ -436,6 +462,7 @@ function mapCognismRedeemedContact(record = {}, requestedLead = {}) {
     jobTitle: compactString(record.jobTitle) || requestedLead.jobTitle || "",
     location: [record.city, record.state, record.country].map(compactString).filter(Boolean).join(", ") || requestedLead.location || "",
     linkedinProfileUrl: compactString(record.linkedinUrl || record.linkedInUrl || record.linkedinURL || record.linkedInURL || record.linkedinProfileUrl) || requestedLead.linkedinProfileUrl || "",
+    profilePictureUrl: extractProfilePictureUrl(record) || requestedLead.profilePictureUrl || "",
     manualEmail: extractEmail(record) || requestedLead.manualEmail || "",
     manualMobile: mobile || requestedLead.manualMobile || "",
     manualDirectDial: directDial || (shouldKeepRequestedDirectDial ? requestedDirectDial : ""),
@@ -444,7 +471,7 @@ function mapCognismRedeemedContact(record = {}, requestedLead = {}) {
     directDialAvailable: Boolean(directDial || requestedLead.directDialAvailable),
     redeemed: true,
     redeemedAt: new Date().toISOString(),
-    dataSource: "cognism_redeem",
+    dataSource: "cognism",
   };
 }
 
@@ -467,7 +494,7 @@ function createLocalRedeemResults(leads) {
       directDialAvailable: true,
       redeemed: true,
       redeemedAt: new Date().toISOString(),
-      dataSource: "cognism_redeem",
+      dataSource: "cognism",
     };
   });
 }

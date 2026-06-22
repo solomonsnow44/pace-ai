@@ -60,6 +60,7 @@ import {
 import aircallLogoUrl from "./assets/aircall.png";
 import cognismLogoUrl from "./assets/cognism.png";
 import hubspotLogoUrl from "./assets/hubspot.png";
+import lemlistLogoUrl from "./assets/lemlist.jpeg";
 import logoUrl from "../images/paceops-logo.jpeg";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -160,6 +161,10 @@ function CognismLogoIcon(props) {
 
 function HubSpotLogoIcon(props) {
   return <ProductLogoIcon src={hubspotLogoUrl} {...props} />;
+}
+
+function LemlistLogoIcon(props) {
+  return <ProductLogoIcon src={lemlistLogoUrl} {...props} />;
 }
 
 const demoClients = [
@@ -545,6 +550,7 @@ const baseIntegrations = [
   { name: "Lead Finder (Cognism)", key: "Cognism", icon: CognismLogoIcon, status: "Connected", note: "Search Cognism preview lead records and save selected rows.", action: "Open Lead Finder", view: "cognism", redeemEnabled: false },
   { name: "Aircall", icon: AircallLogoIcon, status: "Partial", note: "Click-to-call, call history, transcripts, sentiment, and user call reporting.", action: "Open Aircall", view: "aircall" },
   { name: "HubSpot", icon: HubSpotLogoIcon, status: "Connected", note: "Lead Finder contacts can be exported to HubSpot contacts. Company association depends on HubSpot app scopes.", action: "Open Lead Finder", view: "cognism" },
+  { name: "Lemlist", key: "Lemlist", icon: LemlistLogoIcon, status: "Connected", note: "Campaign performance, leads, people, companies, and credits from Lemlist.", action: "Open Lemlist", view: "lemlist" },
 ];
 const connectedIntegrationStatuses = new Set(["Available", "Connected", "Partial"]);
 const SHOW_INTEGRATION_KEY_CONTROLS = false;
@@ -557,6 +563,7 @@ const navItems = [
   { id: "contacts", label: "Contacts", icon: Contact, highlight: true },
   { id: "intent-research", label: "Intent Research", icon: Database, highlight: true, orgAdminOnly: true },
   { id: "cognism", label: "Lead Finder", icon: CognismLogoIcon, logo: cognismLogoUrl, highlight: true },
+  { id: "lemlist", label: "Lemlist", icon: LemlistLogoIcon, logo: lemlistLogoUrl, highlight: true },
   { id: "lead-lists", label: "Lead Lists", icon: ListFilter, highlight: true },
   { id: "pipeline", label: "Pipeline", icon: KanbanSquare },
   { id: "research", label: "Research", icon: FileText },
@@ -710,10 +717,40 @@ async function uploadProfileImage({ file, userId }) {
   };
 }
 
+async function uploadContactProfileImage({ file, userId, recordId }) {
+  if (!supabase) throw new Error("Supabase is not configured for uploads.");
+  if (!UUID_PATTERN.test(String(userId || ""))) throw new Error("Sign in before uploading a contact image.");
+  if (!file) throw new Error("Choose an image file first.");
+  if (!String(file.type || "").startsWith("image/")) throw new Error("Choose a PNG, JPG, WebP, or GIF image.");
+  if (file.size > PROFILE_IMAGE_MAX_BYTES) throw new Error("Choose an image under 5 MB.");
+
+  const extension = extensionForImageFile(file);
+  const baseName = sanitizeStorageName(String(file.name || "contact").replace(/\.[^.]+$/, ""));
+  const safeRecordId = sanitizeStorageName(recordId || "manual-contact");
+  const path = `${userId}/contacts/${safeRecordId}/${Date.now()}-${baseName}.${extension}`;
+  const { error } = await supabase.storage
+    .from(PROFILE_IMAGE_BUCKET)
+    .upload(path, file, {
+      cacheControl: "31536000",
+      contentType: file.type || "image/png",
+      upsert: false,
+    });
+
+  if (error) throw error;
+  const { data } = supabase.storage.from(PROFILE_IMAGE_BUCKET).getPublicUrl(path);
+  return {
+    profilePictureUrl: data.publicUrl,
+    profilePicturePath: path,
+    profilePictureName: file.name || "Contact image",
+  };
+}
+
 function RecordAvatar({ name = "", imageUrl = "", size = "", className = "" }) {
-  const classes = ["record-avatar", size, imageUrl ? "record-avatar-image" : "", className].filter(Boolean).join(" ");
-  return imageUrl
-    ? <img className={classes} src={imageUrl} alt="" />
+  const [failedImageUrl, setFailedImageUrl] = useState("");
+  const showImage = Boolean(imageUrl && failedImageUrl !== imageUrl);
+  const classes = ["record-avatar", size, showImage ? "record-avatar-image" : "", className].filter(Boolean).join(" ");
+  return showImage
+    ? <img className={classes} src={imageUrl} alt="" onError={() => setFailedImageUrl(imageUrl)} />
     : <span className={classes}>{accountInitial(name)}</span>;
 }
 
@@ -853,6 +890,21 @@ function isMissingRelationError(error) {
   return error?.code === "42P01" || /relation .* does not exist/i.test(error?.message || "");
 }
 
+function isMissingColumnError(error) {
+  const message = error?.message || "";
+  return error?.code === "42703"
+    || error?.code === "PGRST204"
+    || /column .* does not exist/i.test(message)
+    || /could not find .* column .* schema cache/i.test(message);
+}
+
+function missingSchemaColumnName(error) {
+  const message = error?.message || "";
+  return message.match(/'([^']+)'\s+column/i)?.[1]
+    || message.match(/column\s+"?([a-zA-Z0-9_]+)"?\s+does not exist/i)?.[1]
+    || "";
+}
+
 async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
   if (!supabase || !organizationId) return null;
 
@@ -866,6 +918,13 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
       rows.push(...pageRows);
       if (pageRows.length < pageSize) return { data: rows, error: null };
     }
+  }
+
+  async function fetchAllRowsWithColumnFallback(createPrimaryQuery, createFallbackQuery, label) {
+    const primaryResult = await fetchAllRows(createPrimaryQuery);
+    if (!primaryResult.error || !isMissingColumnError(primaryResult.error)) return primaryResult;
+    console.warn(`Could not load optional ${label} CRM fields; retrying with base columns.`, primaryResult.error);
+    return fetchAllRows(createFallbackQuery);
   }
 
   const [
@@ -886,21 +945,45 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
       .select("id,name,status,industry,website,owner_id,metadata")
       .eq("organization_id", organizationId)
       .order("name", { ascending: true })),
-    fetchAllRows(() => supabase
-      .from("campaigns")
-      .select("id,client_id,name,status,channel,settings")
-      .eq("organization_id", organizationId)
-      .order("name", { ascending: true })),
-    fetchAllRows(() => supabase
-      .from("companies")
-      .select("id,client_id,name,domain,website,industry,employee_count,annual_revenue,status,notes,custom_fields")
-      .eq("organization_id", organizationId)
-      .order("name", { ascending: true })),
-    fetchAllRows(() => supabase
-      .from("contacts")
-      .select("id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,status,custom_fields")
-      .eq("organization_id", organizationId)
-      .order("created_at", { ascending: true })),
+    fetchAllRowsWithColumnFallback(
+      () => supabase
+        .from("campaigns")
+        .select("id,client_id,name,status,channel,settings,lemlist_campaign_id,lemlist_status,lemlist_created_at,lemlist_raw,last_lemlist_synced_at")
+        .eq("organization_id", organizationId)
+        .order("name", { ascending: true }),
+      () => supabase
+        .from("campaigns")
+        .select("id,client_id,name,status,channel,settings")
+        .eq("organization_id", organizationId)
+        .order("name", { ascending: true }),
+      "campaign",
+    ),
+    fetchAllRowsWithColumnFallback(
+      () => supabase
+        .from("companies")
+        .select("id,client_id,name,domain,website,industry,employee_count,annual_revenue,status,notes,custom_fields,lemlist_company_id,linkedin_url,picture_url,company_size,founded_year,location,crm_sync_status,lemlist_raw,last_lemlist_synced_at")
+        .eq("organization_id", organizationId)
+        .order("name", { ascending: true }),
+      () => supabase
+        .from("companies")
+        .select("id,client_id,name,domain,website,industry,employee_count,annual_revenue,status,notes,custom_fields")
+        .eq("organization_id", organizationId)
+        .order("name", { ascending: true }),
+      "company",
+    ),
+    fetchAllRowsWithColumnFallback(
+      () => supabase
+        .from("contacts")
+        .select("id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,linkedin_profile_url,status,custom_fields,lemlist_contact_id,lemlist_owner_id,lemlist_status_id,lemlist_unsubscribed,linkedin_sales_nav_url,profile_picture_url,timezone,summary,tagline,skills,lemlist_raw,last_lemlist_synced_at")
+        .eq("organization_id", organizationId)
+        .order("created_at", { ascending: true }),
+      () => supabase
+        .from("contacts")
+        .select("id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,status,custom_fields")
+        .eq("organization_id", organizationId)
+        .order("created_at", { ascending: true }),
+      "contact",
+    ),
     fetchAllRows(() => supabase
       .from("campaign_targets")
       .select("campaign_id,company_id,contact_id")
@@ -1010,6 +1093,14 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
       nextAction: company.custom_fields?.next_action || "Review company",
       insight: company.notes || "",
       scripts: company.custom_fields?.scripts || null,
+      lemlistCompanyId: company.lemlist_company_id || company.custom_fields?.lemlist_company_id || "",
+      linkedinUrl: company.linkedin_url || company.custom_fields?.linkedin_url || "",
+      pictureUrl: company.picture_url || company.custom_fields?.picture_url || "",
+      companySize: company.company_size || company.custom_fields?.company_size || "",
+      foundedYear: company.founded_year || company.custom_fields?.founded_year || "",
+      crmSyncStatus: company.crm_sync_status || company.custom_fields?.crm_sync_status || "",
+      lemlistRaw: company.lemlist_raw || company.custom_fields?.lemlist_raw || {},
+      lastLemlistSyncedAt: company.last_lemlist_synced_at || "",
       customFields: company.custom_fields || {},
     })),
     campaigns: campaigns.map(campaign => {
@@ -1027,6 +1118,11 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
         owner: "Workspace Admin",
         channel: campaign.channel || "Outbound",
         settings: campaign.settings || {},
+        lemlistCampaignId: campaign.lemlist_campaign_id || campaign.settings?.lemlist_campaign_id || "",
+        lemlistStatus: campaign.lemlist_status || campaign.settings?.lemlist_status || "",
+        lemlistCreatedAt: campaign.lemlist_created_at || "",
+        lemlistRaw: campaign.lemlist_raw || campaign.settings?.lemlist_raw || {},
+        lastLemlistSyncedAt: campaign.last_lemlist_synced_at || "",
         memberIds: campaignMembers.filter(member => member.campaign_id === campaign.id).map(member => member.user_id),
         imageUrl: campaign.settings?.imageUrl || "",
         imagePath: campaign.settings?.imagePath || "",
@@ -1104,8 +1200,22 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
         title: contact.job_title || "",
         role: contact.job_title || "",
         linkedin: contact.linkedin_url || "",
+        linkedinUrl: contact.linkedin_url || contact.linkedin_profile_url || "",
+        linkedinProfileUrl: contact.linkedin_profile_url || contact.linkedin_url || "",
         status: contact.custom_fields?.ui_status || titleCase(contact.status || "active"),
         stage: pipelineStageIdForValue(contact.custom_fields?.pipeline_stage || "lead"),
+        lemlistContactId: contact.lemlist_contact_id || contact.custom_fields?.lemlist_contact_id || "",
+        lemlistOwnerId: contact.lemlist_owner_id || contact.custom_fields?.lemlist_owner_id || "",
+        lemlistStatusId: contact.lemlist_status_id || contact.custom_fields?.lemlist_status_id || "",
+        lemlistUnsubscribed: contact.lemlist_unsubscribed === true,
+        linkedinSalesNavUrl: contact.linkedin_sales_nav_url || contact.custom_fields?.linkedin_sales_nav_url || "",
+        profilePictureUrl: contact.profile_picture_url || contact.custom_fields?.profile_picture_url || "",
+        timezone: contact.timezone || contact.custom_fields?.timezone || "",
+        summary: contact.summary || contact.custom_fields?.summary || "",
+        tagline: contact.tagline || contact.custom_fields?.tagline || "",
+        skills: Array.isArray(contact.skills) ? contact.skills : contact.custom_fields?.skills || [],
+        lemlistRaw: contact.lemlist_raw || contact.custom_fields?.lemlist_raw || {},
+        lastLemlistSyncedAt: contact.last_lemlist_synced_at || "",
         customFields: contact.custom_fields || {},
         owner: "Workspace Admin",
         lastTouch: "Imported from CRM database",
@@ -1454,10 +1564,32 @@ async function createRelationalCompany(organizationId, company) {
   return data;
 }
 
+const CONTACT_BASE_SELECT = "id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,status,custom_fields";
+const CONTACT_PROFILE_SELECT = "id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,profile_picture_url,summary,tagline,skills,status,custom_fields";
+const OPTIONAL_CONTACT_PROFILE_COLUMNS = ["profile_picture_url", "summary", "tagline", "skills"];
+
+function normalizeContactSkills(skills = []) {
+  if (Array.isArray(skills)) {
+    return [...new Set(skills
+      .map(skill => normalizeLookupValue(skill?.name || skill?.skill || skill?.label || skill))
+      .filter(Boolean))];
+  }
+  return [...new Set(parseLines(skills))];
+}
+
+function stripOptionalContactProfileColumns(payload = {}) {
+  const nextPayload = { ...payload };
+  for (const column of OPTIONAL_CONTACT_PROFILE_COLUMNS) delete nextPayload[column];
+  return nextPayload;
+}
+
 function buildContactPayload(organizationId, contact) {
   const { firstName, lastName } = splitContactName(contact.name);
   const mobile = normalizePhoneFieldValue(contact.mobile);
   const directDial = normalizePhoneFieldValue(contact.directDial);
+  const profilePictureUrl = normalizeLookupValue(contact.profilePictureUrl);
+  const summary = normalizeLookupValue(contact.summary);
+  const skills = normalizeContactSkills(contact.skills);
   return {
     organization_id: organizationId,
     client_id: UUID_PATTERN.test(String(contact.clientId || "")) ? contact.clientId : null,
@@ -1475,23 +1607,40 @@ function buildContactPayload(organizationId, contact) {
     manual_mobile: mobile || null,
     manual_direct_dial: directDial || null,
     job_title: contact.role || contact.title || null,
+    profile_picture_url: profilePictureUrl || null,
+    summary: summary || null,
+    skills,
     data_source: "manual",
     normalized_identity_key: `person:${normalizeLookupValue(contact.name).toLowerCase()}|${normalizeLookupValue(contact.account || contact.company).toLowerCase()}`,
     status: "active",
     custom_fields: {
       ui_status: contact.status || "",
       pipeline_stage: pipelineStageIdForValue(contact.stage || "lead"),
+      profile_picture_url: profilePictureUrl || undefined,
+      profile_picture_path: normalizeLookupValue(contact.profilePicturePath) || undefined,
+      profile_picture_name: normalizeLookupValue(contact.profilePictureName) || undefined,
+      summary: summary || undefined,
+      skills,
     },
   };
 }
 
 async function createRelationalContact(organizationId, contact) {
   if (!supabase || !organizationId) return null;
-  const { data, error } = await supabase
+  const payload = buildContactPayload(organizationId, contact);
+  let { data, error } = await supabase
     .from("contacts")
-    .insert(buildContactPayload(organizationId, contact))
-    .select("id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,status,custom_fields")
+    .insert(payload)
+    .select(CONTACT_PROFILE_SELECT)
     .single();
+
+  if (error && isMissingColumnError(error)) {
+    ({ data, error } = await supabase
+      .from("contacts")
+      .insert(stripOptionalContactProfileColumns(payload))
+      .select(CONTACT_BASE_SELECT)
+      .single());
+  }
 
   if (error) throw error;
   return data;
@@ -1501,13 +1650,23 @@ async function saveRelationalContact(organizationId, contact) {
   if (!supabase || !organizationId || !UUID_PATTERN.test(String(contact?.id || ""))) return null;
   const payload = buildContactPayload(organizationId, contact);
   delete payload.organization_id;
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("contacts")
     .update(payload)
     .eq("id", contact.id)
     .eq("organization_id", organizationId)
-    .select("id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,status,custom_fields")
+    .select(CONTACT_PROFILE_SELECT)
     .single();
+
+  if (error && isMissingColumnError(error)) {
+    ({ data, error } = await supabase
+      .from("contacts")
+      .update(stripOptionalContactProfileColumns(payload))
+      .eq("id", contact.id)
+      .eq("organization_id", organizationId)
+      .select(CONTACT_BASE_SELECT)
+      .single());
+  }
 
   if (error) throw error;
   return data;
@@ -2033,6 +2192,19 @@ function formatDateTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatInteger(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "0";
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(number);
+}
+
+function formatPercent(numerator, denominator) {
+  const top = Number(numerator);
+  const bottom = Number(denominator);
+  if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= 0) return "0%";
+  return new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 1 }).format(top / bottom);
 }
 
 function startOfLocalDay(value = new Date()) {
@@ -2600,7 +2772,10 @@ function splitContactName(contactName = "") {
 function buildLeadIdentityKey(lead = {}) {
   if (lead.googlePlaceId) return `google-place:${normalizeLookupValue(lead.googlePlaceId).toLowerCase()}`;
   if (lead.cognismContactId) return `cognism:${normalizeLookupValue(lead.cognismContactId).toLowerCase()}`;
+  if (lead.lemlistContactId) return `lemlist-contact:${normalizeLookupValue(lead.lemlistContactId).toLowerCase()}`;
   if (lead.linkedinProfileUrl) return `linkedin:${normalizeLinkedinUrl(lead.linkedinProfileUrl).toLowerCase()}`;
+  if (lead.manualEmail) return `email:${normalizeEmail(lead.manualEmail)}`;
+  if (lead.lemlistLeadId) return `lemlist-lead:${normalizeLookupValue(lead.lemlistLeadId).toLowerCase()}`;
   return `person:${normalizeLookupValue(lead.contactName).toLowerCase()}|${normalizeLookupValue(lead.company).toLowerCase()}`;
 }
 
@@ -2631,6 +2806,18 @@ function mapContactDatabaseRecord(record) {
     hubspotExportedAt: record.hubspot_exported_at || "",
     hubspotExportStatus: record.hubspot_export_status || "",
     hubspotExportError: record.hubspot_export_error || "",
+    lemlistContactId: record.lemlist_contact_id || record.custom_fields?.lemlist_contact_id || "",
+    lemlistOwnerId: record.lemlist_owner_id || record.custom_fields?.lemlist_owner_id || "",
+    lemlistStatusId: record.lemlist_status_id || record.custom_fields?.lemlist_status_id || "",
+    lemlistUnsubscribed: record.lemlist_unsubscribed === true,
+    linkedinSalesNavUrl: record.linkedin_sales_nav_url || record.custom_fields?.linkedin_sales_nav_url || "",
+    profilePictureUrl: record.profile_picture_url || record.custom_fields?.profile_picture_url || "",
+    timezone: record.timezone || record.custom_fields?.timezone || "",
+    summary: record.summary || record.custom_fields?.summary || "",
+    tagline: record.tagline || record.custom_fields?.tagline || "",
+    skills: Array.isArray(record.skills) ? record.skills : record.custom_fields?.skills || [],
+    lemlistRaw: record.lemlist_raw || record.custom_fields?.lemlist_raw || {},
+    lastLemlistSyncedAt: record.last_lemlist_synced_at || "",
     createdBy: record.created_by,
     updatedBy: record.updated_by,
     createdAt: record.created_at,
@@ -2688,6 +2875,12 @@ async function ensureLeadCompanyRecord(organizationId, companyName) {
 }
 
 function findLeadDatabaseMatch(lead, contactDatabase = []) {
+  const lemlistContactId = normalizeLookupValue(lead.lemlistContactId).toLowerCase();
+  if (lemlistContactId) {
+    const match = contactDatabase.find(contact => normalizeLookupValue(contact.lemlistContactId).toLowerCase() === lemlistContactId);
+    if (match) return match;
+  }
+
   const cognismId = normalizeLookupValue(lead.cognismContactId).toLowerCase();
   if (cognismId) {
     const match = contactDatabase.find(contact => normalizeLookupValue(contact.cognismContactId).toLowerCase() === cognismId);
@@ -2697,6 +2890,12 @@ function findLeadDatabaseMatch(lead, contactDatabase = []) {
   const linkedinUrl = normalizeLinkedinUrl(lead.linkedinProfileUrl).toLowerCase();
   if (linkedinUrl) {
     const match = contactDatabase.find(contact => normalizeLinkedinUrl(contact.linkedinProfileUrl).toLowerCase() === linkedinUrl);
+    if (match) return match;
+  }
+
+  const email = normalizeEmail(lead.manualEmail);
+  if (email) {
+    const match = contactDatabase.find(contact => normalizeEmail(contact.manualEmail) === email);
     if (match) return match;
   }
 
@@ -2730,6 +2929,16 @@ function hydrateLeadWithContactDatabase(lead, contactDatabase = []) {
     hubspotExportedAt: match.hubspotExportedAt || lead.hubspotExportedAt || "",
     hubspotExportStatus: match.hubspotExportStatus || lead.hubspotExportStatus || "",
     hubspotExportError: match.hubspotExportError || lead.hubspotExportError || "",
+    lemlistContactId: match.lemlistContactId || lead.lemlistContactId || "",
+    lemlistOwnerId: match.lemlistOwnerId || lead.lemlistOwnerId || "",
+    lemlistStatusId: match.lemlistStatusId || lead.lemlistStatusId || "",
+    lemlistUnsubscribed: match.lemlistUnsubscribed || lead.lemlistUnsubscribed || false,
+    linkedinSalesNavUrl: match.linkedinSalesNavUrl || lead.linkedinSalesNavUrl || "",
+    profilePictureUrl: match.profilePictureUrl || lead.profilePictureUrl || "",
+    timezone: match.timezone || lead.timezone || "",
+    summary: match.summary || lead.summary || "",
+    tagline: match.tagline || lead.tagline || "",
+    skills: match.skills || lead.skills || [],
   };
 }
 
@@ -2742,8 +2951,14 @@ function leadMergeKey(lead = {}) {
   if (cognismRedeemId) return `redeem:${cognismRedeemId}`;
   const cognismContactId = normalizeLookupValue(lead.cognismContactId).toLowerCase();
   if (cognismContactId) return `cognism:${cognismContactId}`;
+  const lemlistContactId = normalizeLookupValue(lead.lemlistContactId).toLowerCase();
+  if (lemlistContactId) return `lemlist-contact:${lemlistContactId}`;
   const linkedinUrl = normalizeLinkedinUrl(lead.linkedinProfileUrl).toLowerCase();
   if (linkedinUrl) return `linkedin:${linkedinUrl}`;
+  const email = normalizeEmail(lead.manualEmail);
+  if (email) return `email:${email}`;
+  const lemlistLeadId = normalizeLookupValue(lead.lemlistLeadId).toLowerCase();
+  if (lemlistLeadId) return `lemlist-lead:${lemlistLeadId}`;
   return `person:${normalizeLookupValue(lead.contactName).toLowerCase()}|${normalizeLookupValue(lead.company).toLowerCase()}`;
 }
 
@@ -3014,7 +3229,11 @@ function validateLeadManualFields(lead = {}) {
   const email = normalizeLookupValue(lead.manualEmail);
   const mobile = normalizeLookupValue(lead.manualMobile);
   const directDial = normalizeLookupValue(lead.manualDirectDial);
+  const source = normalizeLeadDataSource(lead.dataSource);
 
+  if (source === "manual" && !normalizeLookupValue(lead.sourceNote)) {
+    return "Type a source for manually added contacts.";
+  }
   if (linkedinUrl && !/^https:\/\/(www\.)?linkedin\.com\/in\/.+/i.test(linkedinUrl)) {
     return "LinkedIn profile URL must be a LinkedIn /in/ profile URL.";
   }
@@ -3052,6 +3271,27 @@ function findPotentialContactConflicts(lead = {}, contactDatabase = []) {
   });
 }
 
+const optionalLeadContactPayloadColumns = new Set([
+  "lemlist_contact_id",
+  "lemlist_owner_id",
+  "lemlist_status_id",
+  "lemlist_unsubscribed",
+  "linkedin_sales_nav_url",
+  "profile_picture_url",
+  "timezone",
+  "summary",
+  "tagline",
+  "skills",
+  "lemlist_raw",
+  "last_lemlist_synced_at",
+]);
+
+function stripPayloadColumn(payload = {}, column = "") {
+  const nextPayload = { ...payload };
+  delete nextPayload[column];
+  return nextPayload;
+}
+
 function buildLeadContactDatabasePayload(lead, organizationId, userId) {
   const { firstName, lastName } = splitContactName(lead.contactName);
   const contactName = normalizeLookupValue(lead.contactName);
@@ -3060,12 +3300,18 @@ function buildLeadContactDatabasePayload(lead, organizationId, userId) {
   const manualMobile = normalizePhoneFieldValue(lead.manualMobile) || null;
   const manualDirectDial = normalizePhoneFieldValue(lead.manualDirectDial) || null;
   const linkedinProfileUrl = normalizeLinkedinUrl(lead.linkedinProfileUrl) || null;
-  const hasManualData = leadHasManualData(lead) || lead.dataSource === "manual";
-  const isCognismPreviewLead = Boolean(normalizeLookupValue(lead.cognismContactId));
+  const linkedinSalesNavUrl = normalizeLookupValue(lead.linkedinSalesNavUrl) || null;
+  const normalizedSource = normalizeLeadDataSource(lead.dataSource);
+  const hasManualData = leadHasManualData(lead) || normalizedSource === "manual";
+  const isCognismLead = normalizedSource === "cognism" || Boolean(normalizeLookupValue(lead.cognismContactId));
+  const isLemlistLead = Boolean(normalizeLookupValue(lead.lemlistContactId || lead.lemlistLeadId));
+  const manualSourceNote = normalizeLookupValue(lead.sourceNote);
   const sourceNote = hasManualData
-    ? (isCognismPreviewLead ? "Cognism preview row edited by PaceOps user" : "Added manually by PaceOps user")
-    : "Cognism preview search result";
-  const dataSource = isCognismPreviewLead ? "cognism_preview" : hasManualData ? "manual" : "cognism_preview";
+    ? (isCognismLead ? "Cognism row edited by PaceOps user" : isLemlistLead ? "Imported from Lemlist and edited by PaceOps user" : manualSourceNote)
+    : isLemlistLead
+      ? "Imported from Lemlist"
+    : "Cognism search result";
+  const dataSource = isLemlistLead ? "lemlist" : isCognismLead ? "cognism" : hasManualData ? "manual" : "cognism";
 
   const payload = {
     organization_id: organizationId,
@@ -3098,9 +3344,58 @@ function buildLeadContactDatabasePayload(lead, organizationId, userId) {
     hubspot_exported_at: lead.hubspotExportedAt || null,
     hubspot_export_status: normalizeLookupValue(lead.hubspotExportStatus) || null,
     hubspot_export_error: normalizeLookupValue(lead.hubspotExportError) || null,
+    lemlist_contact_id: normalizeLookupValue(lead.lemlistContactId) || null,
+    lemlist_owner_id: normalizeLookupValue(lead.lemlistOwnerId) || null,
+    lemlist_status_id: normalizeLookupValue(lead.lemlistStatusId) || null,
+    lemlist_unsubscribed: lead.lemlistUnsubscribed === true ? true : null,
+    linkedin_sales_nav_url: linkedinSalesNavUrl,
+    profile_picture_url: normalizeLookupValue(lead.profilePictureUrl) || null,
+    timezone: normalizeLookupValue(lead.timezone) || null,
+    summary: normalizeLookupValue(lead.summary) || null,
+    tagline: normalizeLookupValue(lead.tagline) || null,
+    skills: Array.isArray(lead.skills) ? lead.skills : [],
+    lemlist_raw: lead.lemlistRaw && typeof lead.lemlistRaw === "object" ? lead.lemlistRaw : {},
+    last_lemlist_synced_at: isLemlistLead ? new Date().toISOString() : null,
+    custom_fields: {
+      ...(lead.customFields || {}),
+      profile_picture_url: normalizeLookupValue(lead.profilePictureUrl) || undefined,
+      profile_picture_path: normalizeLookupValue(lead.profilePicturePath) || undefined,
+      timezone: normalizeLookupValue(lead.timezone) || undefined,
+      summary: normalizeLookupValue(lead.summary) || undefined,
+      tagline: normalizeLookupValue(lead.tagline) || undefined,
+      skills: Array.isArray(lead.skills) && lead.skills.length ? lead.skills : undefined,
+      lemlist_lead_id: normalizeLookupValue(lead.lemlistLeadId) || undefined,
+      lemlist_contact_id: normalizeLookupValue(lead.lemlistContactId) || undefined,
+      lemlist_owner_id: normalizeLookupValue(lead.lemlistOwnerId) || undefined,
+      lemlist_status_id: normalizeLookupValue(lead.lemlistStatusId) || undefined,
+      lemlist_unsubscribed: lead.lemlistUnsubscribed === true ? true : undefined,
+      lemlist_raw: lead.lemlistRaw && typeof lead.lemlistRaw === "object" ? lead.lemlistRaw : undefined,
+      last_lemlist_synced_at: isLemlistLead ? new Date().toISOString() : undefined,
+      linkedin_sales_nav_url: linkedinSalesNavUrl || undefined,
+      lemlist_campaign_id: normalizeLookupValue(lead.lemlistCampaignId) || undefined,
+      lemlist_campaign_name: normalizeLookupValue(lead.lemlistCampaignName) || undefined,
+      lemlist_company_id: normalizeLookupValue(lead.lemlistCompanyId) || undefined,
+      lemlist_company_linkedin_url: normalizeLookupValue(lead.companyLinkedinUrl) || undefined,
+      lemlist_company_size: normalizeLookupValue(lead.companySize) || undefined,
+      lemlist_company_founded_on: normalizeLookupValue(lead.companyFoundedOn) || undefined,
+    },
     created_by: userId,
     updated_by: userId,
   };
+
+  if (!isLemlistLead) {
+    [
+      "lemlist_contact_id",
+      "lemlist_owner_id",
+      "lemlist_status_id",
+      "lemlist_unsubscribed",
+      "linkedin_sales_nav_url",
+      "timezone",
+      "lemlist_raw",
+      "last_lemlist_synced_at",
+    ].forEach(key => delete payload[key]);
+    if (!lead.customFields && !payload.custom_fields?.profile_picture_url && !payload.custom_fields?.summary && !payload.custom_fields?.tagline && !payload.custom_fields?.skills) delete payload.custom_fields;
+  }
 
   if (lead.dbContactId) payload.id = lead.dbContactId;
   return payload;
@@ -3134,8 +3429,8 @@ function buildPreviewContactDatabasePayload(lead, organizationId, userId, existi
     direct_dial: manualDirectDial,
     manual_direct_dial: manualDirectDial,
     notes: existingContact?.notes || null,
-    source_note: existingContact?.sourceNote || "Cognism preview search result",
-    data_source: existingContact?.dataSource || "cognism_preview",
+    source_note: existingContact?.sourceNote || "Cognism search result",
+    data_source: normalizeLeadDataSource(existingContact?.dataSource) || "cognism",
     confidence: Number.isFinite(Number(existingContact?.confidence)) ? Number(existingContact.confidence) : 0.65,
     cognism_contact_id: normalizeLookupValue(existingContact?.cognismContactId || lead.cognismContactId) || null,
     normalized_identity_key: buildLeadIdentityKey({ ...lead, ...existingContact }),
@@ -3145,6 +3440,7 @@ function buildPreviewContactDatabasePayload(lead, organizationId, userId, existi
     hubspot_exported_at: existingContact?.hubspotExportedAt || lead.hubspotExportedAt || null,
     hubspot_export_status: existingContact?.hubspotExportStatus || lead.hubspotExportStatus || null,
     hubspot_export_error: existingContact?.hubspotExportError || lead.hubspotExportError || null,
+    profile_picture_url: normalizeLookupValue(existingContact?.profilePictureUrl || lead.profilePictureUrl) || null,
     created_by: existingContact?.createdBy || userId,
     updated_by: userId,
   };
@@ -3351,6 +3647,63 @@ async function assertApiServerAvailable() {
     throw new Error(payload.error || "API server is not available.");
   }
   return payload;
+}
+
+function isSupabaseProfileImageUrl(value = "") {
+  const imageUrl = normalizeLookupValue(value);
+  if (!imageUrl || !SUPABASE_URL) return false;
+  try {
+    const parsedImageUrl = new URL(imageUrl);
+    const parsedSupabaseUrl = new URL(SUPABASE_URL);
+    return parsedImageUrl.host === parsedSupabaseUrl.host
+      && parsedImageUrl.pathname.includes(`/storage/v1/object/public/${PROFILE_IMAGE_BUCKET}/`);
+  } catch {
+    return false;
+  }
+}
+
+function shouldIngestProviderProfileImage(lead = {}) {
+  const imageUrl = normalizeLookupValue(lead.profilePictureUrl);
+  if (!imageUrl || isSupabaseProfileImageUrl(imageUrl)) return false;
+  const source = normalizeLeadDataSource(lead.dataSource);
+  return source === "lemlist"
+    || source === "cognism"
+    || Boolean(normalizeLookupValue(lead.lemlistContactId || lead.lemlistLeadId || lead.cognismContactId));
+}
+
+async function ingestProviderProfileImage(lead = {}) {
+  if (!shouldIngestProviderProfileImage(lead)) return lead;
+  try {
+    await assertApiServerAvailable();
+    const response = await fetch("/api/contact-profile-images/ingest", {
+      method: "POST",
+      headers: await buildApiHeaders(),
+      body: JSON.stringify({
+        imageUrl: lead.profilePictureUrl,
+        contactId: lead.dbContactId || "",
+        providerContactId: lead.lemlistContactId || lead.lemlistLeadId || lead.cognismContactId || lead.cognismRedeemId || "",
+        contactName: lead.contactName || "",
+        source: normalizeLeadDataSource(lead.dataSource) || (lead.lemlistContactId ? "lemlist" : lead.cognismContactId ? "cognism" : "provider"),
+      }),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload.error || "Could not ingest profile image.");
+    return {
+      ...lead,
+      profilePictureUrl: payload.profilePictureUrl || lead.profilePictureUrl,
+      profilePicturePath: payload.profilePicturePath || lead.profilePicturePath || "",
+      customFields: {
+        ...(lead.customFields || {}),
+        profile_picture_source_url: payload.sourceImageUrl || lead.profilePictureUrl,
+      },
+    };
+  } catch (error) {
+    console.warn("Could not copy provider contact image to Supabase Storage", {
+      message: error?.message || String(error),
+      contactName: lead.contactName,
+    });
+    return lead;
+  }
 }
 
 function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", label = "Call", compact = false }) {
@@ -5033,6 +5386,7 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onNewContact
           {accountContacts.length ? <div className="compact-list">
             {accountContacts.map(contact => (
               <button key={contact.id} type="button" onClick={() => onOpenContact(contact.id)}>
+                <RecordAvatar name={contact.name} imageUrl={contact.profilePictureUrl} />
                 <span>
                   <strong>{contact.name}</strong>
                   <small>{contact.role}</small>
@@ -5098,7 +5452,11 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onNewContact
   );
 }
 
-function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveContact, canDeleteContacts }) {
+function profileSkillsText(skills = []) {
+  return normalizeContactSkills(skills).slice(0, 8).join(", ");
+}
+
+function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveContact, canDeleteContacts, canManageCrmRecords = false }) {
   const { contacts } = useCrmData();
   const importInputRef = useRef(null);
   const [importStatus, setImportStatus] = useState("idle");
@@ -5114,6 +5472,9 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
         getContactDirectDialNumber(contact),
         contact.role,
         contact.account,
+        contact.summary,
+        contact.tagline,
+        profileSkillsText(contact.skills),
       ].map(value => normalizeLookupValue(value).toLowerCase()).join(" ");
       return searchTerms.every(term => searchableText.includes(term));
     })
@@ -5146,14 +5507,14 @@ function ContactsPage({ onOpenContact, onNewContact, onImportContacts, onRemoveC
         description="A lead-list CRM view for contactability, ownership, persona mapping, and quick access to saved details."
       >
         <input ref={importInputRef} className="visually-hidden" type="file" accept=".csv,.xlsx" multiple onChange={importContacts} />
-        <button className="secondary-button" type="button" onClick={() => importInputRef.current?.click()} disabled={importStatus === "loading"}>
+        {canManageCrmRecords ? <button className="secondary-button" type="button" onClick={() => importInputRef.current?.click()} disabled={importStatus === "loading"}>
           {importStatus === "loading" ? <LoaderCircle className="button-spinner" size={16} aria-hidden="true" /> : <Upload size={16} />}
           {importStatus === "loading" ? "Importing" : "Import contacts"}
-        </button>
-        <button className="primary-button" type="button" onClick={() => onNewContact()}>
+        </button> : null}
+        {canManageCrmRecords ? <button className="primary-button" type="button" onClick={() => onNewContact()}>
           <Plus size={16} />
           Add contact
-        </button>
+        </button> : null}
       </PageHeader>
       <div className="contact-workflow-strip" aria-label="Contact workflow">
         <div>
@@ -5277,6 +5638,8 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact, canDeleteConta
               <th><Phone size={13} aria-hidden="true" /> Mobile</th>
               <th><Phone size={13} aria-hidden="true" /> Direct dial</th>
               <th><ExternalLink size={13} aria-hidden="true" /> LinkedIn</th>
+              <th><FileText size={13} aria-hidden="true" /> Summary</th>
+              <th><Sparkles size={13} aria-hidden="true" /> Skills</th>
               <th><Circle size={13} aria-hidden="true" /> Status</th>
               <th><UserRound size={13} aria-hidden="true" /> Owner</th>
               <th aria-label="Actions"></th>
@@ -5293,6 +5656,8 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact, canDeleteConta
               const companyName = contact.account || contact.company || "Company needed";
               const jobTitle = contact.role || contact.title || contact.persona || "Role needed";
               const linkedinUrl = contact.linkedin || contact.linkedinUrl || contact.linkedinProfileUrl || "";
+              const profileSummary = normalizeLookupValue(contact.summary || contact.tagline);
+              const skillsSummary = profileSkillsText(contact.skills);
               return (
                 <tr
                   key={contact.id}
@@ -5316,7 +5681,7 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact, canDeleteConta
                   </td>
                   <td>
                     <div className="contact-list-person">
-                      <span className="record-avatar">{accountInitial(contact.name)}</span>
+                      <RecordAvatar name={contact.name} imageUrl={contact.profilePictureUrl} />
                       <div title={contact.name}>
                         <strong>{contact.name}</strong>
                         <small>{contact.lastTouch || "No activity logged"}</small>
@@ -5378,6 +5743,16 @@ function ContactTable({ contacts, onOpenContact, onRemoveContact, canDeleteConta
                     ) : (
                       <span className="contact-muted-cell">Missing</span>
                     )}
+                  </td>
+                  <td>
+                    <span className="contact-profile-summary-cell" title={profileSummary || "Summary missing"}>
+                      {profileSummary || <span className="contact-muted-cell">Missing</span>}
+                    </span>
+                  </td>
+                  <td>
+                    <span className="contact-profile-skills-cell" title={skillsSummary || "Skills missing"}>
+                      {skillsSummary || <span className="contact-muted-cell">Missing</span>}
+                    </span>
                   </td>
                   <td>
                     <StatusBadge tone={contactStatusTone(contact.status)}>{contact.status || "New"}</StatusBadge>
@@ -7358,6 +7733,8 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
   const [noteDraft, setNoteDraft] = useState(privateNote);
   const [noteStatus, setNoteStatus] = useState("idle");
   const [editing, setEditing] = useState(false);
+  const [editStatus, setEditStatus] = useState("idle");
+  const [editError, setEditError] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [deleteStatus, setDeleteStatus] = useState("idle");
@@ -7369,6 +7746,9 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
     email: contact.email || "",
     mobile: getContactMobileNumber(contact),
     directDial: getContactDirectDialNumber(contact),
+    profilePictureUrl: contact.profilePictureUrl || "",
+    summary: contact.summary || "",
+    skills: profileSkillsText(contact.skills),
   }));
   const phoneNumber = getContactPhoneNumber(contact);
   const mobileNumber = getContactMobileNumber(contact);
@@ -7377,11 +7757,21 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
 
   function updateDraft(field, value) {
     setDraft(current => ({ ...current, [field]: value }));
+    setEditStatus("idle");
+    setEditError("");
   }
 
-  function saveContactChanges() {
-    onUpdateContact?.({ id: contact.id, ...draft });
-    setEditing(false);
+  async function saveContactChanges() {
+    setEditStatus("saving");
+    setEditError("");
+    try {
+      await onUpdateContact?.({ id: contact.id, ...draft, skills: normalizeContactSkills(draft.skills) });
+      setEditStatus("saved");
+      setEditing(false);
+    } catch (error) {
+      setEditStatus("error");
+      setEditError(error?.message || "Could not save contact.");
+    }
   }
 
   async function archiveContact() {
@@ -7418,7 +7808,7 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
         ) : null}
       </PageHeader>
       <div className="record-hero">
-        <span className="record-avatar large">{accountInitial(contact.name)}</span>
+        <RecordAvatar name={contact.name} imageUrl={contact.profilePictureUrl} size="large" />
         <div className="detail-list inline">
           <div><span>Company</span><strong>{contact.account}</strong></div>
           <div><span>Role</span><strong>{contact.role || "Role needed"}</strong></div>
@@ -7430,13 +7820,21 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
             <h2>Contact details</h2>
             {canEditContact && editing ? (
               <div className="row-actions">
-                <button className="text-button" type="button" onClick={() => setEditing(false)}>Cancel</button>
-                <button className="secondary-button" type="button" onClick={saveContactChanges}>Save</button>
+                <button className="text-button" type="button" onClick={() => setEditing(false)} disabled={editStatus === "saving"}>Cancel</button>
+                <button className="secondary-button" type="button" onClick={saveContactChanges} disabled={editStatus === "saving"}>
+                  {editStatus === "saving" ? <LoaderCircle className="button-spinner" size={15} aria-hidden="true" /> : null}
+                  {editStatus === "saving" ? "Saving" : "Save"}
+                </button>
               </div>
             ) : canEditContact ? (
-              <button className="secondary-button" type="button" onClick={() => setEditing(true)}>Edit</button>
+              <button className="secondary-button" type="button" onClick={() => {
+                setEditStatus("idle");
+                setEditError("");
+                setEditing(true);
+              }}>Edit</button>
             ) : null}
           </div>
+          {editError ? <div className="form-error">{editError}</div> : null}
           {editing ? (
             <div className="detail-edit-grid">
               <FormField label="Company">
@@ -7449,6 +7847,15 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
               </FormField>
               <FormField label="Role">
                 <input value={draft.role} onChange={event => updateDraft("role", event.target.value)} />
+              </FormField>
+              <FormField label="Image URL">
+                <input value={draft.profilePictureUrl} onChange={event => updateDraft("profilePictureUrl", event.target.value)} placeholder="https://image-url" />
+              </FormField>
+              <FormField label="Summary" className="field-span-all">
+                <textarea rows={4} value={draft.summary} onChange={event => updateDraft("summary", event.target.value)} placeholder="Short profile, remit, or buying committee context" />
+              </FormField>
+              <FormField label="Skills" className="field-span-all">
+                <input value={draft.skills} onChange={event => updateDraft("skills", event.target.value)} placeholder="Procurement, operations, sustainability" />
               </FormField>
               <FormField label="Email">
                 <input type="email" value={draft.email} onChange={event => updateDraft("email", event.target.value)} />
@@ -7465,6 +7872,8 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
               <div><span>Email</span><strong>{contact.email || "Email needed"}</strong></div>
               <div><span>Mobile</span><strong>{mobileNumber || "Mobile needed"}</strong></div>
               <div><span>Direct dial</span><strong>{directDialNumber || "Direct dial needed"}</strong></div>
+              <div><span>Summary</span><strong>{contact.summary || "Summary needed"}</strong></div>
+              <div><span>Skills</span><strong>{profileSkillsText(contact.skills) || "Skills needed"}</strong></div>
             </div>
           )}
         </section>
@@ -8193,8 +8602,13 @@ function PipelinePage({
                         setDropStage("");
                       }}
                     >
-                      <strong>{title}</strong>
-                      <span>{subtitle}</span>
+                      <div className="pipeline-card-heading">
+                        <RecordAvatar name={title} imageUrl={record.type === "contact" ? record.contact.profilePictureUrl : record.account.pictureUrl || record.account.imageUrl} />
+                        <span>
+                          <strong>{title}</strong>
+                          <small>{subtitle}</small>
+                        </span>
+                      </div>
                       <div>
                         <small>{record.type === "company" ? record.account.industry || "No industry" : record.contact.role || "No role"}</small>
                       </div>
@@ -8946,7 +9360,7 @@ function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onEditAccou
 
 function parseLines(value) {
   return String(value || "")
-    .split(/[\n,]+/)
+    .split(/[\n,;]+/)
     .map(item => item.trim())
     .filter(Boolean);
 }
@@ -8984,6 +9398,9 @@ const contactImportColumnMap = {
   email: ["email", "email address", "work email"],
   mobile: ["mobile", "mobile phone", "mobile number", "cell", "cell phone"],
   directDial: ["direct", "direct dial", "direct phone", "direct number", "phone", "phone number", "telephone", "number"],
+  profilePictureUrl: ["image", "image url", "profile image", "profile picture", "photo", "avatar"],
+  summary: ["summary", "bio", "profile summary", "notes", "contact notes"],
+  skills: ["skills", "expertise", "keywords", "tags"],
 };
 
 const intentStatuses = ["new", "reviewed", "enriched", "rejected", "promoted"];
@@ -9223,6 +9640,9 @@ function extractContactImportRowsFromSheet(rows, sourceFile, sourceSheet = "") {
   const emailColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.email);
   const mobileColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.mobile);
   const directDialColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.directDial);
+  const profilePictureUrlColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.profilePictureUrl);
+  const summaryColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.summary);
+  const skillsColumnIndex = findImportColumnIndex(headerRow, contactImportColumnMap.skills);
 
   return rows
     .slice(headerRowIndex + 1)
@@ -9233,6 +9653,9 @@ function extractContactImportRowsFromSheet(rows, sourceFile, sourceSheet = "") {
       email: emailColumnIndex === -1 ? "" : normalizeEmail(row[emailColumnIndex]),
       mobile: mobileColumnIndex === -1 ? "" : normalizePhoneFieldValue(row[mobileColumnIndex]),
       directDial: directDialColumnIndex === -1 ? "" : normalizePhoneFieldValue(row[directDialColumnIndex]),
+      profilePictureUrl: profilePictureUrlColumnIndex === -1 ? "" : normalizeLookupValue(row[profilePictureUrlColumnIndex]),
+      summary: summaryColumnIndex === -1 ? "" : normalizeLookupValue(row[summaryColumnIndex]),
+      skills: skillsColumnIndex === -1 ? [] : normalizeContactSkills(row[skillsColumnIndex]),
       sourceFile,
       sourceSheet,
     }))
@@ -9675,8 +10098,38 @@ function userNamesForIds(userIds, workspaceUsers) {
     .filter(Boolean);
 }
 
+function normalizeLeadDataSource(source = "") {
+  const value = normalizeLookupValue(source).toLowerCase();
+  if (["cognism_preview", "cognism_redeem", "cognism"].includes(value)) return "cognism";
+  if (["lemlist"].includes(value)) return "lemlist";
+  if (["google_places_location", "locker_finder"].includes(value)) return "location_finder";
+  if (["manual", "linkedin_manual"].includes(value)) return "manual";
+  return value;
+}
+
+function leadDataSourceLabel(source = "") {
+  const normalized = normalizeLeadDataSource(source);
+  if (normalized === "cognism") return "Cognism";
+  if (normalized === "lemlist") return "Lemlist";
+  if (normalized === "location_finder") return "Location Finder";
+  if (normalized === "manual") return "Manual";
+  if (normalized === "imported_csv") return "CSV import";
+  return normalized ? titleCase(normalized) : "Saved";
+}
+
+function leadDataSourceTone(source = "") {
+  const normalized = normalizeLeadDataSource(source);
+  if (["cognism", "lemlist"].includes(normalized)) return "success";
+  if (normalized === "manual") return "accent";
+  if (normalized === "location_finder") return "neutral";
+  return "neutral";
+}
+
 function DataSourceBadge({ lead }) {
-  return lead.dbContactId ? <StatusBadge>Data portal</StatusBadge> : <StatusBadge>Not saved</StatusBadge>;
+  if (!lead.dbContactId && !lead.dataSource) return <StatusBadge>Not saved</StatusBadge>;
+  const normalized = normalizeLeadDataSource(lead.dataSource);
+  const manualSource = normalized === "manual" ? normalizeLookupValue(lead.sourceNote) : "";
+  return <StatusBadge tone={leadDataSourceTone(lead.dataSource)}>{manualSource || leadDataSourceLabel(lead.dataSource)}</StatusBadge>;
 }
 
 function LinkedInProfileField({ value, onChange, onBlur, onOpen, canSearch = true }) {
@@ -9851,7 +10304,7 @@ function createManualLeadDraft() {
     manualDirectDial: "",
     notes: "",
     dataSource: "manual",
-    sourceNote: "Added manually by PaceOps user",
+    sourceNote: "",
   };
 }
 
@@ -9922,6 +10375,9 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       contact.location,
       contact.linkedinProfileUrl,
       contact.notes,
+      contact.summary,
+      contact.tagline,
+      profileSkillsText(contact.skills),
     ].map(value => normalizeLookupValue(value).toLowerCase()).join(" ");
     return leadLookupTerms.every(term => searchableText.includes(term));
   });
@@ -9988,6 +10444,10 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       manualMobile: normalizePhoneFieldValue(contact.manualMobile),
       manualDirectDial: normalizePhoneFieldValue(contact.manualDirectDial),
       notes: normalizeLookupValue(contact.notes),
+      summary: normalizeLookupValue(contact.summary),
+      tagline: normalizeLookupValue(contact.tagline),
+      skills: Array.isArray(contact.skills) ? contact.skills : [],
+      profilePictureUrl: normalizeLookupValue(contact.profilePictureUrl),
       dataSource: contact.dataSource || "manual",
       sourceNote: contact.sourceNote || "Saved from Contacts",
     };
@@ -10145,6 +10605,10 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       manualMobile: normalizeLookupValue(draft.manualMobile),
       manualDirectDial: normalizeLookupValue(draft.manualDirectDial),
       notes: normalizeLookupValue(draft.notes),
+      summary: normalizeLookupValue(draft.summary),
+      tagline: normalizeLookupValue(draft.tagline),
+      skills: Array.isArray(draft.skills) ? draft.skills : contact.skills || [],
+      profilePictureUrl: normalizeLookupValue(draft.profilePictureUrl),
       dbContactId: contact.id,
       sourceNote: draft.sourceNote || "Edited in Contacts",
     };
@@ -10195,10 +10659,10 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
           <ListFilter size={16} />
           Save lead list
         </button>
-        <button className="secondary-button" type="button" onClick={() => setEditMode(current => !current)}>
+        {isAdmin ? <button className="secondary-button" type="button" onClick={() => setEditMode(current => !current)}>
           <Database size={16} />
           {editMode ? "Done editing" : "Edit mode"}
-        </button>
+        </button> : null}
       </PageHeader>
       {contactHubspotExportSummary ? (
         <div className={`form-success ${contactHubspotExportStatus === "error" ? "warning" : ""}`}>
@@ -10358,6 +10822,8 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                 <th>Mobile</th>
                 <th>Direct dial</th>
                 <th>Location</th>
+                <th>Summary</th>
+                <th>Skills</th>
                 <th>Lists</th>
                 <th>Contacts</th>
                 <th>Source</th>
@@ -10375,6 +10841,8 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                 const phoneNumber = manualMobile || manualDirectDial || "";
                 const draft = getLookupDraft(contact);
                 const crmContact = findCrmContactMatch(contact);
+                const contactSummary = normalizeLookupValue(contact.summary || contact.tagline);
+                const skillsSummary = profileSkillsText(contact.skills);
                 return (
                   <tr key={contact.id}>
                     <td className="table-select-cell">
@@ -10389,13 +10857,17 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                       {editMode ? (
                         <div className="lookup-name-action-cell">
                           <AircallDialButton contact={{ id: contact.id }} phoneNumber={draft.manualMobile || draft.manualDirectDial || ""} source="lead_database" label="Call" compact />
-                          <input className="table-input" value={draft.contactName || ""} onChange={event => updateLookupDraft(contact, "contactName", event.target.value)} placeholder="Contact name" />
+                          <div className="lookup-edit-person-fields">
+                            <input className="table-input" value={draft.contactName || ""} onChange={event => updateLookupDraft(contact, "contactName", event.target.value)} placeholder="Contact name" />
+                            <input className="table-input" value={draft.profilePictureUrl || ""} onChange={event => updateLookupDraft(contact, "profilePictureUrl", event.target.value)} placeholder="Image URL" />
+                          </div>
                         </div>
                       ) : (
                         <div className="lookup-name-action-cell lookup-name-action-cell-with-linkedin">
                           <AircallDialButton contact={{ id: contact.id }} phoneNumber={phoneNumber} source="lead_database" label="Call" compact />
                           <LeadLookupLinkedInButton contact={contact} />
                           <div className="lookup-person-cell">
+                            <RecordAvatar name={contact.contactName || [contact.firstName, contact.lastName].filter(Boolean).join(" ") || "Unknown contact"} imageUrl={contact.profilePictureUrl} />
                             <div className="lookup-person-heading">
                               <strong>{contact.contactName || [contact.firstName, contact.lastName].filter(Boolean).join(" ") || "Unknown contact"}</strong>
                             </div>
@@ -10439,13 +10911,15 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                       )}
                     </td>
                     <td>{editMode ? <input className="table-input" value={draft.location || ""} onChange={event => updateLookupDraft(contact, "location", event.target.value)} placeholder="Location" /> : contact.location || "Not available"}</td>
+                    <td>{editMode ? <textarea className="table-textarea" value={draft.summary || ""} onChange={event => updateLookupDraft(contact, "summary", event.target.value)} placeholder="Profile summary" /> : <span className="lead-lookup-profile-cell">{contactSummary || "Not available"}</span>}</td>
+                    <td><span className="lead-lookup-skills-cell">{skillsSummary || "Not available"}</span></td>
                     <td>{memberships.length ? memberships.map(item => item.name).join(", ") : "No active list"}</td>
                     <td>
-                      <button className="secondary-button lead-contact-action-button" type="button" onClick={() => onAddToCrmContacts?.(contact)}>
+                      <button className="secondary-button lead-contact-action-button" type="button" onClick={() => onAddToCrmContacts?.(contact)} disabled={!isAdmin && !crmContact} title={!isAdmin && !crmContact ? "Admin access is required" : ""}>
                         {crmContact ? "Open contact" : "Add contact"}
                       </button>
                     </td>
-                    <td><DataSourceBadge lead={{ dbContactId: contact.id }} /></td>
+                    <td><DataSourceBadge lead={{ ...contact, dbContactId: contact.id }} /></td>
                     {editMode ? (
                       <td>
                         <button className="secondary-button" type="button" onClick={() => saveLookupLead(contact)} disabled={leadLookupSaveStatuses[contact.id] === "saving"}>
@@ -10458,7 +10932,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                 );
               }) : (
                 <tr>
-                  <td colSpan={editMode ? 12 : 11} className="empty-table-cell">
+                  <td colSpan={editMode ? 14 : 13} className="empty-table-cell">
                     {contactDatabase.length ? "No saved contacts match those filters." : "Saved contacts will appear here."}
                   </td>
                 </tr>
@@ -10625,7 +11099,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
       manualMobile: normalizeLookupValue(lead.manualMobile),
       notes: normalizeLookupValue(lead.notes),
       dataSource: "manual",
-      sourceNote: "Added manually by PaceOps user",
+      sourceNote: normalizeLookupValue(lead.sourceNote),
     }))
     .filter(lead => lead.contactName || lead.company || lead.jobTitle || lead.linkedinProfileUrl || lead.manualEmail || lead.manualMobile || lead.notes);
 
@@ -10972,6 +11446,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
     if (!manualAssignedUserIds.length) return "Assign the lead list to at least one user.";
     if (!cleanManualLeads.length) return "Add at least one manual lead.";
     if (cleanManualLeads.some(lead => !lead.contactName || !lead.company)) return "Each manual lead needs at least a contact name and company.";
+    if (cleanManualLeads.some(lead => !lead.sourceNote)) return "Each manual lead needs a source.";
     for (const lead of cleanManualLeads) {
       const validationError = validateLeadManualFields(lead);
       if (validationError) return validationError;
@@ -11421,6 +11896,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                         <th>Email</th>
                         <th>Mobile</th>
                         <th>Direct dial</th>
+                        <th>Source</th>
                         <th>Notes</th>
                         <th></th>
                       </tr>
@@ -11436,6 +11912,7 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                           <td><input value={lead.manualEmail} onChange={event => updateManualLead(lead.localId, "manualEmail", event.target.value)} placeholder="name@company.com" /></td>
                           <td><input value={lead.manualMobile} onChange={event => updateManualLead(lead.localId, "manualMobile", event.target.value)} placeholder="+353 mobile" /></td>
                           <td><input value={lead.manualDirectDial} onChange={event => updateManualLead(lead.localId, "manualDirectDial", event.target.value)} placeholder="+353 direct" /></td>
+                          <td><input required value={lead.sourceNote} onChange={event => updateManualLead(lead.localId, "sourceNote", event.target.value)} placeholder="Referral, event, manual research" /></td>
                           <td><textarea value={lead.notes} onChange={event => updateManualLead(lead.localId, "notes", event.target.value)} placeholder="Notes" /></td>
                           <td><button className="secondary-button danger-button" type="button" onClick={() => removeManualLead(lead.localId)}>Remove</button></td>
                         </tr>
@@ -12137,8 +12614,8 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
         [field]: value,
       };
       if (["manualEmail", "manualMobile", "manualDirectDial", "linkedinProfileUrl", "notes"].includes(field)) {
-        nextResult.dataSource = "manual";
-        nextResult.sourceNote = "Added manually by PaceOps user";
+        nextResult.dataSource = "cognism";
+        nextResult.sourceNote = nextResult.sourceNote || "Cognism row edited by PaceOps user";
       }
       return nextResult;
     }));
@@ -13386,8 +13863,1135 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
   );
 }
 
+const lemlistLeadStateOptions = [
+  { value: "", label: "All states" },
+  { value: "scanned", label: "Scanned" },
+  { value: "contacted", label: "Contacted" },
+  { value: "interested", label: "Interested" },
+  { value: "notInterested", label: "Not interested" },
+  { value: "emailsReplied", label: "Replied" },
+  { value: "emailsBounced", label: "Bounced" },
+  { value: "emailsUnsubscribed", label: "Unsubscribed" },
+];
+
+const lemlistDateRangeOptions = [
+  { value: "7", label: "Last 7 days" },
+  { value: "30", label: "Last 30 days" },
+  { value: "90", label: "Last 90 days" },
+];
+
+function lemlistCampaignStatusTone(status) {
+  const value = String(status || "").toLowerCase();
+  if (value === "running") return "success";
+  if (value === "paused" || value === "draft" || value === "errors") return "warning";
+  return "neutral";
+}
+
+function lemlistActivityLabel(type) {
+  return String(type || "activity")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .replace(/^./, value => value.toUpperCase());
+}
+
+function lemlistDeliveryTone(status = "") {
+  const value = String(status || "").toLowerCase();
+  if (value.includes("deliverable") || value.includes("valid")) return "success";
+  if (value.includes("undeliverable") || value.includes("invalid") || value.includes("bounce")) return "warning";
+  if (value.includes("risky") || value.includes("catch")) return "accent";
+  return "neutral";
+}
+
+function lemlistRecordId(record = {}) {
+  const value = record || {};
+  return normalizeLookupValue(value.id || value._id || value.contactId || value.companyId);
+}
+
+function lemlistField(record = {}, key, fallback = "") {
+  const value = record[key] ?? record.fields?.[key];
+  return normalizeLookupValue(value || fallback);
+}
+
+function lemlistEmail(record = {}) {
+  return normalizeEmail(record.email || record.fields?.email || record.emails?.[0]?.value || record.leadEmail);
+}
+
+function lemlistPhone(record = {}) {
+  return normalizePhoneFieldValue(record.phone || record.fields?.phone || record.mobile || record.fields?.mobile || record.directDial || record.fields?.directDial);
+}
+
+function lemlistImageUrl(record = {}) {
+  return normalizeLookupValue(
+    record.picture
+    || record.fields?.picture
+    || record.profilePictureUrl
+    || record.avatarUrl
+    || record.avatar_url
+    || record.leadLogoUrl
+    || record.lead_logo_url
+    || record.companyPicture
+    || record.fields?.companyPicture
+  );
+}
+
+function lemlistPersonImageUrl(record = {}) {
+  return normalizeLookupValue(
+    record.profilePictureUrl
+    || record.picture
+    || record.fields?.picture
+    || record.avatarUrl
+    || record.avatar_url
+    || record.leadLogoUrl
+    || record.lead_logo_url
+    || record.peopleProfile?.lead_logo_url
+    || record.peopleProfile?.leadLogoUrl
+    || record.peopleProfile?.profile_picture_url
+    || record.peopleProfile?.profilePictureUrl
+  );
+}
+
+function lemlistEmailStatus(record = {}) {
+  return normalizeLookupValue(
+    record.emailStatus
+    || record.email_status
+    || record.deliverability
+    || record.fields?.emailStatus
+    || record.fields?.email_status
+    || record.fields?.deliverability
+    || record.fields?.leadStatus
+    || record.find_email?.status
+    || record.findEmail?.status
+    || record.enrichment?.find_email?.status
+    || record.enrichedData?.find_email?.status
+    || record.status
+  );
+}
+
+function lemlistCreatedAt(record = {}) {
+  return normalizeLookupValue(record.createdAt || record.created_at || record.fields?.createdAt || record.last_updated || record.updatedAt);
+}
+
+function lemlistCampaignCount(record = {}) {
+  const count = Number(record.campaignCount ?? record.campaigns?.length ?? record.fields?.campaignCount ?? 0);
+  return Number.isFinite(count) ? count : 0;
+}
+
+function lemlistCampaignSummary(record = {}, selectedCampaign = null) {
+  const explicit = normalizeLookupValue(record.campaignName || record.fields?.lastCampaign || record.fields?.campaignName);
+  if (explicit) return explicit;
+  const campaigns = Array.isArray(record.campaigns) ? record.campaigns : [];
+  if (campaigns.length) return `${campaigns.length} ${campaigns.length === 1 ? "campaign" : "campaigns"}`;
+  if (record.campaignId && selectedCampaign?.name) return selectedCampaign.name;
+  return "";
+}
+
+function lemlistFullName(record = {}) {
+  return normalizeLookupValue(record.fullName || record.name || [lemlistField(record, "firstName"), lemlistField(record, "lastName")].filter(Boolean).join(" "));
+}
+
+function lemlistCompanyName(record = {}) {
+  return normalizeLookupValue(record.companyName || record.leadCompanyName || record.fields?.companyName || record.fields?.company || record.company?.name || record.company);
+}
+
+function lemlistCompanyRecordName(record = {}) {
+  return normalizeLookupValue(record.name || record.fields?.name || record.companyName || record.domain || lemlistRecordId(record));
+}
+
+function lemlistCompanyDomain(record = {}) {
+  return normalizeLookupValue(record.domain || record.fields?.domain || record.companyDomain || record.fields?.companyDomain);
+}
+
+function lemlistLinkedinUrl(record = {}) {
+  return normalizeLinkedinUrl(record.linkedinUrl || record.fields?.linkedinUrl || record.leadLinkedinUrl || record.linkedin_profile_url);
+}
+
+function lemlistSalesNavUrl(record = {}) {
+  return normalizeLookupValue(record.linkedinUrlSalesNav || record.fields?.linkedinUrlSalesNav);
+}
+
+function lemlistPeopleProfileLinkedinUrl(profile = {}) {
+  return normalizeLinkedinUrl(profile.lead_linkedin_url || profile.leadLinkedinUrl || profile.linkedinUrl || profile.linkedin_url);
+}
+
+function lemlistFindPeopleProfile(record = {}, peopleProfiles = []) {
+  const profiles = Array.isArray(peopleProfiles) ? peopleProfiles : [];
+  const linkedinUrl = lemlistLinkedinUrl(record);
+  if (linkedinUrl) {
+    const linkedinKey = normalizeLinkedinUrl(linkedinUrl).toLowerCase();
+    const match = profiles.find(profile => lemlistPeopleProfileLinkedinUrl(profile).toLowerCase() === linkedinKey);
+    if (match) return match;
+  }
+
+  const name = lemlistFullName(record).toLowerCase();
+  const company = lemlistCompanyName(record).toLowerCase();
+  if (!name) return null;
+  return profiles.find(profile => {
+    const profileName = normalizeLookupValue(profile.full_name || profile.fullName).toLowerCase();
+    const profileCompany = normalizeLookupValue(profile.current_exp_company_name || profile.companyName).toLowerCase();
+    return profileName === name && (!company || !profileCompany || profileCompany === company);
+  }) || null;
+}
+
+function lemlistSkillsText(skills = []) {
+  return profileSkillsText(skills);
+}
+
+function lemlistLeadFromRecord(record = {}, selectedCampaign = null) {
+  const firstName = lemlistField(record, "firstName");
+  const lastName = lemlistField(record, "lastName");
+  const contactName = lemlistFullName(record) || [firstName, lastName].filter(Boolean).join(" ") || lemlistEmail(record) || "Lemlist contact";
+  const companyName = lemlistCompanyName(record) || "Lemlist company";
+  const lemlistContactId = normalizeLookupValue(record.contactId || (String(record.id || record._id || "").startsWith("ctc_") ? record.id || record._id : ""));
+  return {
+    contactName,
+    firstName,
+    lastName,
+    company: companyName,
+    jobTitle: lemlistField(record, "jobTitle") || lemlistField(record, "title"),
+    location: lemlistField(record, "location") || normalizeLookupValue(record.companyLocation || record.fields?.companyLocation || ""),
+    linkedinProfileUrl: lemlistLinkedinUrl(record),
+    linkedinSalesNavUrl: lemlistSalesNavUrl(record),
+    manualEmail: lemlistEmail(record),
+    manualMobile: "",
+    manualDirectDial: lemlistPhone(record),
+    notes: lemlistField(record, "summary"),
+    dataSource: "lemlist",
+    confidence: 0.8,
+    lemlistContactId,
+    lemlistLeadId: normalizeLookupValue(String(record._id || "").startsWith("lea_") ? record._id : record.leadId || ""),
+    lemlistCampaignId: normalizeLookupValue(record.campaignId || selectedCampaign?._id || selectedCampaign?.id || ""),
+    lemlistCampaignName: normalizeLookupValue(record.campaignName || selectedCampaign?.name || ""),
+    lemlistOwnerId: normalizeLookupValue(record.ownerId || ""),
+    lemlistStatusId: normalizeLookupValue(record.statusId || record.state || ""),
+    lemlistUnsubscribed: record.unsubscribed === true || record.isUnsubscribed === true,
+    lemlistCompanyId: normalizeLookupValue(record.companyId || ""),
+    companyLinkedinUrl: normalizeLookupValue(record.companyLinkedinUrl || record.fields?.companyLinkedinUrl || ""),
+    companyIndustry: normalizeLookupValue(record.companyIndustry || record.fields?.companyIndustry || record.fields?.industry || ""),
+    companySize: normalizeLookupValue(record.companySize || record.fields?.companySize || ""),
+    companyFoundedOn: normalizeLookupValue(record.companyFoundedOn || record.fields?.companyFoundedOn || ""),
+    profilePictureUrl: lemlistPersonImageUrl(record),
+    timezone: normalizeLookupValue(record.timezone || record.fields?.timezone || ""),
+    summary: normalizeLookupValue(record.summary || record.fields?.summary || record.profileSummary || record.fields?.profileSummary || record.bio || record.fields?.bio || ""),
+    tagline: normalizeLookupValue(record.tagline || record.fields?.tagline || ""),
+    skills: Array.isArray(record.skills) ? record.skills : Array.isArray(record.fields?.skills) ? record.fields.skills : [],
+    emailStatus: lemlistEmailStatus(record),
+    campaignCount: lemlistCampaignCount(record),
+    campaignSummary: lemlistCampaignSummary(record, selectedCampaign),
+    campaigns: Array.isArray(record.campaigns) ? record.campaigns : [],
+    createdAt: lemlistCreatedAt(record),
+    lemlistRaw: record.lemlistRaw || record,
+  };
+}
+
+function lemlistCompanyFromRecord(record = {}) {
+  const fields = record.fields || {};
+  return {
+    lemlistCompanyId: lemlistRecordId(record),
+    name: lemlistCompanyRecordName(record),
+    domain: lemlistCompanyDomain(record),
+    website: normalizeLookupValue(record.website || fields.website || record.company_website_url || ""),
+    linkedinUrl: normalizeLookupValue(record.linkedinUrl || fields.linkedinUrl || record.companyLinkedinUrl || fields.companyLinkedinUrl || ""),
+    industry: normalizeLookupValue(record.industry || fields.industry || record.companyIndustry || fields.companyIndustry || ""),
+    pictureUrl: lemlistImageUrl(record),
+    companySize: normalizeLookupValue(record.size || fields.size || record.companySize || fields.companySize || ""),
+    foundedYear: normalizeLookupValue(record.foundedOn || fields.foundedOn || record.companyFoundedOn || fields.companyFoundedOn || ""),
+    location: normalizeLookupValue(record.location || fields.location || ""),
+    crmSyncStatus: normalizeLookupValue(record.crmSyncStatus || record.crmSync?.reason || record.crmSync?.errors?.[0]?.reason || ""),
+    createdAt: lemlistCreatedAt(record),
+    lemlistRaw: record,
+  };
+}
+
+function lemlistFindRecordById(records = [], id = "") {
+  const normalizedId = normalizeLookupValue(id).toLowerCase();
+  if (!normalizedId) return null;
+  return records.find(record => normalizeLookupValue(lemlistRecordId(record)).toLowerCase() === normalizedId) || null;
+}
+
+function lemlistHydrateCampaignLeadRecord(record = {}, contacts = [], companies = [], peopleProfiles = [], selectedCampaign = null) {
+  const contact = lemlistFindRecordById(contacts, record.contactId) || (lemlistEmail(record)
+    ? contacts.find(item => lemlistEmail(item) === lemlistEmail(record))
+    : null);
+  const company = lemlistFindRecordById(companies, record.companyId || contact?.companyId)
+    || (lemlistCompanyName(record) ? companies.find(item => lemlistCompanyRecordName(item).toLowerCase() === lemlistCompanyName(record).toLowerCase()) : null);
+  const companyFields = company?.fields || {};
+  const peopleProfile = lemlistFindPeopleProfile({ ...(contact || {}), ...record }, peopleProfiles);
+  const primaryExperience = Array.isArray(peopleProfile?.experiences) ? peopleProfile.experiences[0] : null;
+  const peopleProfileSkills = Array.isArray(peopleProfile?.skills) && peopleProfile.skills.length
+    ? peopleProfile.skills
+    : Array.isArray(peopleProfile?.inferred_skills)
+      ? peopleProfile.inferred_skills
+      : [];
+  const peopleProfilePicture = normalizeLookupValue(
+    peopleProfile?.lead_logo_url
+    || peopleProfile?.leadLogoUrl
+    || peopleProfile?.profile_picture_url
+    || peopleProfile?.profilePictureUrl
+  );
+
+  return {
+    ...(contact || {}),
+    ...record,
+    _id: record._id || record.id,
+    contactId: record.contactId || (String(record._id || record.id || "").startsWith("ctc_") ? record._id || record.id : lemlistRecordId(contact)),
+    campaignId: record.campaignId || selectedCampaign?._id || selectedCampaign?.id || "",
+    campaignName: record.campaignName || selectedCampaign?.name || "",
+    companyId: record.companyId || contact?.companyId || lemlistRecordId(company),
+    companyName: record.companyName || lemlistCompanyName(record) || companyFields.name || company?.name || peopleProfile?.current_exp_company_name || primaryExperience?.company_name || "",
+    companyDomain: record.companyDomain || companyFields.domain || company?.domain || "",
+    companyIndustry: record.companyIndustry || companyFields.industry || company?.industry || peopleProfile?.lead_industry || primaryExperience?.company_industry || "",
+    companyLinkedinUrl: record.companyLinkedinUrl || companyFields.linkedinUrl || company?.linkedinUrl || peopleProfile?.current_exp_company_linkedin_url || primaryExperience?.company_linkedin_url || "",
+    companyPicture: record.companyPicture || companyFields.picture || company?.picture || "",
+    companySize: record.companySize || companyFields.size || company?.size || peopleProfile?.current_exp_company_size || primaryExperience?.company_size || "",
+    companyFoundedOn: record.companyFoundedOn || companyFields.foundedOn || company?.foundedOn || "",
+    companyLocation: record.location || record.companyLocation || peopleProfile?.location || companyFields.location || company?.location || "",
+    linkedinUrl: record.linkedinUrl || contact?.linkedinUrl || peopleProfile?.lead_linkedin_url || "",
+    profilePictureUrl: record.profilePictureUrl || contact?.profilePictureUrl || peopleProfilePicture || "",
+    lead_logo_url: record.lead_logo_url || contact?.lead_logo_url || peopleProfile?.lead_logo_url || "",
+    leadLogoUrl: record.leadLogoUrl || contact?.leadLogoUrl || peopleProfile?.leadLogoUrl || "",
+    summary: record.summary || peopleProfile?.summary || "",
+    tagline: record.tagline || peopleProfile?.headline || "",
+    skills: Array.isArray(record.skills) && record.skills.length ? record.skills : peopleProfileSkills,
+    peopleProfile,
+    lemlistRaw: {
+      campaignLead: record,
+      contact: contact || null,
+      company: company || null,
+      peopleProfile: peopleProfile || null,
+    },
+  };
+}
+
+function lemlistCompanyMatch(company = {}, accounts = []) {
+  const lemlistCompanyId = normalizeLookupValue(company.lemlistCompanyId).toLowerCase();
+  if (lemlistCompanyId) {
+    const match = accounts.find(account => normalizeLookupValue(account.lemlistCompanyId || account.customFields?.lemlist_company_id).toLowerCase() === lemlistCompanyId);
+    if (match) return match;
+  }
+  const domain = normalizeLookupValue(company.domain).toLowerCase();
+  if (domain) {
+    const match = accounts.find(account => normalizeLookupValue(account.domain).toLowerCase() === domain);
+    if (match) return match;
+  }
+  const linkedinUrl = normalizeLookupValue(company.linkedinUrl).toLowerCase();
+  if (linkedinUrl) {
+    const match = accounts.find(account => normalizeLookupValue(account.linkedinUrl || account.customFields?.linkedin_url).toLowerCase() === linkedinUrl);
+    if (match) return match;
+  }
+  const name = normalizeLookupValue(company.name).toLowerCase();
+  return name ? accounts.find(account => normalizeLookupValue(account.name).toLowerCase() === name) || null : null;
+}
+
+const LEMLIST_PROFILE_ENRICHMENT_FIELDS = [
+  ["location", lead => lead.location],
+  ["industry", lead => lead.companyIndustry],
+  ["size", lead => lead.companySize],
+  ["summary", lead => lead.summary],
+  ["skills", lead => lemlistSkillsText(lead.skills)],
+];
+
+function lemlistMissingFields(lead = {}, options = {}) {
+  const fields = [
+    ["email", lead.manualEmail],
+    ["phone", lead.manualMobile || lead.manualDirectDial],
+    ["LinkedIn", lead.linkedinProfileUrl],
+    ["role", lead.jobTitle],
+    ["company", lead.company],
+  ];
+  if (options.includeProfileEnrichmentFields) {
+    LEMLIST_PROFILE_ENRICHMENT_FIELDS.forEach(([label, getValue]) => fields.push([label, getValue(lead)]));
+  }
+  return fields.filter(([, value]) => !normalizeLookupValue(value)).map(([label]) => label);
+}
+
+function lemlistLeadHasProfileFields(lead = {}) {
+  return Boolean(
+    normalizeLookupValue(lead.profilePictureUrl)
+    || normalizeLookupValue(lead.location)
+    || normalizeLookupValue(lead.summary || lead.tagline)
+    || normalizeLookupValue(lemlistSkillsText(lead.skills))
+    || lead.peopleProfile
+  );
+}
+
+function lemlistCompanyMissingFields(company = {}) {
+  return [
+    ["domain", company.domain],
+    ["LinkedIn", company.linkedinUrl],
+    ["industry", company.industry],
+    ["size", company.companySize],
+    ["location", company.location],
+  ].filter(([, value]) => !normalizeLookupValue(value)).map(([label]) => label);
+}
+
+function lemlistMatchBadge(match, missing = []) {
+  if (match && missing.length) return { tone: "warning", label: `Existing, missing ${missing.length}` };
+  if (match) return { tone: "success", label: "In PaceOps" };
+  if (missing.length) return { tone: "warning", label: `New, missing ${missing.length}` };
+  return { tone: "neutral", label: "New" };
+}
+
+function lemlistErrorLabel(key) {
+  if (key === "peopleProfiles") return "Profile enrichment";
+  if (key === "leads") return "Campaign leads";
+  return key;
+}
+
+function lemlistErrorMessage(value = {}) {
+  const message = value.message || "Lemlist request failed";
+  return value.statusCode ? `HTTP ${value.statusCode}: ${message}` : message;
+}
+
+function LemlistProfileValue({ children }) {
+  return children || <span className="contact-muted-cell">Missing</span>;
+}
+
+function LemlistRecordIdentity({ name, imageUrl = "", subtitle = "", meta = "" }) {
+  return (
+    <div className="lemlist-record-cell">
+      <RecordAvatar name={name} imageUrl={imageUrl} />
+      <div>
+        <strong>{name || "Lemlist record"}</strong>
+        {subtitle ? <small>{subtitle}</small> : null}
+        {meta ? <small>{meta}</small> : null}
+      </div>
+    </div>
+  );
+}
+
+function LemlistDetailValue({ label, value, href = "" }) {
+  const displayValue = formatDebugValue(value);
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>
+        {href && value ? (
+          <a href={href} target="_blank" rel="noreferrer">
+            {displayValue} <ExternalLink size={13} />
+          </a>
+        ) : displayValue}
+      </dd>
+    </div>
+  );
+}
+
+function LemlistRecordDetailModal({ detail, onClose, onSave, onSaveWithContacts, actionStatus }) {
+  if (!detail?.row) return null;
+  const isCompany = detail.type === "company";
+  const row = detail.row;
+  const record = row.record || {};
+  const entity = isCompany ? row.company : row.lead;
+  const title = isCompany ? entity.name : entity.contactName;
+  const imageUrl = isCompany ? entity.pictureUrl : entity.profilePictureUrl;
+  const subtitle = isCompany ? entity.domain || entity.industry : entity.jobTitle || entity.company;
+  const rawJson = JSON.stringify(record || entity.lemlistRaw || null, null, 2);
+  const fields = isCompany ? [
+    ["Domain", entity.domain],
+    ["Website", entity.website],
+    ["LinkedIn", entity.linkedinUrl, entity.linkedinUrl],
+    ["Industry", entity.industry],
+    ["Company size", entity.companySize],
+    ["Founded", entity.foundedYear],
+    ["Location", entity.location],
+    ["CRM sync status", entity.crmSyncStatus],
+    ["Created", entity.createdAt ? formatDateTime(entity.createdAt) : ""],
+    ["Lemlist ID", entity.lemlistCompanyId],
+  ] : [
+    ["Email", entity.manualEmail, entity.manualEmail ? `mailto:${entity.manualEmail}` : ""],
+    ["Phone", entity.manualDirectDial || entity.manualMobile, entity.manualDirectDial || entity.manualMobile ? `tel:${normalizePhone(entity.manualDirectDial || entity.manualMobile)}` : ""],
+    ["Company", entity.company],
+    ["Role", entity.jobTitle],
+    ["Location", entity.location],
+    ["LinkedIn", entity.linkedinProfileUrl, entity.linkedinProfileUrl],
+    ["Sales Navigator", entity.linkedinSalesNavUrl, entity.linkedinSalesNavUrl],
+    ["Campaign", entity.campaignSummary || entity.lemlistCampaignName],
+    ["Campaign count", entity.campaignCount],
+    ["Lead status", entity.lemlistStatusId],
+    ["Email status", entity.emailStatus],
+    ["Created", entity.createdAt ? formatDateTime(entity.createdAt) : ""],
+    ["Timezone", entity.timezone],
+    ["Unsubscribed", entity.lemlistUnsubscribed],
+    ["Lemlist contact ID", entity.lemlistContactId],
+    ["Lemlist lead ID", entity.lemlistLeadId],
+  ];
+  const summary = isCompany ? "" : entity.summary || entity.notes || entity.tagline;
+  const skills = !isCompany && Array.isArray(entity.skills)
+    ? entity.skills.map(skill => normalizeLookupValue(skill?.name || skill?.skill || skill)).filter(Boolean)
+    : [];
+
+  return (
+    <section className="modal-backdrop" role="presentation" onMouseDown={event => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <div className="workflow-modal lemlist-detail-modal" role="dialog" aria-modal="true" aria-labelledby="lemlist-detail-title">
+        <div className="modal-header">
+          <div className="lemlist-detail-heading">
+            <RecordAvatar name={title} imageUrl={imageUrl} size="large" />
+            <div>
+              <span className="eyebrow">{isCompany ? "Lemlist company" : "Lemlist person"}</span>
+              <h2 id="lemlist-detail-title">{title || "Lemlist record"}</h2>
+              {subtitle ? <p>{subtitle}</p> : null}
+              <div className="lemlist-detail-badges">
+                <StatusBadge tone={row.badge?.tone}>{row.badge?.label || "New"}</StatusBadge>
+                {!isCompany && entity.emailStatus ? <StatusBadge tone={lemlistDeliveryTone(entity.emailStatus)}>{entity.emailStatus}</StatusBadge> : null}
+                {isCompany && entity.crmSyncStatus ? <StatusBadge>{entity.crmSyncStatus}</StatusBadge> : null}
+              </div>
+            </div>
+          </div>
+          <button className="icon-action" type="button" onClick={onClose} aria-label="Close Lemlist record">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="lemlist-detail-grid">
+          <section className="lemlist-detail-panel">
+            <h3>Fields</h3>
+            <dl className="lemlist-detail-list">
+              {fields.map(([label, value, href]) => <LemlistDetailValue key={label} label={label} value={value} href={href} />)}
+            </dl>
+          </section>
+          <section className="lemlist-detail-panel">
+            <h3>{isCompany ? "Company snapshot" : "Profile snapshot"}</h3>
+            {summary ? <p className="lemlist-detail-summary">{summary}</p> : <EmptyState icon={FileText} title="No summary returned" text="Lemlist did not return a profile summary for this record." />}
+            {skills.length ? (
+              <div className="lemlist-skill-list">
+                {skills.slice(0, 12).map(skill => <span key={skill}>{skill}</span>)}
+              </div>
+            ) : null}
+            {!isCompany && entity.campaigns?.length ? (
+              <div className="lemlist-campaign-list">
+                {entity.campaigns.map(campaign => (
+                  <span key={campaign.leadId || campaign.campaignId}>
+                    {campaign.campaignState || "campaign"} · {campaign.leadState || campaign.campaignId}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </section>
+        </div>
+
+        <section className="lemlist-detail-panel">
+          <h3>Raw Lemlist record</h3>
+          <pre className="lead-debug-json">{rawJson}</pre>
+        </section>
+
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>Close</button>
+          <div className="lemlist-record-actions">
+            {isCompany && onSaveWithContacts ? (
+              <button className="secondary-button" type="button" onClick={onSaveWithContacts} disabled={actionStatus === "saving"}>
+                <Users size={16} /> Save + contacts
+              </button>
+            ) : null}
+            <button className="primary-button" type="button" onClick={onSave} disabled={(!isCompany && row.match) || actionStatus === "saving"}>
+              {actionStatus === "saving" ? <LoaderCircle className="button-spinner" size={16} /> : isCompany ? <Building2 size={16} /> : <UserPlus size={16} />}
+              {!isCompany && row.match ? "Already in PaceOps" : isCompany && row.match ? "Update in PaceOps" : "Save to PaceOps"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LemlistPage({ contactDatabase = [], onSaveLeadContact, onSaveLemlistCompany }) {
+  const { accounts } = useCrmData();
+  const [overview, setOverview] = useState(null);
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState("");
+  const [selectedCampaignId, setSelectedCampaignId] = useState("");
+  const [leadState, setLeadState] = useState("");
+  const [rangeDays, setRangeDays] = useState("30");
+  const [includeProfileEnrichment, setIncludeProfileEnrichment] = useState(false);
+  const [activeEntityView, setActiveEntityView] = useState("campaign-leads");
+  const [selectedLeadIds, setSelectedLeadIds] = useState([]);
+  const [selectedContactIds, setSelectedContactIds] = useState([]);
+  const [selectedCompanyIds, setSelectedCompanyIds] = useState([]);
+  const [actionStatus, setActionStatus] = useState("idle");
+  const [actionMessage, setActionMessage] = useState("");
+  const [detailRecord, setDetailRecord] = useState(null);
+  const [recordsExpanded, setRecordsExpanded] = useState(false);
+
+  const effectiveCampaignId = selectedCampaignId || overview?.selectedCampaignId || "";
+  const campaigns = useMemo(() => overview?.campaigns || [], [overview]);
+  const selectedCampaign = campaigns.find(campaign => (campaign._id || campaign.id) === effectiveCampaignId) || overview?.selectedCampaign || null;
+  const stats = overview?.stats || {};
+  const credits = overview?.credits || {};
+  const contacts = useMemo(() => overview?.contacts || [], [overview]);
+  const companies = useMemo(() => overview?.companies || [], [overview]);
+  const peopleProfiles = useMemo(() => (Array.isArray(overview?.peopleProfiles) ? overview.peopleProfiles : []), [overview]);
+  const contactLists = useMemo(() => overview?.contactLists || [], [overview]);
+  const leads = useMemo(() => overview?.leads || [], [overview]);
+  const errors = overview?.errors || {};
+  const remainingCredits = credits.details?.remaining?.total ?? credits.credits ?? 0;
+  const replyRate = formatPercent(stats.replied ?? stats.nbLeadsAnswered, stats.delivered || stats.messagesSent);
+  const bounceRate = formatPercent(stats.messagesBounced, stats.messagesSent);
+  const openRate = formatPercent(stats.opened ?? stats.nbLeadsOpened, stats.delivered || stats.messagesSent);
+  const hasPartialErrors = Object.keys(errors).length > 0;
+  const campaignLeadRows = useMemo(() => leads.map(record => {
+    const hydratedRecord = lemlistHydrateCampaignLeadRecord(record, contacts, companies, peopleProfiles, selectedCampaign);
+    const lead = lemlistLeadFromRecord(hydratedRecord, selectedCampaign);
+    const match = findLeadDatabaseMatch(lead, contactDatabase);
+    const hydratedLead = match ? hydrateLeadWithContactDatabase(lead, [match]) : lead;
+    const profileFieldsAvailable = includeProfileEnrichment || lemlistLeadHasProfileFields(hydratedLead);
+    const missing = lemlistMissingFields(hydratedLead, { includeProfileEnrichmentFields: profileFieldsAvailable });
+    return {
+      id: hydratedLead.lemlistLeadId || hydratedLead.lemlistContactId || buildLeadIdentityKey(hydratedLead),
+      record: hydratedRecord,
+      lead: hydratedLead,
+      match,
+      missing,
+      profileFieldsAvailable,
+      badge: lemlistMatchBadge(match, missing),
+    };
+  }), [companies, contactDatabase, contacts, includeProfileEnrichment, leads, peopleProfiles, selectedCampaign]);
+  const contactRows = useMemo(() => contacts.map(record => {
+    const hydratedRecord = lemlistHydrateCampaignLeadRecord(record, [], companies, peopleProfiles, selectedCampaign);
+    const lead = lemlistLeadFromRecord(hydratedRecord, selectedCampaign);
+    const match = findLeadDatabaseMatch(lead, contactDatabase);
+    const hydratedLead = match ? hydrateLeadWithContactDatabase(lead, [match]) : lead;
+    const profileFieldsAvailable = includeProfileEnrichment || lemlistLeadHasProfileFields(hydratedLead);
+    const missing = lemlistMissingFields(hydratedLead, { includeProfileEnrichmentFields: profileFieldsAvailable });
+    return {
+      id: hydratedLead.lemlistContactId || buildLeadIdentityKey(hydratedLead),
+      record: hydratedRecord,
+      lead: hydratedLead,
+      match,
+      missing,
+      profileFieldsAvailable,
+      badge: lemlistMatchBadge(match, missing),
+    };
+  }), [companies, contactDatabase, contacts, includeProfileEnrichment, peopleProfiles, selectedCampaign]);
+  const companyRows = useMemo(() => companies.map(record => {
+    const company = lemlistCompanyFromRecord(record);
+    const match = lemlistCompanyMatch(company, accounts);
+    const missing = lemlistCompanyMissingFields(match ? {
+      ...company,
+      domain: company.domain || match.domain,
+      linkedinUrl: company.linkedinUrl || match.linkedinUrl,
+      industry: company.industry || match.industry,
+      companySize: company.companySize || match.companySize,
+      location: company.location || match.location,
+    } : company);
+    return {
+      id: company.lemlistCompanyId || company.domain || company.name,
+      record,
+      company,
+      match,
+      missing,
+      badge: lemlistMatchBadge(match, missing),
+    };
+  }), [accounts, companies]);
+  const selectedLeadRows = campaignLeadRows.filter(row => selectedLeadIds.includes(row.id));
+  const selectedContactRows = contactRows.filter(row => selectedContactIds.includes(row.id));
+  const selectedCompanyRows = companyRows.filter(row => selectedCompanyIds.includes(row.id));
+  const unsavedCampaignLeadRows = campaignLeadRows.filter(row => !row.match);
+  const unsavedContactRows = contactRows.filter(row => !row.match);
+  const selectedUnsavedLeadRows = selectedLeadRows.filter(row => !row.match);
+  const selectedUnsavedContactRows = selectedContactRows.filter(row => !row.match);
+  const visibleEntityRows = activeEntityView === "people"
+    ? contactRows
+    : activeEntityView === "companies"
+      ? companyRows
+      : campaignLeadRows;
+  const lemlistCompanyContactCounts = useMemo(() => {
+    return campaignLeadRows.reduce((map, row) => {
+      const key = normalizeLookupValue(row.lead.company).toLowerCase();
+      if (!key) return map;
+      map.set(key, (map.get(key) || 0) + 1);
+      return map;
+    }, new Map());
+  }, [campaignLeadRows]);
+
+  function toggleSelected(id, selectedIds, setSelectedIds) {
+    setSelectedIds(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
+  }
+
+  function handleSelectableRowKeyDown(event, id, selectedIds, setSelectedIds) {
+    if (!["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    toggleSelected(id, selectedIds, setSelectedIds);
+  }
+
+  async function saveLemlistLeadRows(rows, label = "contacts") {
+    if (!rows.length) return;
+    setActionStatus("saving");
+    setActionMessage("");
+    try {
+      const rowsToSave = rows.filter(row => !row.match);
+      const skippedCount = rows.length - rowsToSave.length;
+      if (!rowsToSave.length) {
+        setActionStatus("done");
+        setActionMessage(`No Lemlist ${label} saved. ${skippedCount} already ${skippedCount === 1 ? "exists" : "exist"} in PaceOps contacts.`);
+        setSelectedLeadIds([]);
+        setSelectedContactIds([]);
+        return;
+      }
+      const saved = [];
+      for (const row of rowsToSave) {
+        saved.push(await onSaveLeadContact(row.lead, { skipConflictPrompt: true, allowPreviewOnly: true }));
+      }
+      setActionStatus("done");
+      setActionMessage(`${saved.length} Lemlist ${label} saved to PaceOps contacts.${skippedCount ? ` ${skippedCount} already ${skippedCount === 1 ? "exists" : "exist"} and ${skippedCount === 1 ? "was" : "were"} skipped.` : ""}`);
+      setSelectedLeadIds([]);
+      setSelectedContactIds([]);
+    } catch (saveError) {
+      setActionStatus("error");
+      setActionMessage(saveError?.message || "Could not save Lemlist contacts.");
+    }
+  }
+
+  async function saveLemlistCompanyRows(rows) {
+    if (!rows.length) return;
+    setActionStatus("saving");
+    setActionMessage("");
+    try {
+      const saved = [];
+      for (const row of rows) saved.push(await onSaveLemlistCompany(row.company));
+      setActionStatus("done");
+      setActionMessage(`${saved.length} Lemlist ${saved.length === 1 ? "company" : "companies"} saved to PaceOps companies.`);
+      setSelectedCompanyIds([]);
+    } catch (saveError) {
+      setActionStatus("error");
+      setActionMessage(saveError?.message || "Could not save Lemlist companies.");
+    }
+  }
+
+  async function saveCompanyWithCampaignContacts(row) {
+    const companyKey = normalizeLookupValue(row.company.name).toLowerCase();
+    const relatedLeadRows = campaignLeadRows.filter(leadRow => normalizeLookupValue(leadRow.lead.company).toLowerCase() === companyKey);
+    setActionStatus("saving");
+    setActionMessage("");
+    try {
+      await onSaveLemlistCompany(row.company);
+      if (relatedLeadRows.length) await saveLemlistLeadRows(relatedLeadRows, "campaign contacts");
+      else {
+        setActionStatus("done");
+        setActionMessage(`${row.company.name} saved to PaceOps companies. No campaign contacts matched this company.`);
+      }
+    } catch (saveError) {
+      setActionStatus("error");
+      setActionMessage(saveError?.message || "Could not save Lemlist company and contacts.");
+    }
+  }
+
+  const loadOverview = useCallback(async () => {
+    setStatus(current => current === "ready" ? "refreshing" : "loading");
+    setError("");
+    const endDate = new Date();
+    const startDate = addDays(endDate, -Number.parseInt(rangeDays, 10));
+    try {
+      const response = await fetch("/api/lemlist/overview", {
+        method: "POST",
+        headers: await buildApiHeaders(),
+        body: JSON.stringify({
+          campaignId: selectedCampaignId,
+          leadState,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
+          campaignLimit: 50,
+          leadLimit: 50,
+          contactLimit: 100,
+          companyLimit: 100,
+          includePeopleProfiles: includeProfileEnrichment,
+          peopleProfileLimit: 25,
+        }),
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload.error || "Could not load Lemlist.");
+      setOverview(payload);
+      setSelectedLeadIds([]);
+      setSelectedContactIds([]);
+      setSelectedCompanyIds([]);
+      setDetailRecord(null);
+      setActiveEntityView(current => {
+        const counts = {
+          "campaign-leads": payload.leads?.length || 0,
+          people: payload.contacts?.length || 0,
+          companies: payload.companies?.length || 0,
+        };
+        if (counts[current]) return current;
+        if (counts.people) return "people";
+        if (counts.companies) return "companies";
+        if (counts["campaign-leads"]) return "campaign-leads";
+        return current;
+      });
+      setStatus("ready");
+    } catch (loadError) {
+      setStatus("error");
+      setError(loadError?.message || "Could not load Lemlist.");
+    }
+  }, [includeProfileEnrichment, leadState, rangeDays, selectedCampaignId]);
+
+  useEffect(() => {
+    loadOverview();
+  }, [loadOverview]);
+
+  useEffect(() => {
+    if (!recordsExpanded) return undefined;
+    function handleKeyDown(event) {
+      if (event.key === "Escape") setRecordsExpanded(false);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [recordsExpanded]);
+
+  return (
+    <div className="lemlist-page">
+      <PageHeader
+        eyebrow="Lemlist"
+        title="Lemlist workspace"
+        description="Campaign, people, and company visibility with PaceOps matching, missing-field checks, and quick save actions."
+      >
+        <button className="secondary-button" type="button" onClick={loadOverview} disabled={status === "loading" || status === "refreshing"}>
+          {status === "loading" || status === "refreshing" ? <LoaderCircle className="button-spinner" size={16} /> : <RefreshCw size={16} />}
+          {status === "refreshing" ? "Refreshing" : "Refresh"}
+        </button>
+      </PageHeader>
+
+      <section className="panel lemlist-toolbar">
+        <label>
+          <span>Campaign</span>
+          <select value={effectiveCampaignId} onChange={event => setSelectedCampaignId(event.target.value)} disabled={!campaigns.length}>
+            {campaigns.length ? campaigns.map(campaign => (
+              <option key={campaign._id || campaign.id} value={campaign._id || campaign.id}>{campaign.name || campaign._id || campaign.id}</option>
+            )) : <option value="">No campaigns loaded</option>}
+          </select>
+        </label>
+        <label>
+          <span>Lead state</span>
+          <select value={leadState} onChange={event => setLeadState(event.target.value)}>
+            {lemlistLeadStateOptions.map(option => <option key={option.value || "all"} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Stats range</span>
+          <select value={rangeDays} onChange={event => setRangeDays(event.target.value)}>
+            {lemlistDateRangeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label className="lemlist-enrichment-toggle">
+          <span>Profile enrichment</span>
+          <input type="checkbox" checked={includeProfileEnrichment} onChange={event => setIncludeProfileEnrichment(event.target.checked)} />
+        </label>
+      </section>
+
+      {error ? (
+        <section className="panel lemlist-notice">
+          <div>
+            <span className="eyebrow">Connection</span>
+            <h2>Lemlist is not loading</h2>
+            <p>{error}</p>
+          </div>
+        </section>
+      ) : null}
+
+      {hasPartialErrors ? (
+        <div className="lemlist-warning-row">
+          {Object.entries(errors).map(([key, value]) => (
+            <StatusBadge key={key} tone="warning">{lemlistErrorLabel(key)}: {lemlistErrorMessage(value)}</StatusBadge>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="metrics-grid">
+        <MetricCard label="Campaigns" value={formatInteger(campaigns.length)} detail={selectedCampaign?.status ? `${selectedCampaign.status} selected` : "Loaded from Lemlist"} icon={Megaphone} />
+        <MetricCard label="Leads in campaign" value={formatInteger(stats.nbLeads ?? leads.length)} detail={`${formatInteger(stats.nbLeadsLaunched || 0)} launched`} icon={Users} />
+        <MetricCard label="People" value={formatInteger(contacts.length)} detail={`${contactRows.filter(row => row.match).length} matched, ${contactLists.length} lists`} icon={Contact} />
+        <MetricCard label="Companies" value={formatInteger(companies.length)} detail={`${companyRows.filter(row => row.match).length} matched`} icon={Building2} />
+        <MetricCard label="Reply rate" value={replyRate} detail={`${formatInteger(stats.replied || stats.nbLeadsAnswered || 0)} replies`} icon={Mail} />
+        <MetricCard label="Credits" value={formatInteger(remainingCredits)} detail="Remaining enrichment balance" icon={Sparkles} />
+      </div>
+
+      <div className="lemlist-overview-grid">
+        <section className="panel">
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">Performance</span>
+                <h2>{selectedCampaign?.name || "Campaign performance"}</h2>
+              </div>
+              <StatusBadge tone={lemlistCampaignStatusTone(selectedCampaign?.status)}>{selectedCampaign?.status || "No campaign"}</StatusBadge>
+            </div>
+            <div className="lemlist-stat-grid">
+              <div><span>Delivered</span><strong>{formatInteger(stats.delivered)}</strong></div>
+              <div><span>Opened</span><strong>{openRate}</strong></div>
+              <div><span>Clicked</span><strong>{formatInteger(stats.clicked)}</strong></div>
+              <div><span>Bounced</span><strong>{bounceRate}</strong></div>
+              <div><span>Interested</span><strong>{formatInteger(stats.nbLeadsInterested)}</strong></div>
+              <div><span>Meetings</span><strong>{formatInteger(stats.meetingBooked)}</strong></div>
+            </div>
+            <div className="table-wrap lemlist-table-wrap">
+              <table className="data-table lemlist-step-table">
+                <thead>
+                  <tr>
+                    <th>Step</th>
+                    <th>Type</th>
+                    <th>Sent</th>
+                    <th>Delivered</th>
+                    <th>Opened</th>
+                    <th>Replied</th>
+                    <th>Bounced</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(stats.steps || []).length ? stats.steps.map((step, index) => (
+                    <tr key={`${step.sequenceId || "step"}-${step.index || index}`}>
+                      <td>{step.index ?? index + 1}</td>
+                      <td>{lemlistActivityLabel(step.taskType || "email")}</td>
+                      <td>{formatInteger(step.sent)}</td>
+                      <td>{formatInteger(step.delivered)}</td>
+                      <td>{formatInteger(step.opened)}</td>
+                      <td>{formatInteger(step.replied)}</td>
+                      <td>{formatInteger(step.bounced || step.notDelivered)}</td>
+                    </tr>
+                  )) : (
+                    <tr><td colSpan="7" className="empty-table-cell">No step stats returned for this date range.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+        </section>
+
+        <section className="panel lemlist-credit-panel">
+          <div className="panel-header">
+            <div>
+              <span className="eyebrow">Credits</span>
+              <h2>Enrichment balance</h2>
+            </div>
+            <Sparkles size={18} />
+          </div>
+          <div className="lemlist-credit-total">{formatInteger(remainingCredits)}</div>
+          <dl className="lemlist-mini-list">
+            {Object.entries(credits.details?.remaining || {}).slice(0, 5).map(([key, value]) => (
+              <div key={key}><dt>{titleCase(key)}</dt><dd>{formatInteger(value)}</dd></div>
+            ))}
+          </dl>
+        </section>
+      </div>
+
+      {recordsExpanded ? <div className="lemlist-record-panel-backdrop" aria-hidden="true" onClick={() => setRecordsExpanded(false)} /> : null}
+      <section className={`panel lemlist-record-panel ${recordsExpanded ? "expanded" : ""}`}>
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">CRM sync</span>
+                <h2>Lemlist records</h2>
+              </div>
+              <div className="lemlist-record-actions">
+                <div className="segmented-control" aria-label="Lemlist record type">
+                  <button className={activeEntityView === "campaign-leads" ? "active" : ""} type="button" onClick={() => setActiveEntityView("campaign-leads")}>Campaign leads ({campaignLeadRows.length})</button>
+                  <button className={activeEntityView === "people" ? "active" : ""} type="button" onClick={() => setActiveEntityView("people")}>People ({contactRows.length})</button>
+                  <button className={activeEntityView === "companies" ? "active" : ""} type="button" onClick={() => setActiveEntityView("companies")}>Companies ({companyRows.length})</button>
+                </div>
+                <button className="secondary-button small-button" type="button" onClick={() => setRecordsExpanded(current => !current)}>
+                  {recordsExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  {recordsExpanded ? "Exit full view" : "Full view"}
+                </button>
+              </div>
+            </div>
+            <div className="lemlist-action-bar">
+              <div>
+                <StatusBadge>{visibleEntityRows.length} shown</StatusBadge>
+                {activeEntityView === "campaign-leads" ? <StatusBadge tone="accent">{selectedLeadRows.length} selected</StatusBadge> : null}
+                {activeEntityView === "people" ? <StatusBadge tone="accent">{selectedContactRows.length} selected</StatusBadge> : null}
+                {activeEntityView === "companies" ? <StatusBadge tone="accent">{selectedCompanyRows.length} selected</StatusBadge> : null}
+                {!visibleEntityRows.length && contactRows.length ? <button className="secondary-button small-button" type="button" onClick={() => setActiveEntityView("people")}>Open people</button> : null}
+                {!visibleEntityRows.length && companyRows.length ? <button className="secondary-button small-button" type="button" onClick={() => setActiveEntityView("companies")}>Open companies</button> : null}
+              </div>
+              <div>
+                {activeEntityView === "campaign-leads" ? (
+                  <>
+                    <button className="secondary-button small-button" type="button" onClick={() => saveLemlistLeadRows(selectedLeadRows, "campaign leads")} disabled={!selectedUnsavedLeadRows.length || actionStatus === "saving" || !onSaveLeadContact}>
+                      <UserPlus size={14} /> Save selected
+                    </button>
+                    <button className="secondary-button small-button" type="button" onClick={() => saveLemlistLeadRows(campaignLeadRows, "campaign leads")} disabled={!unsavedCampaignLeadRows.length || actionStatus === "saving" || !onSaveLeadContact}>
+                      <Plus size={14} /> Save all shown
+                    </button>
+                  </>
+                ) : null}
+                {activeEntityView === "people" ? (
+                  <>
+                    <button className="secondary-button small-button" type="button" onClick={() => saveLemlistLeadRows(selectedContactRows, "people")} disabled={!selectedUnsavedContactRows.length || actionStatus === "saving" || !onSaveLeadContact}>
+                      <UserPlus size={14} /> Save selected
+                    </button>
+                    <button className="secondary-button small-button" type="button" onClick={() => saveLemlistLeadRows(contactRows, "people")} disabled={!unsavedContactRows.length || actionStatus === "saving" || !onSaveLeadContact}>
+                      <Plus size={14} /> Save all shown
+                    </button>
+                  </>
+                ) : null}
+                {activeEntityView === "companies" ? (
+                  <>
+                    <button className="secondary-button small-button" type="button" onClick={() => saveLemlistCompanyRows(selectedCompanyRows)} disabled={!selectedCompanyRows.length || actionStatus === "saving" || !onSaveLemlistCompany}>
+                      <Building2 size={14} /> Save selected
+                    </button>
+                    <button className="secondary-button small-button" type="button" onClick={() => saveLemlistCompanyRows(companyRows)} disabled={!companyRows.length || actionStatus === "saving" || !onSaveLemlistCompany}>
+                      <Plus size={14} /> Save all shown
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+            {actionMessage ? <div className={actionStatus === "error" ? "form-error" : "form-success"}>{actionMessage}</div> : null}
+            <div className="table-wrap lemlist-table-wrap">
+              {activeEntityView === "companies" ? (
+                <table className="data-table lemlist-entity-table">
+                  <thead>
+                    <tr>
+                      <th className="table-select-cell" aria-label="Select"></th>
+                      <th>Company</th>
+                      <th>Domain</th>
+                      <th>Industry</th>
+                      <th>Location</th>
+                      <th>Size</th>
+                      <th>Match</th>
+                      <th>Campaign contacts</th>
+                      <th>Missing</th>
+                      <th aria-label="Actions"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {companyRows.length ? companyRows.map(row => {
+                      const contactCount = lemlistCompanyContactCounts.get(normalizeLookupValue(row.company.name).toLowerCase()) || 0;
+                      const selected = selectedCompanyIds.includes(row.id);
+                      return (
+                        <tr
+                          key={row.id}
+                          className={`lemlist-selectable-row ${selected ? "selected" : ""}`}
+                          tabIndex={0}
+                          aria-selected={selected}
+                          onClick={() => toggleSelected(row.id, selectedCompanyIds, setSelectedCompanyIds)}
+                          onKeyDown={event => handleSelectableRowKeyDown(event, row.id, selectedCompanyIds, setSelectedCompanyIds)}
+                        >
+                          <td className="table-select-cell">
+                            <input type="checkbox" checked={selected} onClick={event => event.stopPropagation()} onChange={() => toggleSelected(row.id, selectedCompanyIds, setSelectedCompanyIds)} aria-label={`Select ${row.company.name}`} />
+                          </td>
+                          <td><LemlistRecordIdentity name={row.company.name} imageUrl={row.company.pictureUrl} subtitle={row.company.domain || row.company.industry} meta={row.company.crmSyncStatus} /></td>
+                          <td>{row.company.domain || <span className="contact-muted-cell">Missing</span>}</td>
+                          <td>{row.company.industry || <span className="contact-muted-cell">Missing</span>}</td>
+                          <td>{row.company.location || <span className="contact-muted-cell">Missing</span>}</td>
+                          <td>{row.company.companySize || <span className="contact-muted-cell">Missing</span>}</td>
+                          <td><StatusBadge tone={row.badge.tone}>{row.badge.label}</StatusBadge></td>
+                          <td>{contactCount ? `${contactCount} in campaign` : "None in selected campaign"}</td>
+                          <td>{row.missing.length ? row.missing.join(", ") : "Complete"}</td>
+                          <td>
+                            <div className="lemlist-row-actions">
+                              <button className="icon-action" type="button" onClick={event => {
+                                event.stopPropagation();
+                                setDetailRecord({ type: "company", row });
+                              }} aria-label={`Open ${row.company.name}`}>
+                                <Maximize2 size={14} />
+                              </button>
+                              <button className="secondary-button small-button" type="button" onClick={event => {
+                                event.stopPropagation();
+                                saveLemlistCompanyRows([row]);
+                              }} disabled={actionStatus === "saving" || !onSaveLemlistCompany}>Save</button>
+                              <button className="secondary-button small-button" type="button" onClick={event => {
+                                event.stopPropagation();
+                                saveCompanyWithCampaignContacts(row);
+                              }} disabled={actionStatus === "saving" || !onSaveLemlistCompany || !onSaveLeadContact}>Save + contacts</button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }) : (
+                      <tr><td colSpan="10" className="empty-table-cell">No Lemlist companies returned.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="data-table lemlist-entity-table">
+                  <thead>
+                    <tr>
+                      <th className="table-select-cell" aria-label="Select"></th>
+                      <th>Person</th>
+                      <th>Company</th>
+                      <th>Role</th>
+                      <th>Location</th>
+                      <th>Industry</th>
+                      <th>Size</th>
+                      <th>Email</th>
+                      <th>Phone</th>
+                      <th>Summary</th>
+                      <th>Skills</th>
+                      <th>Match</th>
+                      <th>Missing</th>
+                      <th aria-label="Actions"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(activeEntityView === "people" ? contactRows : campaignLeadRows).length ? (activeEntityView === "people" ? contactRows : campaignLeadRows).map(row => {
+                      const checkedIds = activeEntityView === "people" ? selectedContactIds : selectedLeadIds;
+                      const setCheckedIds = activeEntityView === "people" ? setSelectedContactIds : setSelectedLeadIds;
+                      const selected = checkedIds.includes(row.id);
+                      return (
+                        <tr
+                          key={row.id}
+                          className={`lemlist-selectable-row ${selected ? "selected" : ""}`}
+                          tabIndex={0}
+                          aria-selected={selected}
+                          onClick={() => toggleSelected(row.id, checkedIds, setCheckedIds)}
+                          onKeyDown={event => handleSelectableRowKeyDown(event, row.id, checkedIds, setCheckedIds)}
+                        >
+                          <td className="table-select-cell">
+                            <input type="checkbox" checked={selected} onClick={event => event.stopPropagation()} onChange={() => toggleSelected(row.id, checkedIds, setCheckedIds)} aria-label={`Select ${row.lead.contactName}`} />
+                          </td>
+                          <td><LemlistRecordIdentity name={row.lead.contactName} imageUrl={row.lead.profilePictureUrl} subtitle={row.lead.emailStatus || row.lead.campaignSummary} meta={row.lead.emailStatus && row.lead.campaignSummary ? row.lead.campaignSummary : ""} /></td>
+                          <td>{row.lead.company || <span className="contact-muted-cell">Missing</span>}</td>
+                          <td>{row.lead.jobTitle || <span className="contact-muted-cell">Missing</span>}</td>
+                          <td><LemlistProfileValue>{row.lead.location}</LemlistProfileValue></td>
+                          <td><LemlistProfileValue>{row.lead.companyIndustry}</LemlistProfileValue></td>
+                          <td><LemlistProfileValue>{row.lead.companySize}</LemlistProfileValue></td>
+                          <td>{row.lead.manualEmail || <span className="contact-muted-cell">Missing</span>}</td>
+                          <td>{row.lead.manualDirectDial || row.lead.manualMobile || <span className="contact-muted-cell">Missing</span>}</td>
+                          <td><span className="lemlist-summary-cell"><LemlistProfileValue>{row.lead.summary || row.lead.tagline}</LemlistProfileValue></span></td>
+                          <td><span className="lemlist-skills-cell"><LemlistProfileValue>{lemlistSkillsText(row.lead.skills)}</LemlistProfileValue></span></td>
+                          <td><StatusBadge tone={row.badge.tone}>{row.badge.label}</StatusBadge></td>
+                          <td>{row.missing.length ? row.missing.join(", ") : "Complete"}</td>
+                          <td>
+                            <div className="lemlist-row-actions">
+                              <button className="icon-action" type="button" onClick={event => {
+                                event.stopPropagation();
+                                setDetailRecord({ type: activeEntityView === "people" ? "people" : "campaign-lead", row });
+                              }} aria-label={`Open ${row.lead.contactName}`}>
+                                <Maximize2 size={14} />
+                              </button>
+                              <button className="secondary-button small-button" type="button" onClick={event => {
+                                event.stopPropagation();
+                                saveLemlistLeadRows([row], activeEntityView === "people" ? "person" : "campaign lead");
+                              }} disabled={row.match || actionStatus === "saving" || !onSaveLeadContact}>
+                                {row.match ? "Saved" : "Save"}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }) : (
+                      <tr><td colSpan="14" className="empty-table-cell">{activeEntityView === "people" ? "No Lemlist contacts returned." : "No leads returned for this campaign and state filter."}</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
+      </section>
+
+      {detailRecord ? (
+        <LemlistRecordDetailModal
+          detail={detailRecord}
+          onClose={() => setDetailRecord(null)}
+          onSave={() => detailRecord.type === "company"
+            ? saveLemlistCompanyRows([detailRecord.row])
+            : saveLemlistLeadRows([detailRecord.row], detailRecord.type === "people" ? "person" : "campaign lead")}
+          onSaveWithContacts={detailRecord.type === "company" ? () => saveCompanyWithCampaignContacts(detailRecord.row) : null}
+          actionStatus={actionStatus}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function IntegrationsPage({ onNavigate, onOpenWorkflow, integrationCredentials, onSaveIntegrationCredentials }) {
   const { integrations } = useCrmData();
+  const displayedIntegrations = hydrateIntegrations(Array.isArray(integrations) ? integrations : []);
   const [credentialProvider, setCredentialProvider] = useState("");
   const [credentialValues, setCredentialValues] = useState({});
   const [credentialVisibleFields, setCredentialVisibleFields] = useState({});
@@ -13437,7 +15041,7 @@ function IntegrationsPage({ onNavigate, onOpenWorkflow, integrationCredentials, 
         description="Active and planned external services for contact search, calling, company intelligence, and imports."
       />
       <div className="integration-grid">
-        {integrations.map(integration => {
+        {displayedIntegrations.map(integration => {
           const Icon = integration.icon;
           const isAvailable = Boolean(integration.view || integration.workflow);
           const credentialForm = credentialFormByName.get(integration.key || integration.name);
@@ -13555,6 +15159,14 @@ const integrationCredentialForms = [
     title: "HubSpot",
     description: "Used for exporting Lead Finder contacts to HubSpot.",
     fields: [{ name: "privateAppToken", label: "Private app token", placeholder: "pat-..." }],
+  },
+  {
+    provider: "lemlist",
+    integrationKey: "Lemlist",
+    integrationName: "Lemlist",
+    title: "Lemlist",
+    description: "Used by the Lemlist campaign dashboard. Basic auth is handled on the server.",
+    fields: [{ name: "apiKey", label: "Lemlist API key", placeholder: "Lemlist API key" }],
   },
 ];
 
@@ -15846,7 +17458,7 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
     case "account":
       return { clientId, name: "", domain: "", industry: "", location: "", employees: "", value: "0", stage: data.pipelineStages?.[0]?.name || pipelineColumns[0].name, status: "New", nextAction: "Map buying committee", insight: "" };
     case "contact":
-      return { accountId, accountName: data.accounts.find(account => account.id === accountId)?.name || "", name: "", role: "", email: "", mobile: "", directDial: "", status: "New" };
+      return { accountId, accountName: data.accounts.find(account => account.id === accountId)?.name || "", name: "", role: "", email: "", mobile: "", directDial: "", profilePictureUrl: "", profilePicturePath: "", profilePictureName: "", summary: "", skills: [], source: "", status: "New" };
     case "deal":
       return { accountId, contactId, stage: pipelineColumns[0].id, value: "0", due: "Today", owner: "Workspace user" };
     case "call":
@@ -16060,6 +17672,25 @@ function WorkflowModal({
     }
   }
 
+  async function handleContactProfileImageChange(file) {
+    if (!file) return;
+    setImageUploadStatus("uploading");
+    setImageUploadError("");
+    try {
+      const { data: sessionData } = supabase ? await supabase.auth.getSession() : { data: null };
+      const uploadedImage = await uploadContactProfileImage({
+        file,
+        userId: sessionData?.session?.user?.id,
+        recordId: values.id || draftImageRecordIdRef.current,
+      });
+      setValues(current => ({ ...current, ...uploadedImage }));
+      setImageUploadStatus("uploaded");
+    } catch (error) {
+      setImageUploadStatus("failed");
+      setImageUploadError(error.message || "Could not upload contact image.");
+    }
+  }
+
   function renderBrandImageField(entityType) {
     const label = entityType === "campaign" ? "Campaign image (optional)" : "Client logo";
     return (
@@ -16080,6 +17711,39 @@ function WorkflowModal({
               />
             </label>
             <small>{values.imageName || "PNG, JPG, WebP, GIF, or SVG up to 5 MB"}</small>
+            {imageUploadError ? <small className="form-error-text">{imageUploadError}</small> : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderContactProfileImageField() {
+    return (
+      <div className="form-field brand-image-field contact-image-field">
+        <span>Contact image</span>
+        <div className="brand-image-uploader contact-image-uploader">
+          <div className="brand-image-preview contact-image-preview">
+            <RecordAvatar name={values.name || "Contact"} imageUrl={values.profilePictureUrl || ""} />
+          </div>
+          <div className="contact-image-controls">
+            <div className="contact-image-action-row">
+              <label className="secondary-button brand-image-upload-button">
+                <Upload size={16} />
+                {imageUploadStatus === "uploading" ? "Uploading" : values.profilePictureUrl ? "Replace image" : "Upload image"}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  onChange={event => handleContactProfileImageChange(event.target.files?.[0])}
+                />
+              </label>
+              <input
+                value={values.profilePictureUrl || ""}
+                onChange={event => update("profilePictureUrl", event.target.value)}
+                placeholder="https://image-url"
+              />
+            </div>
+            <small>{values.profilePictureName || "PNG, JPG, WebP, or GIF up to 5 MB, or paste an image URL."}</small>
             {imageUploadError ? <small className="form-error-text">{imageUploadError}</small> : null}
           </div>
         </div>
@@ -16576,32 +18240,63 @@ function WorkflowModal({
             <datalist id="contact-account-options">
               {data.accounts.map(account => <option key={account.id} value={account.name} />)}
             </datalist>
-            <FormField label="Company">
-              <input list="contact-account-options" required value={values.accountName} onChange={event => {
-                const accountName = event.target.value;
-                const matchedAccount = data.accounts.find(account => normalizeLookupValue(account.name).toLowerCase() === normalizeLookupValue(accountName).toLowerCase());
-                setValues(current => ({
-                  ...current,
-                  accountName,
-                  accountId: matchedAccount?.id || "",
-                }));
-              }} placeholder="Type or select company" />
-            </FormField>
-            <FormField label="Contact name">
-              <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Contact name" />
-            </FormField>
-            <FormField label="Role">
-              <input value={values.role} onChange={event => update("role", event.target.value)} placeholder="Head of Product" />
-            </FormField>
-            <FormField label="Email">
-              <input type="email" value={values.email} onChange={event => update("email", event.target.value)} placeholder="name@company.com" />
-            </FormField>
-            <FormField label="Mobile">
-              <input value={values.mobile} onChange={event => update("mobile", event.target.value)} placeholder="+44 mobile" />
-            </FormField>
-            <FormField label="Direct dial">
-              <input value={values.directDial} onChange={event => update("directDial", event.target.value)} placeholder="+44 direct" />
-            </FormField>
+            <div className="workflow-fieldset contact-workflow-section">
+              <div className="workflow-section-title">
+                <span>Identity</span>
+              </div>
+              <div className="workflow-field-grid">
+                <FormField label="Company">
+                  <input list="contact-account-options" required value={values.accountName} onChange={event => {
+                    const accountName = event.target.value;
+                    const matchedAccount = data.accounts.find(account => normalizeLookupValue(account.name).toLowerCase() === normalizeLookupValue(accountName).toLowerCase());
+                    setValues(current => ({
+                      ...current,
+                      accountName,
+                      accountId: matchedAccount?.id || "",
+                    }));
+                  }} placeholder="Type or select company" />
+                </FormField>
+                <FormField label="Contact name">
+                  <input required value={values.name} onChange={event => update("name", event.target.value)} placeholder="Contact name" />
+                </FormField>
+                {renderContactProfileImageField()}
+              </div>
+            </div>
+            <div className="workflow-fieldset contact-workflow-section">
+              <div className="workflow-section-title">
+                <span>Profile</span>
+              </div>
+              <div className="workflow-field-grid">
+                <FormField label="Role">
+                  <input value={values.role} onChange={event => update("role", event.target.value)} placeholder="Head of Product" />
+                </FormField>
+                <FormField label="Skills">
+                  <input value={Array.isArray(values.skills) ? profileSkillsText(values.skills) : values.skills || ""} onChange={event => update("skills", event.target.value)} placeholder="Procurement, operations, sustainability" />
+                </FormField>
+                <FormField label="Summary" className="field-span-all">
+                  <textarea rows={4} value={values.summary || ""} onChange={event => update("summary", event.target.value)} placeholder="Short context, remit, buying committee notes, or profile summary" />
+                </FormField>
+              </div>
+            </div>
+            <div className="workflow-fieldset contact-workflow-section">
+              <div className="workflow-section-title">
+                <span>Contactability</span>
+              </div>
+              <div className="workflow-field-grid">
+                <FormField label="Email">
+                  <input type="email" value={values.email} onChange={event => update("email", event.target.value)} placeholder="name@company.com" />
+                </FormField>
+                <FormField label="Mobile">
+                  <input value={values.mobile} onChange={event => update("mobile", event.target.value)} placeholder="+44 mobile" />
+                </FormField>
+                <FormField label="Direct dial">
+                  <input value={values.directDial} onChange={event => update("directDial", event.target.value)} placeholder="+44 direct" />
+                </FormField>
+                <FormField label="Source">
+                  <input required value={values.source || ""} onChange={event => update("source", event.target.value)} placeholder="Referral, event, LinkedIn, manual research" />
+                </FormField>
+              </div>
+            </div>
           </>
         );
       case "deal":
@@ -16708,7 +18403,11 @@ function WorkflowModal({
       <div className="modal-backdrop" role="presentation" onMouseDown={event => {
         if (event.target === event.currentTarget) onClose();
       }}>
-        <form className={`workflow-modal ${workflow.type === "campaign-company" ? "campaign-company-modal" : ""}`} onSubmit={submit}>
+        <form className={[
+          "workflow-modal",
+          workflow.type === "campaign-company" ? "campaign-company-modal" : "",
+          ["contact", "edit-contact"].includes(workflow.type) ? "contact-workflow-modal" : "",
+        ].filter(Boolean).join(" ")} onSubmit={submit}>
           <div className="modal-header">
             <div>
               <span className="eyebrow">Workflow</span>
@@ -17443,27 +19142,167 @@ export default function App() {
     }
 
     const { currentUser, organizationId } = await getLeadContactSaveContext();
-    const company = await ensureLeadCompanyRecord(organizationId, lead.company);
-    const leadWithCompany = { ...lead, companyId: company.id, company: company.name || lead.company };
+    const leadWithProfileImage = await ingestProviderProfileImage(lead);
+    const company = await ensureLeadCompanyRecord(organizationId, leadWithProfileImage.company);
+    const leadWithCompany = { ...leadWithProfileImage, companyId: company.id, company: company.name || leadWithProfileImage.company };
     const payload = buildLeadContactDatabasePayload(leadWithCompany, organizationId, currentUser.id);
-    const updatePayload = { ...payload };
-    delete updatePayload.id;
-    delete updatePayload.created_by;
-    const query = lead.dbContactId
-      ? supabase
-        .from("contacts")
-        .update(updatePayload)
-        .eq("id", lead.dbContactId)
-        .eq("organization_id", organizationId)
-      : supabase
-        .from("contacts")
-        .upsert(payload, { onConflict: "organization_id,normalized_identity_key" });
-    const { data, error } = await query.select("*").single();
+    let activePayload = { ...payload };
+    let activeUpdatePayload = { ...payload };
+    delete activeUpdatePayload.id;
+    delete activeUpdatePayload.created_by;
+    let data = null;
+    let error = null;
+
+    for (let attempt = 0; attempt <= optionalLeadContactPayloadColumns.size; attempt += 1) {
+      const query = lead.dbContactId
+        ? supabase
+          .from("contacts")
+          .update(activeUpdatePayload)
+          .eq("id", lead.dbContactId)
+          .eq("organization_id", organizationId)
+        : supabase
+          .from("contacts")
+          .upsert(activePayload, { onConflict: "organization_id,normalized_identity_key" });
+      const result = await query.select("*").single();
+      data = result.data;
+      error = result.error;
+      if (!error) break;
+
+      const missingColumn = missingSchemaColumnName(error);
+      if (!isMissingColumnError(error) || !optionalLeadContactPayloadColumns.has(missingColumn)) break;
+      activePayload = stripPayloadColumn(activePayload, missingColumn);
+      activeUpdatePayload = stripPayloadColumn(activeUpdatePayload, missingColumn);
+      console.warn(`Supabase contacts column ${missingColumn} is unavailable; saving without that top-level field.`);
+    }
 
     if (error) throw error;
     const savedContact = mapContactDatabaseRecord(data);
     setLeadContactDatabase(current => [savedContact, ...current.filter(contact => contact.id !== savedContact.id && contact.normalizedIdentityKey !== savedContact.normalizedIdentityKey)]);
     return savedContact;
+  }
+
+  async function handleSaveLemlistCompany(company) {
+    const cleanName = normalizeLookupValue(company?.name);
+    if (!cleanName) throw new Error("Lemlist company name is required.");
+    const { currentUser, organizationId } = await getLeadContactSaveContext();
+    const lemlistCompanyId = normalizeLookupValue(company.lemlistCompanyId);
+    const domain = normalizeLookupValue(company.domain);
+    const linkedinUrl = normalizeLookupValue(company.linkedinUrl);
+
+    async function maybeFindExisting() {
+      if (lemlistCompanyId) {
+        const { data, error } = await supabase
+          .from("companies")
+          .select("*")
+          .eq("organization_id", organizationId)
+          .eq("lemlist_company_id", lemlistCompanyId)
+          .maybeSingle();
+        if (error) throw error;
+        if (data?.id) return data;
+      }
+
+      if (domain) {
+        const { data, error } = await supabase
+          .from("companies")
+          .select("*")
+          .eq("organization_id", organizationId)
+          .ilike("domain", domain)
+          .maybeSingle();
+        if (error) throw error;
+        if (data?.id) return data;
+      }
+
+      const { data, error } = await supabase
+        .from("companies")
+        .select("*")
+        .eq("organization_id", organizationId)
+        .ilike("name", cleanName)
+        .maybeSingle();
+      if (error) throw error;
+      return data || null;
+    }
+
+    const existing = await maybeFindExisting();
+    const foundedYear = Number.parseInt(company.foundedYear, 10);
+    const lemlistCustomFields = {
+      ...(existing?.custom_fields || {}),
+      lemlist_company_id: lemlistCompanyId || existing?.custom_fields?.lemlist_company_id || undefined,
+      lemlist_picture_url: normalizeLookupValue(company.pictureUrl) || undefined,
+      lemlist_company_size: normalizeLookupValue(company.companySize) || undefined,
+      lemlist_crm_sync_status: normalizeLookupValue(company.crmSyncStatus) || undefined,
+    };
+    const payload = {
+      organization_id: organizationId,
+      client_id: existing?.client_id || null,
+      name: cleanName,
+      slug: makeCompanySlug(cleanName),
+      domain: domain || existing?.domain || null,
+      website: normalizeLookupValue(company.website) || existing?.website || null,
+      industry: normalizeLookupValue(company.industry) || existing?.industry || null,
+      status: existing?.status || "active",
+      notes: existing?.notes || null,
+      custom_fields: lemlistCustomFields,
+      lemlist_company_id: lemlistCompanyId || existing?.lemlist_company_id || null,
+      linkedin_url: linkedinUrl || existing?.linkedin_url || null,
+      picture_url: normalizeLookupValue(company.pictureUrl) || existing?.picture_url || null,
+      company_size: normalizeLookupValue(company.companySize) || existing?.company_size || null,
+      founded_year: Number.isFinite(foundedYear) ? foundedYear : existing?.founded_year || null,
+      location: normalizeLookupValue(company.location) || existing?.location || null,
+      crm_sync_status: normalizeLookupValue(company.crmSyncStatus) || existing?.crm_sync_status || null,
+      lemlist_raw: company.lemlistRaw && typeof company.lemlistRaw === "object" ? company.lemlistRaw : existing?.lemlist_raw || {},
+      last_lemlist_synced_at: new Date().toISOString(),
+    };
+
+    const query = existing?.id
+      ? supabase
+        .from("companies")
+        .update(Object.fromEntries(Object.entries(payload).filter(([key]) => !["organization_id", "slug"].includes(key))))
+        .eq("id", existing.id)
+        .eq("organization_id", organizationId)
+      : supabase
+        .from("companies")
+        .insert(payload);
+
+    const { data, error } = await query
+      .select("id,client_id,name,domain,website,industry,employee_count,annual_revenue,status,notes,custom_fields,lemlist_company_id,linkedin_url,picture_url,company_size,founded_year,location,crm_sync_status,lemlist_raw,last_lemlist_synced_at")
+      .single();
+
+    if (error) throw error;
+    const account = {
+      id: data.id,
+      clientId: data.client_id || "",
+      name: data.name,
+      domain: data.domain || "",
+      website: data.website || "",
+      owner: "Workspace user",
+      stage: pipelineStageIdForValue(data.custom_fields?.ui_stage || "lead"),
+      status: data.custom_fields?.ui_status || titleCase(data.status || "active"),
+      industry: data.industry || "",
+      employees: data.employee_count || data.company_size || "",
+      value: Number(data.annual_revenue) || 0,
+      location: data.location || data.custom_fields?.company_hq_location || "",
+      lastActivity: "Synced from Lemlist",
+      nextAction: data.custom_fields?.next_action || "Review Lemlist company",
+      insight: data.notes || "",
+      scripts: data.custom_fields?.scripts || null,
+      lemlistCompanyId: data.lemlist_company_id || "",
+      linkedinUrl: data.linkedin_url || "",
+      pictureUrl: data.picture_url || "",
+      companySize: data.company_size || "",
+      foundedYear: data.founded_year || "",
+      crmSyncStatus: data.crm_sync_status || "",
+      lemlistRaw: data.lemlist_raw || {},
+      lastLemlistSyncedAt: data.last_lemlist_synced_at || "",
+      customFields: data.custom_fields || {},
+    };
+
+    updateData(current => ({
+      ...current,
+      accounts: [account, ...current.accounts.filter(item => item.id !== account.id)],
+      companies: [account, ...((current.companies || current.accounts || []).filter(item => item.id !== account.id))],
+      activities: [makeActivity("Lemlist", `Company saved from Lemlist: ${account.name}`, account.name, "Workspace user", { userId: currentUser.id }), ...current.activities],
+    }));
+    return account;
   }
 
   async function handlePersistSearchResults(leads) {
@@ -17628,7 +19467,7 @@ export default function App() {
     }
   }
 
-  if (!authReady) {
+  if (!authReady && !user) {
     return <ProspectIqLoadingScreen isDark={isDark} />;
   }
 
@@ -17838,31 +19677,67 @@ export default function App() {
     }));
   }
 
-  function handleUpdateContact(values) {
-    updateData(current => {
-      const account = current.accounts.find(item => item.id === values.accountId);
-      return {
+  async function handleUpdateContact(values) {
+    const previous = crmData.contacts.find(contact => contact.id === values.id);
+    const account = crmData.accounts.find(item => item.id === values.accountId);
+    const nextContact = previous ? {
+      ...previous,
+      clientId: account?.clientId || previous.clientId,
+      accountId: values.accountId || previous.accountId,
+      account: account?.name || previous.account,
+      name: values.name.trim() || previous.name,
+      role: values.role || "Stakeholder",
+      email: values.email,
+      phone: values.directDial,
+      mobile: values.mobile,
+      directDial: values.directDial,
+      profilePictureUrl: normalizeLookupValue(values.profilePictureUrl),
+      profilePicturePath: values.profilePicturePath || previous.profilePicturePath || "",
+      profilePictureName: values.profilePictureName || previous.profilePictureName || "",
+      summary: normalizeLookupValue(values.summary),
+      skills: normalizeContactSkills(values.skills),
+      phoneNumber: undefined,
+      redeemed: undefined,
+      lastTouch: "Updated just now",
+    } : null;
+
+    if (nextContact) {
+      updateData(current => ({
         ...current,
-        contacts: current.contacts.map(contact => contact.id === values.id
-          ? {
-            ...contact,
-            clientId: account?.clientId || contact.clientId,
-            accountId: values.accountId || contact.accountId,
-            account: account?.name || contact.account,
-            name: values.name.trim() || contact.name,
-            role: values.role || "Stakeholder",
-            email: values.email,
-            phone: values.directDial,
-            mobile: values.mobile,
-            directDial: values.directDial,
-            phoneNumber: undefined,
-            redeemed: undefined,
-            lastTouch: "Updated just now",
-          }
-          : contact),
-        activities: [makeActivity("Contact", `Contact updated: ${values.name || "Untitled contact"}`, account?.name || "Workspace"), ...current.activities],
-      };
-    });
+        contacts: current.contacts.map(contact => contact.id === values.id ? nextContact : contact),
+        activities: [makeActivity("Contact", `Contact updated: ${nextContact.name || "Untitled contact"}`, nextContact.account || "Workspace"), ...current.activities],
+      }));
+    }
+
+    try {
+      if (previous && account && dataOrgId && UUID_PATTERN.test(String(previous.id))) {
+      await saveRelationalContact(dataOrgId, {
+        ...previous,
+        clientId: account.clientId || previous.clientId,
+        accountId: account.id,
+        account: account.name,
+        name: values.name.trim() || previous.name,
+        role: values.role || "Stakeholder",
+        email: values.email,
+        mobile: values.mobile,
+        directDial: values.directDial,
+        profilePictureUrl: values.profilePictureUrl || "",
+        profilePicturePath: values.profilePicturePath || previous.profilePicturePath || "",
+        profilePictureName: values.profilePictureName || previous.profilePictureName || "",
+        summary: values.summary || "",
+        skills: normalizeContactSkills(values.skills),
+        status: values.status || previous.status,
+      });
+      }
+    } catch (error) {
+      if (previous) {
+        updateData(current => ({
+          ...current,
+          contacts: current.contacts.map(contact => contact.id === previous.id ? previous : contact),
+        }));
+      }
+      throw error;
+    }
   }
 
   async function handleSavePrivateContactNote(contactId, note) {
@@ -18352,89 +20227,96 @@ export default function App() {
   }
 
   function handleAddLeadToCrmContacts(lead) {
-    updateData(current => {
-      const leadName = normalizeLookupValue(lead.contactName || [lead.firstName, lead.lastName].filter(Boolean).join(" ")) || "Untitled contact";
-      const companyName = normalizeLookupValue(lead.company) || "Lead Finder account";
-      const leadEmail = normalizeEmail(lead.manualEmail);
-      const leadMobile = normalizePhone(lead.manualMobile || lead.manualDirectDial);
-      const existingContact = current.contacts.find(contact => {
-        const sameEmail = leadEmail && normalizeEmail(contact.email) === leadEmail;
-        const sameMobile = leadMobile && normalizePhone(contact.mobile || contact.directDial || contact.phone) === leadMobile;
-        const samePersonAtCompany = normalizeLookupValue(contact.name).toLowerCase() === leadName.toLowerCase()
-          && normalizeLookupValue(contact.account).toLowerCase() === companyName.toLowerCase();
-        return sameEmail || sameMobile || samePersonAtCompany;
+    const leadName = normalizeLookupValue(lead.contactName || [lead.firstName, lead.lastName].filter(Boolean).join(" ")) || "Untitled contact";
+    const companyName = normalizeLookupValue(lead.company) || "Lead Finder account";
+    const leadEmail = normalizeEmail(lead.manualEmail);
+    const leadMobile = normalizePhone(lead.manualMobile || lead.manualDirectDial);
+    const existingContact = crmData.contacts.find(contact => {
+      const sameEmail = leadEmail && normalizeEmail(contact.email) === leadEmail;
+      const sameMobile = leadMobile && normalizePhone(contact.mobile || contact.directDial || contact.phone) === leadMobile;
+      const samePersonAtCompany = normalizeLookupValue(contact.name).toLowerCase() === leadName.toLowerCase()
+        && normalizeLookupValue(contact.account).toLowerCase() === companyName.toLowerCase();
+      return sameEmail || sameMobile || samePersonAtCompany;
+    });
+
+    if (existingContact) {
+      navigateTo("contact-detail", {
+        activeClientId: existingContact.clientId,
+        selectedAccountId: existingContact.accountId,
+        selectedContactId: existingContact.id,
       });
+      return;
+    }
 
-      if (existingContact) {
-        setSelectedAccountId(existingContact.accountId);
-        setSelectedContactId(existingContact.id);
-        setActiveView("contact-detail");
-        return current;
-      }
+    const fallbackClient = {
+      id: makeId("client"),
+      name: "Lead Finder",
+      workspace: "Prospecting workspace",
+      status: "Active",
+      owner: "Workspace user",
+      accounts: 0,
+      contacts: 0,
+      health: "Active",
+      industry: "",
+      website: "",
+    };
+    const client = crmData.clients[0] || fallbackClient;
+    const existingAccount = crmData.accounts.find(account => normalizeLookupValue(account.name).toLowerCase() === companyName.toLowerCase());
+    const account = existingAccount || {
+      id: makeId("account"),
+      clientId: client.id,
+      name: companyName,
+      domain: "No domain",
+      owner: "Workspace user",
+      stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
+      status: "New",
+      industry: "Unspecified",
+      location: normalizeLookupValue(lead.location) || "Unspecified",
+      employees: "Unknown",
+      value: 0,
+      lastActivity: "Added from Contacts",
+      nextAction: "Map buying committee",
+      insight: "Created from a saved contact.",
+      scripts: null,
+    };
+    const mobileNumber = normalizeLookupValue(lead.manualMobile);
+    const directDialNumber = normalizeLookupValue(lead.manualDirectDial);
+    const contact = {
+      id: makeId("contact"),
+      clientId: account.clientId,
+      accountId: account.id,
+      account: account.name,
+      name: leadName,
+      role: normalizeLookupValue(lead.jobTitle) || "Stakeholder",
+      persona: "Lead Finder",
+      email: leadEmail,
+      phone: directDialNumber,
+      mobile: mobileNumber,
+      directDial: directDialNumber,
+      profilePictureUrl: normalizeLookupValue(lead.profilePictureUrl),
+      summary: normalizeLookupValue(lead.summary || lead.tagline),
+      skills: normalizeContactSkills(lead.skills),
+      owner: "Workspace user",
+      status: "New",
+      stage: pipelineStageIdForValue("lead", crmData.pipelineStages || pipelineColumns),
+      lastTouch: "Added from Contacts",
+    };
 
-      const fallbackClient = {
-        id: makeId("client"),
-        name: "Lead Finder",
-        workspace: "Prospecting workspace",
-        status: "Active",
-        owner: "Workspace user",
-        accounts: 0,
-        contacts: 0,
-        health: "Active",
-        industry: "",
-        website: "",
-      };
-      const client = current.clients[0] || fallbackClient;
-      const existingAccount = current.accounts.find(account => normalizeLookupValue(account.name).toLowerCase() === companyName.toLowerCase());
-      const account = existingAccount || {
-        id: makeId("account"),
-        clientId: client.id,
-        name: companyName,
-        domain: "No domain",
-        owner: "Workspace user",
-        stage: current.pipelineStages?.[0]?.name || pipelineColumns[0].name,
-        status: "New",
-        industry: "Unspecified",
-        location: normalizeLookupValue(lead.location) || "Unspecified",
-        employees: "Unknown",
-        value: 0,
-        lastActivity: "Added from Contacts",
-        nextAction: "Map buying committee",
-        insight: "Created from a saved contact.",
-        scripts: null,
-      };
-      const mobileNumber = normalizeLookupValue(lead.manualMobile);
-      const directDialNumber = normalizeLookupValue(lead.manualDirectDial);
-      const contact = {
-        id: makeId("contact"),
-        clientId: account.clientId,
-        accountId: account.id,
-        account: account.name,
-        name: leadName,
-        role: normalizeLookupValue(lead.jobTitle) || "Stakeholder",
-        persona: "Lead Finder",
-        email: leadEmail,
-        phone: directDialNumber,
-        mobile: mobileNumber,
-        directDial: directDialNumber,
-        owner: "Workspace user",
-        status: "New",
-        stage: pipelineStageIdForValue("lead", crmData.pipelineStages || pipelineColumns),
-        lastTouch: "Added from Contacts",
-      };
-
-      setActiveClientId(client.id);
-      setSelectedAccountId(account.id);
-      setSelectedContactId(contact.id);
-      setActiveView("contact-detail");
-
+    updateData(current => {
+      const hasAccount = current.accounts.some(item => item.id === account.id);
       return {
         ...current,
         clients: current.clients.length ? current.clients : [client],
-        accounts: existingAccount ? current.accounts : [account, ...current.accounts],
+        accounts: hasAccount ? current.accounts : [account, ...current.accounts],
         contacts: [contact, ...current.contacts],
         activities: [makeActivity("Contact", `Contact added from Contacts: ${contact.name}`, account.name), ...current.activities],
       };
+    });
+
+    navigateTo("contact-detail", {
+      activeClientId: client.id,
+      selectedAccountId: account.id,
+      selectedContactId: contact.id,
     });
   }
 
@@ -18718,6 +20600,7 @@ export default function App() {
       email: person.email || "",
       mobile: person.phone || "",
       directDial: person.phone || "",
+      profilePictureUrl: person.profilePictureUrl || "",
       status: "New",
       stage: pipelineColumns[0].id,
     });
@@ -18746,6 +20629,7 @@ export default function App() {
       title: person.title || "",
       role: person.title || "",
       linkedin: person.linkedinUrl || "",
+      profilePictureUrl: person.profilePictureUrl || "",
       status: "New",
       stage: pipelineColumns[0].id,
       owner: "Workspace user",
@@ -19054,6 +20938,11 @@ export default function App() {
         email: values.email,
         mobile: values.mobile,
         directDial: values.directDial,
+        profilePictureUrl: values.profilePictureUrl || "",
+        profilePicturePath: values.profilePicturePath || "",
+        profilePictureName: values.profilePictureName || "",
+        summary: values.summary || "",
+        skills: normalizeContactSkills(values.skills),
         status: values.status || "New",
       });
       values = { ...values, id: persistedContact.id, accountId: account.id, accountName: account.name, createdAccount: existingAccount ? null : account };
@@ -19137,6 +21026,11 @@ export default function App() {
           email: values.email,
           mobile: values.mobile,
           directDial: values.directDial,
+          profilePictureUrl: values.profilePictureUrl || previous.profilePictureUrl || "",
+          profilePicturePath: values.profilePicturePath || previous.profilePicturePath || "",
+          profilePictureName: values.profilePictureName || previous.profilePictureName || "",
+          summary: values.summary || previous.summary || "",
+          skills: normalizeContactSkills(values.skills || previous.skills),
           status: values.status || previous.status,
         });
       }
@@ -19244,6 +21138,11 @@ export default function App() {
               phone: values.directDial,
               mobile: values.mobile,
               directDial: values.directDial,
+              profilePictureUrl: values.profilePictureUrl || contact.profilePictureUrl || "",
+              profilePicturePath: values.profilePicturePath || contact.profilePicturePath || "",
+              profilePictureName: values.profilePictureName || contact.profilePictureName || "",
+              summary: normalizeLookupValue(values.summary || contact.summary),
+              skills: normalizeContactSkills(values.skills || contact.skills),
               phoneNumber: undefined,
               redeemed: undefined,
               lastTouch: "Updated just now",
@@ -19397,6 +21296,14 @@ export default function App() {
             phone: values.directDial,
             mobile: values.mobile,
             directDial: values.directDial,
+            profilePictureUrl: values.profilePictureUrl || "",
+            profilePicturePath: values.profilePicturePath || "",
+            profilePictureName: values.profilePictureName || "",
+            summary: normalizeLookupValue(values.summary),
+            skills: normalizeContactSkills(values.skills),
+            source: normalizeLookupValue(values.source),
+            sourceNote: normalizeLookupValue(values.source),
+            dataSource: "manual",
             owner: "Workspace user",
             status: values.status || "New",
             stage: pipelineStageIdForValue("lead", current.pipelineStages || pipelineColumns),
@@ -19495,7 +21402,7 @@ export default function App() {
 
   function renderPage() {
     const canManageCrmRecords = Boolean(effectiveAccessState.isAdmin);
-    const canEditContacts = Boolean(effectiveWorkspaceUser?.id);
+    const canEditContacts = canManageCrmRecords;
     const canDeleteContacts = Boolean(effectiveAccessState.isAdmin && normalizedAdminSettings.contact_deletion_enabled);
     const cognismRedeemEnabled = Boolean(crmData.integrations?.find(integration => integration.name === "Cognism" || integration.key === "Cognism")?.redeemEnabled);
     const canUseCognismRedeemMode = Boolean(effectiveAccessState.isAdmin && cognismRedeemEnabled);
@@ -19561,6 +21468,8 @@ export default function App() {
           : <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} onSaveLeadList={handleSaveLeadList} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
       case "cognism":
         return <CognismContactFinder contactDatabase={leadContactDatabase} onSaveLeadList={handleSaveLeadList} onSaveLeadContact={handleUpsertLeadContact} onPersistSearchResults={handlePersistSearchResults} cognismPreviewEnabled={normalizedAdminSettings.cognism_preview_enabled} canUseRedeemMode={canUseCognismRedeemMode} currentUserId={effectiveWorkspaceUser?.id || ""} />;
+      case "lemlist":
+        return <LemlistPage contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onSaveLemlistCompany={handleSaveLemlistCompany} />;
       case "lead-lists":
         return <LeadListsPage leadLists={leadLists} workspaceUsers={workspaceUsers} contactDatabase={leadContactDatabase} error={leadListsError} onSaveLeadList={handleSaveLeadList} onAppendToLeadList={handleAppendToLeadList} onUpdateLeadList={handleUpdateLeadList} onDeleteLeadList={handleDeleteLeadList} onSaveLeadContact={handleUpsertLeadContact} />;
       case "aircall":

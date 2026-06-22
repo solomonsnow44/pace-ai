@@ -4,6 +4,13 @@ import { createTemporaryAircallRecordingLink, syncAircallData } from './aircallS
 import { createCognismPreview, redeemCognismContacts } from './cognismPreview.js'
 import { exportContactsToHubSpot } from './hubspotContacts.js'
 import { runIntentResearch } from './intentResearch.js'
+import {
+  createLemlistOverview,
+  getLemlistEnvApiKey,
+  lemlistPeopleProfileLinkedinUrl,
+  normalizeLinkedinLookupValue,
+} from './lemlist.js'
+import { ingestContactProfileImage } from './contactProfileImages.js'
 import { getRedeemedContactById } from './redeemedContactStore.js'
 import { suggestTargetRoles } from './roleSuggestions.js'
 import { Country, State } from 'country-state-city'
@@ -15,6 +22,7 @@ const integrationSecretFields = {
   cognism: ['apiKey'],
   aircall: ['apiId', 'apiToken'],
   hubspot: ['privateAppToken'],
+  lemlist: ['apiKey'],
 };
 
 const ADMIN_SETTINGS_METADATA_KEY = 'admin_settings';
@@ -162,6 +170,120 @@ function assertAdmin(user) {
   const error = new Error('Admin access is required.');
   error.statusCode = 403;
   throw error;
+}
+
+function compactString(value) {
+  return String(value || '').trim();
+}
+
+function isMissingSupabaseRelation(error) {
+  const message = error?.message || '';
+  return error?.code === '42P01'
+    || error?.code === 'PGRST205'
+    || /relation .* does not exist/i.test(message)
+    || /could not find the table/i.test(message)
+    || /schema cache/i.test(message);
+}
+
+function profileSkills(profile = {}) {
+  if (Array.isArray(profile.skills) && profile.skills.length) return profile.skills;
+  if (Array.isArray(profile.inferred_skills)) return profile.inferred_skills;
+  return [];
+}
+
+function profilePictureUrl(profile = {}) {
+  return compactString(
+    profile.lead_logo_url
+    || profile.leadLogoUrl
+    || profile.profile_picture_url
+    || profile.profilePictureUrl
+  );
+}
+
+function profileFullName(profile = {}) {
+  return compactString(profile.full_name || profile.fullName || profile.name);
+}
+
+function profileSummary(profile = {}) {
+  return compactString(profile.summary || profile.about);
+}
+
+function profileHeadline(profile = {}) {
+  return compactString(profile.headline || profile.tagline || profile.title);
+}
+
+function contactProfileEnrichmentFromRow(row = {}) {
+  const raw = row.raw && typeof row.raw === 'object' ? row.raw : {};
+  return {
+    ...raw,
+    lead_linkedin_url: row.linkedin_url || raw.lead_linkedin_url || raw.leadLinkedinUrl || raw.linkedinUrl || raw.linkedin_url || '',
+    linkedinUrl: row.linkedin_url || raw.linkedinUrl || raw.linkedin_url || raw.lead_linkedin_url || raw.leadLinkedinUrl || '',
+    full_name: row.full_name || raw.full_name || raw.fullName || '',
+    lead_logo_url: row.profile_picture_url || raw.lead_logo_url || raw.leadLogoUrl || raw.profile_picture_url || raw.profilePictureUrl || '',
+    profile_picture_url: row.profile_picture_url || raw.profile_picture_url || raw.profilePictureUrl || raw.lead_logo_url || raw.leadLogoUrl || '',
+    summary: row.summary || raw.summary || '',
+    headline: row.headline || raw.headline || raw.tagline || '',
+    location: row.location || raw.location || '',
+    skills: Array.isArray(row.skills) && row.skills.length ? row.skills : profileSkills(raw),
+  };
+}
+
+function contactProfileEnrichmentPayload(organizationId, profile = {}) {
+  const linkedinUrl = lemlistPeopleProfileLinkedinUrl(profile);
+  const linkedinKey = normalizeLinkedinLookupValue(linkedinUrl);
+  if (!linkedinKey) return null;
+  return {
+    organization_id: organizationId,
+    provider: 'lemlist',
+    provider_contact_id: compactString(profile.contactId || profile.lemlistContactId || profile._id || profile.id) || null,
+    provider_lead_id: compactString(profile.leadId || profile.lemlistLeadId) || null,
+    linkedin_key: linkedinKey,
+    linkedin_url: linkedinUrl,
+    full_name: profileFullName(profile) || null,
+    profile_picture_url: profilePictureUrl(profile) || null,
+    summary: profileSummary(profile) || null,
+    headline: profileHeadline(profile) || null,
+    location: compactString(profile.location) || null,
+    skills: profileSkills(profile),
+    raw: profile && typeof profile === 'object' ? profile : {},
+    last_enriched_at: new Date().toISOString(),
+  };
+}
+
+async function loadContactProfileEnrichments(organizationId) {
+  const serviceClient = getServiceClient();
+  const { data, error } = await serviceClient
+    .from('contact_profile_enrichments')
+    .select('linkedin_url,full_name,profile_picture_url,summary,headline,location,skills,raw,last_enriched_at')
+    .eq('organization_id', organizationId)
+    .order('last_enriched_at', { ascending: false })
+    .limit(2500);
+
+  if (error) {
+    if (isMissingSupabaseRelation(error)) return [];
+    throw error;
+  }
+
+  return (data || []).map(contactProfileEnrichmentFromRow);
+}
+
+async function storeContactProfileEnrichments(organizationId, profiles = []) {
+  const rows = (Array.isArray(profiles) ? profiles : [])
+    .map(profile => contactProfileEnrichmentPayload(organizationId, profile))
+    .filter(Boolean);
+  if (!rows.length) return { stored: 0 };
+
+  const serviceClient = getServiceClient();
+  const { error } = await serviceClient
+    .from('contact_profile_enrichments')
+    .upsert(rows, { onConflict: 'organization_id,linkedin_key' });
+
+  if (error) {
+    if (isMissingSupabaseRelation(error)) return { stored: 0 };
+    throw error;
+  }
+
+  return { stored: rows.length };
 }
 
 function normalizeAdminSettings(settings = {}) {
@@ -505,6 +627,17 @@ async function archiveContact(req, input = {}) {
   return { contactId, contact: { ...contact, status: 'Archived' } };
 }
 
+async function ingestContactProfileImageRoute(req, input = {}) {
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  assertAdmin(user);
+  return ingestContactProfileImage({
+    ...input,
+    organizationId: user.organizationId,
+  }, {
+    serviceClient: getServiceClient(),
+  });
+}
+
 function sendJson(res, statusCode, payload) {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
@@ -563,6 +696,10 @@ function getEnvironmentCredentialStatus(provider) {
     };
   }
   if (provider === 'hubspot') return { configured: Boolean(process.env.HUBSPOT_PRIVATE_APP_TOKEN), hints: { privateAppToken: maskSecret(process.env.HUBSPOT_PRIVATE_APP_TOKEN) }, source: 'env' };
+  if (provider === 'lemlist') {
+    const apiKey = getLemlistEnvApiKey();
+    return { configured: Boolean(apiKey), hints: { apiKey: maskSecret(apiKey) }, source: apiKey ? 'env' : 'none' };
+  }
   return { configured: false, hints: {}, source: 'none' };
 }
 
@@ -604,13 +741,7 @@ async function loadStoredIntegrationCredentials(req, provider) {
 }
 
 async function getCredentialValue(req, provider, field, envKey) {
-  if (process.env[envKey]) return process.env[envKey];
-  try {
-    const storedCredentials = await loadStoredIntegrationCredentials(req, provider);
-    return storedCredentials[field];
-  } catch {
-    return process.env[envKey];
-  }
+  return (await getCredentialResolution(req, provider, field, envKey)).value;
 }
 
 async function getCredentialResolution(req, provider, field, envKey) {
@@ -640,6 +771,41 @@ async function getCredentialResolution(req, provider, field, envKey) {
       error: error?.message || 'Could not load stored credential',
     };
   }
+}
+
+async function getLemlistCredentialResolution(req) {
+  const envApiKey = getLemlistEnvApiKey();
+  if (envApiKey) {
+    return {
+      value: envApiKey,
+      source: 'env',
+      hint: maskSecret(envApiKey),
+      configured: true,
+    };
+  }
+
+  try {
+    const storedCredentials = await loadStoredIntegrationCredentials(req, 'lemlist');
+    const value = storedCredentials.apiKey;
+    return {
+      value,
+      source: value ? 'supabase' : 'none',
+      hint: maskSecret(value),
+      configured: Boolean(value),
+    };
+  } catch (error) {
+    return {
+      value: '',
+      source: 'none',
+      hint: '',
+      configured: false,
+      error: error?.message || 'Could not load stored Lemlist credential',
+    };
+  }
+}
+
+async function getLemlistCredentialValue(req) {
+  return (await getLemlistCredentialResolution(req)).value;
 }
 
 async function getAircallCredentialCandidates(req) {
@@ -1208,6 +1374,9 @@ export async function handleApiRequest(req, res) {
         'SUPABASE_SERVICE_KEY',
         'COGNISM_API_KEY',
         'HUBSPOT_PRIVATE_APP_TOKEN',
+        'LEMLIST',
+        'LEMLIST_API_KEY',
+        'LEMLIST_KEY',
         'AIRCALL_API_ID',
         'AIRCALL_API_TOKEN',
         'AIRCALL_USER_ID',
@@ -1288,8 +1457,26 @@ export async function handleApiRequest(req, res) {
     return handlePostRoute(req, res, async body => runIntentResearchRoute(req, body), 'Intent research run failed');
   }
 
+  if (pathname === '/api/lemlist/overview') {
+    return handlePostRoute(req, res, async body => {
+      const user = await getAuthenticatedCrmUserWithOrganization(req);
+      const storedPeopleProfiles = await loadContactProfileEnrichments(user.organizationId);
+      const overview = await createLemlistOverview(body, {
+        apiKey: await getLemlistCredentialValue(req),
+        storedPeopleProfiles,
+      });
+      await storeContactProfileEnrichments(user.organizationId, overview.contactProfileEnrichmentsToStore);
+      const { contactProfileEnrichmentsToStore, ...clientOverview } = overview;
+      return clientOverview;
+    }, 'Lemlist dashboard failed');
+  }
+
   if (pathname === '/api/contacts/archive') {
     return handlePostRoute(req, res, async body => archiveContact(req, body), 'Contact archive failed');
+  }
+
+  if (pathname === '/api/contact-profile-images/ingest') {
+    return handlePostRoute(req, res, async body => ingestContactProfileImageRoute(req, body), 'Contact profile image ingest failed');
   }
 
   if (pathname === '/api/cognism/roles') {

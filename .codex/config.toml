@@ -1,0 +1,4 @@
+[mcp_servers.lemlist]
+url = "https://app.lemlist.com/mcp"
+env_http_headers = { "X-API-Key" = "LEMLIST" }
+default_tools_approval_mode = "prompt"

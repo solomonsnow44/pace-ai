@@ -216,6 +216,9 @@ function contactProfileEnrichmentFromRow(row = {}) {
   const raw = row.raw && typeof row.raw === 'object' ? row.raw : {};
   return {
     ...raw,
+    provider_contact_id: row.provider_contact_id || raw.provider_contact_id || raw.providerContactId || raw.contactId || raw.lemlistContactId || '',
+    provider_lead_id: row.provider_lead_id || raw.provider_lead_id || raw.providerLeadId || raw.leadId || raw.lemlistLeadId || '',
+    linkedin_key: row.linkedin_key || raw.linkedin_key || '',
     lead_linkedin_url: row.linkedin_url || raw.lead_linkedin_url || raw.leadLinkedinUrl || raw.linkedinUrl || raw.linkedin_url || '',
     linkedinUrl: row.linkedin_url || raw.linkedinUrl || raw.linkedin_url || raw.lead_linkedin_url || raw.leadLinkedinUrl || '',
     full_name: row.full_name || raw.full_name || raw.fullName || '',
@@ -254,7 +257,7 @@ async function loadContactProfileEnrichments(organizationId) {
   const serviceClient = getServiceClient();
   const { data, error } = await serviceClient
     .from('contact_profile_enrichments')
-    .select('linkedin_url,full_name,profile_picture_url,summary,headline,location,skills,raw,last_enriched_at')
+    .select('provider_contact_id,provider_lead_id,linkedin_key,linkedin_url,full_name,profile_picture_url,summary,headline,location,skills,raw,last_enriched_at')
     .eq('organization_id', organizationId)
     .order('last_enriched_at', { ascending: false })
     .limit(2500);

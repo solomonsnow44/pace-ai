@@ -103,12 +103,125 @@ export function lemlistPeopleProfileLinkedinUrl(profile = {}) {
   );
 }
 
+function lowerCompact(value) {
+  return compactString(value).toLowerCase();
+}
+
+function lemlistFullNameFromRecord(record = {}) {
+  return compactString(
+    record.fullName
+    || record.full_name
+    || record.name
+    || [record.firstName || record.fields?.firstName, record.lastName || record.fields?.lastName].filter(Boolean).join(" ")
+  );
+}
+
+function lemlistPeopleProfileFullName(profile = {}) {
+  return compactString(profile.full_name || profile.fullName || profile.name);
+}
+
+function compactIdSet(values = []) {
+  return new Set(values.map(lowerCompact).filter(Boolean));
+}
+
+function lemlistRecordContactIds(record = {}) {
+  const id = compactString(record.id || record._id);
+  return [
+    record.contactId,
+    record.lemlistContactId,
+    record.provider_contact_id,
+    record.providerContactId,
+    record.fields?.contactId,
+    id.startsWith("ctc_") ? id : "",
+  ];
+}
+
+function lemlistRecordLeadIds(record = {}) {
+  const id = compactString(record.id || record._id);
+  return [
+    record.leadId,
+    record.lemlistLeadId,
+    record.provider_lead_id,
+    record.providerLeadId,
+    record.fields?.leadId,
+    id.startsWith("lea_") ? id : "",
+  ];
+}
+
+function lemlistPeopleProfileContactIds(profile = {}) {
+  const id = compactString(profile.id || profile._id);
+  return [
+    profile.provider_contact_id,
+    profile.providerContactId,
+    profile.contactId,
+    profile.lemlistContactId,
+    id.startsWith("ctc_") ? id : "",
+  ];
+}
+
+function lemlistPeopleProfileLeadIds(profile = {}) {
+  const id = compactString(profile.id || profile._id);
+  return [
+    profile.provider_lead_id,
+    profile.providerLeadId,
+    profile.leadId,
+    profile.lemlistLeadId,
+    id.startsWith("lea_") ? id : "",
+  ];
+}
+
+function peopleProfileStableKey(profile = {}) {
+  const linkedinKey = normalizeLinkedinLookupValue(lemlistPeopleProfileLinkedinUrl(profile));
+  if (linkedinKey) return `linkedin:${linkedinKey}`;
+  const contactId = [...compactIdSet(lemlistPeopleProfileContactIds(profile))][0];
+  if (contactId) return `contact:${contactId}`;
+  const leadId = [...compactIdSet(lemlistPeopleProfileLeadIds(profile))][0];
+  if (leadId) return `lead:${leadId}`;
+  const name = lowerCompact(lemlistPeopleProfileFullName(profile));
+  return name ? `name:${name}` : "";
+}
+
+function uniquePeopleProfiles(profiles = []) {
+  const byKey = new Map();
+  for (const profile of Array.isArray(profiles) ? profiles : []) {
+    const key = peopleProfileStableKey(profile);
+    if (!key || byKey.has(key)) continue;
+    byKey.set(key, profile);
+  }
+  return [...byKey.values()];
+}
+
 function peopleProfileByLinkedinKey(peopleProfiles = []) {
   return (Array.isArray(peopleProfiles) ? peopleProfiles : []).reduce((map, profile) => {
     const key = normalizeLinkedinLookupValue(lemlistPeopleProfileLinkedinUrl(profile));
     if (key && !map.has(key)) map.set(key, profile);
     return map;
   }, new Map());
+}
+
+function storedPeopleProfilesForRecords(peopleProfiles = [], records = []) {
+  const linkedinKeys = new Set();
+  const contactIds = new Set();
+  const leadIds = new Set();
+  const names = new Set();
+
+  for (const record of Array.isArray(records) ? records : []) {
+    const linkedinKey = normalizeLinkedinLookupValue(lemlistLinkedinUrlFromRecord(record));
+    if (linkedinKey) linkedinKeys.add(linkedinKey);
+    compactIdSet(lemlistRecordContactIds(record)).forEach(id => contactIds.add(id));
+    compactIdSet(lemlistRecordLeadIds(record)).forEach(id => leadIds.add(id));
+    const name = lowerCompact(lemlistFullNameFromRecord(record));
+    if (name) names.add(name);
+  }
+
+  return uniquePeopleProfiles((Array.isArray(peopleProfiles) ? peopleProfiles : []).filter(profile => {
+    const linkedinKey = normalizeLinkedinLookupValue(lemlistPeopleProfileLinkedinUrl(profile));
+    if (linkedinKey && linkedinKeys.has(linkedinKey)) return true;
+    if (lemlistPeopleProfileContactIds(profile).some(id => contactIds.has(lowerCompact(id)))) return true;
+    if (lemlistPeopleProfileLeadIds(profile).some(id => leadIds.has(lowerCompact(id)))) return true;
+    const name = lowerCompact(lemlistPeopleProfileFullName(profile));
+    return Boolean(name && names.has(name));
+  }));
 }
 
 function uniquePeopleProfileLinkedinUrls(records = [], limit = DEFAULT_PEOPLE_PROFILE_LIMIT) {
@@ -295,14 +408,13 @@ export async function createLemlistOverview(input = {}, options = {}) {
   const contactPage = byName.contacts?.ok ? normalizePaginationPayload(byName.contacts.payload) : { records: [], total: 0, limit: null, offset: null };
   const companyPage = byName.companies?.ok ? normalizePaginationPayload(byName.companies.payload) : { records: [], total: 0, limit: null, offset: null };
   const leadRecords = byName.leads?.ok ? normalizeArrayPayload(byName.leads.payload) : [];
-  const candidatePeopleProfileLinkedinUrls = uniquePeopleProfileLinkedinUrls([
+  const peopleProfileCandidateRecords = [
     ...contactPage.records,
     ...leadRecords,
-  ], Math.min(contactLimit + leadLimit, 600));
+  ];
+  const candidatePeopleProfileLinkedinUrls = uniquePeopleProfileLinkedinUrls(peopleProfileCandidateRecords, Math.min(contactLimit + leadLimit, 600));
   const storedPeopleProfileByKey = peopleProfileByLinkedinKey(options.storedPeopleProfiles);
-  const storedPeopleProfiles = candidatePeopleProfileLinkedinUrls
-    .map(url => storedPeopleProfileByKey.get(normalizeLinkedinLookupValue(url)))
-    .filter(Boolean);
+  const storedPeopleProfiles = storedPeopleProfilesForRecords(options.storedPeopleProfiles, peopleProfileCandidateRecords);
   const peopleProfileLinkedinUrls = input.includePeopleProfiles === false ? [] : candidatePeopleProfileLinkedinUrls
     .filter(url => !storedPeopleProfileByKey.has(normalizeLinkedinLookupValue(url)))
     .slice(0, peopleProfileLimit);
@@ -317,10 +429,10 @@ export async function createLemlistOverview(input = {}, options = {}) {
     },
   })) : null;
   const fetchedPeopleProfiles = peopleProfileResult?.ok ? normalizeArrayPayload(peopleProfileResult.payload) : [];
-  const peopleProfiles = [
+  const peopleProfiles = uniquePeopleProfiles([
     ...storedPeopleProfiles,
     ...fetchedPeopleProfiles,
-  ];
+  ]);
   const allResults = peopleProfileResult ? [...results, peopleProfileResult] : results;
   const firstRateLimit = [
     campaignResult.rateLimit,

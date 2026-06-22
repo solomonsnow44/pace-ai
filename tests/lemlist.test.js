@@ -143,3 +143,44 @@ test("Lemlist overview uses stored contact profile enrichments before people sea
   assert.equal(overview.contactProfileEnrichment.fetched, 0);
   assert.ok(!requestedUrls.some(url => url.includes("/database/people")));
 });
+
+test("Lemlist overview reuses stored profile enrichments when refreshed leads have no LinkedIn", async () => {
+  const requestedUrls = [];
+  const fetcher = async (url) => {
+    requestedUrls.push(url);
+    if (url.includes("/campaigns?")) {
+      return jsonResponse([{ _id: "cam_1", name: "Outbound", status: "running" }]);
+    }
+    if (url.includes("/team/credits")) return jsonResponse({ credits: 0 });
+    if (url.includes("/contacts/lists")) return jsonResponse([]);
+    if (url.includes("/contacts?")) return jsonResponse({ data: [], total: 0, limit: 100, offset: 0 });
+    if (url.includes("/companies?")) return jsonResponse({ data: [], total: 0, limit: 100, offset: 0 });
+    if (url.includes("/v2/campaigns/cam_1/stats")) return jsonResponse({ nbLeads: 1, steps: [] });
+    if (url.includes("/campaigns/cam_1/leads/")) {
+      return jsonResponse([{ _id: "lea_1", fullName: "Jane Smith", jobTitle: "Director" }]);
+    }
+    if (url.includes("/database/people")) throw new Error("People profile search should not run without LinkedIn candidates");
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const overview = await createLemlistOverview({
+    includePeopleProfiles: true,
+  }, {
+    apiKey: "test-key",
+    fetcher,
+    storedPeopleProfiles: [{
+      full_name: "Jane Smith",
+      current_exp_company_name: "Example Co",
+      summary: "Stored profile summary",
+      skills: [{ name: "Operations" }],
+      location: "Dublin",
+    }],
+  });
+
+  assert.equal(overview.leads.length, 1);
+  assert.equal(overview.peopleProfiles.length, 1);
+  assert.equal(overview.peopleProfiles[0].summary, "Stored profile summary");
+  assert.equal(overview.contactProfileEnrichment.stored, 1);
+  assert.equal(overview.contactProfileEnrichment.fetched, 0);
+  assert.ok(!requestedUrls.some(url => url.includes("/database/people")));
+});

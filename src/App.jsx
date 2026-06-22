@@ -14054,8 +14054,97 @@ function lemlistPeopleProfileLinkedinUrl(profile = {}) {
   return normalizeLinkedinUrl(profile.lead_linkedin_url || profile.leadLinkedinUrl || profile.linkedinUrl || profile.linkedin_url);
 }
 
+function lemlistCompactIdSet(values = []) {
+  return new Set(values.map(value => normalizeLookupValue(value).toLowerCase()).filter(Boolean));
+}
+
+function lemlistRecordContactIds(record = {}) {
+  const id = normalizeLookupValue(record.id || record._id);
+  return [
+    record.contactId,
+    record.lemlistContactId,
+    record.provider_contact_id,
+    record.providerContactId,
+    record.fields?.contactId,
+    id.startsWith("ctc_") ? id : "",
+  ];
+}
+
+function lemlistRecordLeadIds(record = {}) {
+  const id = normalizeLookupValue(record.id || record._id);
+  return [
+    record.leadId,
+    record.lemlistLeadId,
+    record.provider_lead_id,
+    record.providerLeadId,
+    record.fields?.leadId,
+    id.startsWith("lea_") ? id : "",
+  ];
+}
+
+function lemlistPeopleProfileContactIds(profile = {}) {
+  const id = normalizeLookupValue(profile.id || profile._id);
+  return [
+    profile.provider_contact_id,
+    profile.providerContactId,
+    profile.contactId,
+    profile.lemlistContactId,
+    id.startsWith("ctc_") ? id : "",
+  ];
+}
+
+function lemlistPeopleProfileLeadIds(profile = {}) {
+  const id = normalizeLookupValue(profile.id || profile._id);
+  return [
+    profile.provider_lead_id,
+    profile.providerLeadId,
+    profile.leadId,
+    profile.lemlistLeadId,
+    id.startsWith("lea_") ? id : "",
+  ];
+}
+
+function lemlistPeopleProfileName(profile = {}) {
+  return normalizeLookupValue(profile.full_name || profile.fullName || profile.name);
+}
+
+function lemlistPeopleProfileMergeKey(profile = {}) {
+  const linkedinUrl = lemlistPeopleProfileLinkedinUrl(profile).toLowerCase();
+  if (linkedinUrl) return `linkedin:${linkedinUrl}`;
+  const contactId = [...lemlistCompactIdSet(lemlistPeopleProfileContactIds(profile))][0];
+  if (contactId) return `contact:${contactId}`;
+  const leadId = [...lemlistCompactIdSet(lemlistPeopleProfileLeadIds(profile))][0];
+  if (leadId) return `lead:${leadId}`;
+  const name = lemlistPeopleProfileName(profile).toLowerCase();
+  return name ? `name:${name}` : "";
+}
+
+function mergeLemlistOverviewProfileFallback(previousOverview, nextOverview = {}) {
+  const previousProfiles = Array.isArray(previousOverview?.peopleProfiles) ? previousOverview.peopleProfiles : [];
+  const nextProfiles = Array.isArray(nextOverview?.peopleProfiles) ? nextOverview.peopleProfiles : [];
+  if (!previousProfiles.length) return nextOverview;
+  const byKey = new Map();
+  [...previousProfiles, ...nextProfiles].forEach(profile => {
+    const key = lemlistPeopleProfileMergeKey(profile);
+    if (key) byKey.set(key, profile);
+  });
+  return { ...nextOverview, peopleProfiles: [...byKey.values()] };
+}
+
 function lemlistFindPeopleProfile(record = {}, peopleProfiles = [], selectedCampaign = null) {
   const profiles = Array.isArray(peopleProfiles) ? peopleProfiles : [];
+  const contactIds = lemlistCompactIdSet(lemlistRecordContactIds(record));
+  if (contactIds.size) {
+    const contactMatch = profiles.find(profile => lemlistPeopleProfileContactIds(profile).some(id => contactIds.has(normalizeLookupValue(id).toLowerCase())));
+    if (contactMatch) return contactMatch;
+  }
+
+  const leadIds = lemlistCompactIdSet(lemlistRecordLeadIds(record));
+  if (leadIds.size) {
+    const leadMatch = profiles.find(profile => lemlistPeopleProfileLeadIds(profile).some(id => leadIds.has(normalizeLookupValue(id).toLowerCase())));
+    if (leadMatch) return leadMatch;
+  }
+
   const linkedinUrl = lemlistLinkedinUrl(record);
   if (linkedinUrl) {
     const linkedinKey = normalizeLinkedinUrl(linkedinUrl).toLowerCase();
@@ -14067,7 +14156,7 @@ function lemlistFindPeopleProfile(record = {}, peopleProfiles = [], selectedCamp
   const company = lemlistCompanyName(record, selectedCampaign).toLowerCase();
   if (!name) return null;
   return profiles.find(profile => {
-    const profileName = normalizeLookupValue(profile.full_name || profile.fullName).toLowerCase();
+    const profileName = lemlistPeopleProfileName(profile).toLowerCase();
     const profileCompany = normalizeLookupValue(profile.current_exp_company_name || profile.companyName).toLowerCase();
     return profileName === name && (!company || !profileCompany || profileCompany === company);
   }) || null;
@@ -14643,7 +14732,7 @@ function LemlistPage({ contactDatabase = [], onSaveLeadContact, onSaveLemlistCom
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload.error || "Could not load Lemlist.");
-      setOverview(payload);
+      setOverview(current => mergeLemlistOverviewProfileFallback(current, payload));
       setSelectedLeadIds([]);
       setSelectedContactIds([]);
       setSelectedCompanyIds([]);

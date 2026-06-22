@@ -13990,8 +13990,48 @@ function lemlistFullName(record = {}) {
   return normalizeLookupValue(record.fullName || record.name || [lemlistField(record, "firstName"), lemlistField(record, "lastName")].filter(Boolean).join(" "));
 }
 
-function lemlistCompanyName(record = {}) {
-  return normalizeLookupValue(record.companyName || record.leadCompanyName || record.fields?.companyName || record.fields?.company || record.company?.name || record.company);
+function lemlistCampaignLabelSet(record = {}, selectedCampaign = null) {
+  return new Set([
+    selectedCampaign?.name,
+    selectedCampaign?._id,
+    selectedCampaign?.id,
+    record.campaignName,
+    record.campaignId,
+    record.campaign?.name,
+    record.lastCampaign,
+    record.fields?.campaign,
+    record.fields?.lastCampaign,
+    record.fields?.campaignName,
+  ].map(value => normalizeLookupValue(value).toLowerCase()).filter(Boolean));
+}
+
+function lemlistCompanyName(record = {}, selectedCampaign = null) {
+  const campaignLabels = lemlistCampaignLabelSet(record, selectedCampaign);
+  const candidates = [
+    record.leadCompanyName,
+    record.lead_company_name,
+    record.fields?.leadCompanyName,
+    record.fields?.lead_company_name,
+    record.company?.companyName,
+    record.company?.name,
+    typeof record.company === "string" ? record.company : "",
+    record.company_name,
+    record.fields?.company_name,
+    record.fields?.company,
+    record.fields?.account,
+    record.fields?.companyName,
+    record.companyName,
+    record.organizationName,
+    record.organisationName,
+    record.organization,
+    record.organisation,
+    record.currentCompanyName,
+    record.current_exp_company_name,
+  ];
+  return normalizeLookupValue(candidates.find(value => {
+    const normalized = normalizeLookupValue(value);
+    return normalized && !campaignLabels.has(normalized.toLowerCase());
+  }));
 }
 
 function lemlistCompanyRecordName(record = {}) {
@@ -14014,7 +14054,7 @@ function lemlistPeopleProfileLinkedinUrl(profile = {}) {
   return normalizeLinkedinUrl(profile.lead_linkedin_url || profile.leadLinkedinUrl || profile.linkedinUrl || profile.linkedin_url);
 }
 
-function lemlistFindPeopleProfile(record = {}, peopleProfiles = []) {
+function lemlistFindPeopleProfile(record = {}, peopleProfiles = [], selectedCampaign = null) {
   const profiles = Array.isArray(peopleProfiles) ? peopleProfiles : [];
   const linkedinUrl = lemlistLinkedinUrl(record);
   if (linkedinUrl) {
@@ -14024,7 +14064,7 @@ function lemlistFindPeopleProfile(record = {}, peopleProfiles = []) {
   }
 
   const name = lemlistFullName(record).toLowerCase();
-  const company = lemlistCompanyName(record).toLowerCase();
+  const company = lemlistCompanyName(record, selectedCampaign).toLowerCase();
   if (!name) return null;
   return profiles.find(profile => {
     const profileName = normalizeLookupValue(profile.full_name || profile.fullName).toLowerCase();
@@ -14041,7 +14081,7 @@ function lemlistLeadFromRecord(record = {}, selectedCampaign = null) {
   const firstName = lemlistField(record, "firstName");
   const lastName = lemlistField(record, "lastName");
   const contactName = lemlistFullName(record) || [firstName, lastName].filter(Boolean).join(" ") || lemlistEmail(record) || "Lemlist contact";
-  const companyName = lemlistCompanyName(record) || "Lemlist company";
+  const companyName = lemlistCompanyName(record, selectedCampaign) || "Lemlist company";
   const lemlistContactId = normalizeLookupValue(record.contactId || (String(record.id || record._id || "").startsWith("ctc_") ? record.id || record._id : ""));
   return {
     contactName,
@@ -14113,10 +14153,13 @@ function lemlistHydrateCampaignLeadRecord(record = {}, contacts = [], companies 
   const contact = lemlistFindRecordById(contacts, record.contactId) || (lemlistEmail(record)
     ? contacts.find(item => lemlistEmail(item) === lemlistEmail(record))
     : null);
+  const recordCompanyName = lemlistCompanyName(record, selectedCampaign);
+  const contactCompanyName = contact ? lemlistCompanyName(contact, selectedCampaign) : "";
+  const companyNameCandidate = recordCompanyName || contactCompanyName;
   const company = lemlistFindRecordById(companies, record.companyId || contact?.companyId)
-    || (lemlistCompanyName(record) ? companies.find(item => lemlistCompanyRecordName(item).toLowerCase() === lemlistCompanyName(record).toLowerCase()) : null);
+    || (companyNameCandidate ? companies.find(item => lemlistCompanyRecordName(item).toLowerCase() === companyNameCandidate.toLowerCase()) : null);
   const companyFields = company?.fields || {};
-  const peopleProfile = lemlistFindPeopleProfile({ ...(contact || {}), ...record }, peopleProfiles);
+  const peopleProfile = lemlistFindPeopleProfile({ ...(contact || {}), ...record }, peopleProfiles, selectedCampaign);
   const primaryExperience = Array.isArray(peopleProfile?.experiences) ? peopleProfile.experiences[0] : null;
   const peopleProfileSkills = Array.isArray(peopleProfile?.skills) && peopleProfile.skills.length
     ? peopleProfile.skills
@@ -14138,7 +14181,7 @@ function lemlistHydrateCampaignLeadRecord(record = {}, contacts = [], companies 
     campaignId: record.campaignId || selectedCampaign?._id || selectedCampaign?.id || "",
     campaignName: record.campaignName || selectedCampaign?.name || "",
     companyId: record.companyId || contact?.companyId || lemlistRecordId(company),
-    companyName: record.companyName || lemlistCompanyName(record) || companyFields.name || company?.name || peopleProfile?.current_exp_company_name || primaryExperience?.company_name || "",
+    companyName: companyFields.name || company?.name || peopleProfile?.current_exp_company_name || primaryExperience?.company_name || recordCompanyName || contactCompanyName || "",
     companyDomain: record.companyDomain || companyFields.domain || company?.domain || "",
     companyIndustry: record.companyIndustry || companyFields.industry || company?.industry || peopleProfile?.lead_industry || primaryExperience?.company_industry || "",
     companyLinkedinUrl: record.companyLinkedinUrl || companyFields.linkedinUrl || company?.linkedinUrl || peopleProfile?.current_exp_company_linkedin_url || primaryExperience?.company_linkedin_url || "",

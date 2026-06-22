@@ -2219,6 +2219,15 @@ function addDays(value, days) {
   return date;
 }
 
+function getCurrentWorkweekKeys(fromValue = new Date()) {
+  const today = startOfLocalDay(fromValue);
+  const weekday = today.getDay();
+  const daysSinceMonday = weekday === 0 ? 6 : weekday - 1;
+  const monday = addDays(today, -daysSinceMonday);
+  const lastDayOffset = weekday === 0 || weekday === 6 ? 4 : weekday - 1;
+  return [...Array(lastDayOffset + 1)].map((_, index) => toLocalDateKey(addDays(monday, index)));
+}
+
 function toLocalDateKey(value = new Date()) {
   const date = startOfLocalDay(value);
   return [
@@ -2253,9 +2262,11 @@ function getAircallDateRange(rangeMode, selectedDateKey, customStartKey = "", cu
     const start = addDays(today, -1);
     return { start, end: today, days: 1 };
   }
-  if (rangeMode === "7") {
-    const start = addDays(today, -6);
-    return { start, end: addDays(today, 1), days: 7 };
+  if (rangeMode === "5_working") {
+    const dayKeys = getCurrentWorkweekKeys(today);
+    const start = localDateFromKey(dayKeys[0]);
+    const end = addDays(localDateFromKey(dayKeys[dayKeys.length - 1]), 1);
+    return { start, end, days: dayKeys.length, dayKeys };
   }
   if (rangeMode === "30") {
     const start = addDays(today, -29);
@@ -2290,7 +2301,10 @@ function formatAircallDateLabel(key) {
 function describeAircallDateRange(rangeMode, selectedDateKey, dateRange) {
   if (rangeMode === "today") return `Today · ${formatAircallDateLabel(toLocalDateKey(dateRange.start))}`;
   if (rangeMode === "yesterday") return `Yesterday · ${formatAircallDateLabel(toLocalDateKey(dateRange.start))}`;
-  if (["7", "30", "month", "year", "custom"].includes(rangeMode)) {
+  if (rangeMode === "5_working") {
+    return `This working week · ${formatAircallDateLabel(toLocalDateKey(dateRange.start))} - ${formatAircallDateLabel(toLocalDateKey(addDays(dateRange.end, -1)))}`;
+  }
+  if (["30", "month", "year", "custom"].includes(rangeMode)) {
     return `${formatAircallDateLabel(toLocalDateKey(dateRange.start))} - ${formatAircallDateLabel(toLocalDateKey(addDays(dateRange.end, -1)))}`;
   }
   return formatAircallDateLabel(selectedDateKey);
@@ -6681,11 +6695,14 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const selectedDateKey = normalizeDateKey(selectedDate) || todayKey;
   const dateRange = getAircallDateRange(rangeMode, selectedDateKey, customStartDate, customEndDate);
   const dateRangeLabel = describeAircallDateRange(rangeMode, selectedDateKey, dateRange);
+  const dateRangeDayKeys = Array.isArray(dateRange.dayKeys) ? new Set(dateRange.dayKeys) : null;
   const userById = new Map(visibleWorkspaceUsers.map(item => [item.id, item]));
   const contactById = new Map(contacts.map(item => [item.id, item]));
   const rangeCalls = calls.filter(call => {
     const startedAt = call.startedAt ? new Date(call.startedAt) : null;
-    return !startedAt || Number.isNaN(startedAt.getTime()) || (startedAt >= dateRange.start && startedAt < dateRange.end);
+    if (!startedAt || Number.isNaN(startedAt.getTime())) return !dateRangeDayKeys;
+    if (dateRangeDayKeys) return dateRangeDayKeys.has(toLocalDateKey(startedAt));
+    return startedAt >= dateRange.start && startedAt < dateRange.end;
   });
   const aircallUserByLinkedUserId = new Map(aircallUsers.filter(item => item.linkedUserId).map(item => [item.linkedUserId, item]));
   const workspaceUserRows = visibleWorkspaceUsers.map(workspaceUser => {
@@ -6797,9 +6814,8 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const tagDerivedSentimentCount = sentimentCalls.filter(item => item.sentiment.source === "aircall-tags").length;
   const sentimentTotal = Math.max(1, sentimentCounts.positive + sentimentCounts.neutral + sentimentCounts.negative);
   const maxUserCalls = Math.max(1, ...userRows.map(row => row.calls));
-  const dailyRows = [...Array(dateRange.days)].map((_, index) => {
-    const date = addDays(dateRange.start, index);
-    const key = toLocalDateKey(date);
+  const dailyRangeKeys = dateRange.dayKeys || [...Array(dateRange.days)].map((_, index) => toLocalDateKey(addDays(dateRange.start, index)));
+  const dailyRows = dailyRangeKeys.map(key => {
     return {
       key,
       label: formatAircallTrendLabel(key, dateRange.days),
@@ -7377,7 +7393,7 @@ async function exportAircallClientProgressHtml({
           {[
             ["today", "Today"],
             ["yesterday", "Yesterday"],
-            ["7", "Last 7 days"],
+            ["5_working", "This working week"],
             ["30", "Last 30 days"],
             ["month", "This month"],
             ["year", "This year"],

@@ -1393,13 +1393,6 @@ async function loadAircallDashboardRoute(req) {
 
   if (!canSeeWorkspaceAircall) {
     const filterParts = personalAircallFilterParts(user.id, resolvedAircallUserIds);
-    const userFilterParts = [
-      `linked_user_id.eq.${user.id}`,
-      ...resolvedAircallUserIds.map(id => `aircall_user_id.eq.${id}`),
-    ];
-    usersQuery = resolvedAircallUserIds.length
-      ? usersQuery.or(userFilterParts.join(','))
-      : usersQuery.eq('linked_user_id', user.id);
     callsQuery = resolvedAircallUserIds.length
       ? callsQuery.or(filterParts.join(','))
       : callsQuery.eq('user_id', user.id);

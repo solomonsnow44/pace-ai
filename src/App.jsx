@@ -7025,19 +7025,20 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const rawCalls = Array.isArray(aircallData?.calls) ? aircallData.calls : [];
   const rawAircallUsers = Array.isArray(aircallData?.users) ? aircallData.users : [];
   const visibleWorkspaceUsers = isAdmin ? workspaceUsers : workspaceUsers.filter(item => item.id === currentUserId);
+  const workspaceUserById = new Map(workspaceUsers.map(item => [item.id, item]));
+  const workspaceUserByAircallId = new Map(workspaceUsers
+    .filter(item => item.aircallUserId)
+    .map(item => [String(item.aircallUserId), item]));
   const currentAircallUserIds = new Set([
     currentAircallUserId,
     ...(Array.isArray(aircallData?.resolvedAircallUserIds) ? aircallData.resolvedAircallUserIds : []),
     ...visibleWorkspaceUsers.map(user => user.aircallUserId),
   ].filter(Boolean).map(String));
-  const visibleAircallUsers = isAdmin
-    ? rawAircallUsers
-    : rawAircallUsers.filter(item => item.linkedUserId === currentUserId || (item.aircallUserId && currentAircallUserIds.has(String(item.aircallUserId))));
   const calls = isAdmin ? rawCalls : rawCalls.filter(call => (
     call.userId === currentUserId
     || (call.aircallUserId && currentAircallUserIds.has(String(call.aircallUserId)))
   ));
-  const aircallUsers = visibleAircallUsers;
+  const aircallUsers = rawAircallUsers;
   const selectedDateKey = normalizeDateKey(selectedDate) || todayKey;
   const dateRange = getAircallDateRange(rangeMode, selectedDateKey, customStartDate, customEndDate);
   const dateRangeLabel = describeAircallDateRange(rangeMode, selectedDateKey, dateRange);
@@ -7051,17 +7052,32 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
     if (dateRangeDayKeys) return dateRangeDayKeys.has(toLocalDateKey(startedAt));
     return startedAt >= dateRange.start && startedAt < dateRange.end;
   });
-  const aircallUserByLinkedUserId = new Map(aircallUsers.filter(item => item.linkedUserId).map(item => [item.linkedUserId, item]));
-  const workspaceUserRows = visibleWorkspaceUsers.map(workspaceUser => {
-    const mirroredAircallUser = aircallUserByLinkedUserId.get(workspaceUser.id) || aircallUsers.find(item => item.aircallUserId === workspaceUser.aircallUserId);
-    const rowAircallUserId = workspaceUser.aircallUserId || mirroredAircallUser?.aircallUserId || "";
-    const userCalls = rangeCalls.filter(call => call.userId === workspaceUser.id || (rowAircallUserId && call.aircallUserId === rowAircallUserId));
+  const aircallUserRows = aircallUsers.map(aircallUser => {
+    const rowAircallUserId = String(aircallUser.aircallUserId || "");
+    const linkedWorkspaceUser = workspaceUserById.get(aircallUser.linkedUserId)
+      || (rowAircallUserId ? workspaceUserByAircallId.get(rowAircallUserId) : null);
+    const rowId = linkedWorkspaceUser?.id || (rowAircallUserId ? `aircall:${rowAircallUserId}` : `aircall-row:${aircallUser.id}`);
+    const displayName = aircallUser.name || linkedWorkspaceUser?.name || aircallUser.email || rowAircallUserId || "Aircall user";
+    const userCalls = rangeCalls.filter(call => (
+      (linkedWorkspaceUser?.id && call.userId === linkedWorkspaceUser.id)
+      || (rowAircallUserId && String(call.aircallUserId || "") === rowAircallUserId)
+    ));
     const userSentiments = userCalls.map(deriveAircallCallSentiment).filter(Boolean);
     return {
-      ...workspaceUser,
-      rowId: workspaceUser.id,
+      ...(linkedWorkspaceUser || {}),
+      id: linkedWorkspaceUser?.id || aircallUser.id || rowId,
+      rowId,
+      aircallUserRecordId: aircallUser.id || "",
+      linkedUserId: linkedWorkspaceUser?.id || aircallUser.linkedUserId || "",
+      email: aircallUser.email || linkedWorkspaceUser?.email || "",
+      name: displayName,
+      initials: accountInitial(displayName),
       aircallUserId: rowAircallUserId,
-      matchStatus: mirroredAircallUser?.matchStatus || (workspaceUser.aircallUserId ? "manual" : "unmatched"),
+      matchStatus: linkedWorkspaceUser ? "linked" : aircallUser.matchStatus || "unmatched",
+      matchReason: aircallUser.matchReason || "",
+      matchConfidence: aircallUser.matchConfidence || 0,
+      lastSeenAt: aircallUser.lastSeenAt || "",
+      availabilityStatus: aircallUser.availabilityStatus || "",
       calls: userCalls.length,
       connected: userCalls.filter(call => call.answeredAt).length,
       recorded: userCalls.filter(call => call.recordingUrl).length,
@@ -7071,20 +7087,19 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
         : null,
     };
   });
-  const workspaceAircallIds = new Set(workspaceUserRows.map(row => row.aircallUserId).filter(Boolean));
-  const unlinkedAircallUserRows = aircallUsers
-    .filter(item => !item.linkedUserId && !workspaceAircallIds.has(item.aircallUserId))
-    .map(item => {
-      const userCalls = rangeCalls.filter(call => call.aircallUserId === item.aircallUserId);
+  const listedAircallIds = new Set(aircallUserRows.map(row => String(row.aircallUserId || "")).filter(Boolean));
+  const listedWorkspaceUserIds = new Set(aircallUserRows.map(row => row.linkedUserId || row.id).filter(Boolean));
+  const workspaceOnlyRows = visibleWorkspaceUsers
+    .filter(workspaceUser => !listedWorkspaceUserIds.has(workspaceUser.id) && (!workspaceUser.aircallUserId || !listedAircallIds.has(String(workspaceUser.aircallUserId))))
+    .map(workspaceUser => {
+      const rowAircallUserId = String(workspaceUser.aircallUserId || "");
+      const userCalls = rangeCalls.filter(call => call.userId === workspaceUser.id || (rowAircallUserId && String(call.aircallUserId || "") === rowAircallUserId));
       const userSentiments = userCalls.map(deriveAircallCallSentiment).filter(Boolean);
       return {
-        id: item.aircallUserId,
-        rowId: item.aircallUserId,
-        email: item.email,
-        name: item.name || item.email || `Aircall user ${item.aircallUserId}`,
-        initials: accountInitial(item.name || item.email || item.aircallUserId),
-        aircallUserId: item.aircallUserId,
-        matchStatus: item.matchStatus || "unmatched",
+        ...workspaceUser,
+        rowId: workspaceUser.id,
+        aircallUserId: rowAircallUserId,
+        matchStatus: rowAircallUserId ? "manual" : "unassigned",
         calls: userCalls.length,
         connected: userCalls.filter(call => call.answeredAt).length,
         recorded: userCalls.filter(call => call.recordingUrl).length,
@@ -7133,7 +7148,7 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
     }
   }
   const missedInboundRows = [...missedInboundGroups.values()].sort((a, b) => new Date(b.startedAt || 0) - new Date(a.startedAt || 0));
-  const userRows = [...workspaceUserRows, ...unlinkedAircallUserRows].sort((a, b) => b.calls - a.calls || String(a.name).localeCompare(String(b.name)));
+  const userRows = [...aircallUserRows, ...workspaceOnlyRows].sort((a, b) => b.calls - a.calls || String(a.name).localeCompare(String(b.name)));
   const selectedUserRow = userRows.find(row => row.rowId === selectedUserId);
   const filteredCalls = rangeCalls.filter(call => {
     if (selectedUserId === "all") return true;

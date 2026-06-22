@@ -234,6 +234,50 @@ function isMissingSupabaseRelation(error) {
     || /schema cache/i.test(message);
 }
 
+function isMissingSupabaseColumn(error) {
+  const message = error?.message || '';
+  return error?.code === '42703'
+    || error?.code === 'PGRST204'
+    || /column .* does not exist/i.test(message)
+    || /could not find .* column/i.test(message);
+}
+
+function isMissingSupabaseConflictTarget(error) {
+  const message = error?.message || '';
+  return error?.code === '42P10'
+    || /no unique or exclusion constraint/i.test(message)
+    || /there is no unique/i.test(message);
+}
+
+async function loadSharedAircallCallNotes(serviceClient, organizationId, callIds = []) {
+  const syncedCallIds = [...new Set((callIds || []).filter(Boolean))];
+  if (!syncedCallIds.length) return [];
+
+  const primaryResult = await serviceClient
+    .from('aircall_call_user_notes')
+    .select('call_id,contact_id,outcome,note,private_note')
+    .eq('organization_id', organizationId)
+    .in('call_id', syncedCallIds);
+
+  if (!primaryResult.error) return primaryResult.data || [];
+  if (!isMissingSupabaseColumn(primaryResult.error)) {
+    if (isMissingSupabaseRelation(primaryResult.error)) return [];
+    throw primaryResult.error;
+  }
+
+  const fallbackResult = await serviceClient
+    .from('aircall_call_user_notes')
+    .select('call_id,contact_id,outcome,private_note')
+    .eq('organization_id', organizationId)
+    .in('call_id', syncedCallIds);
+
+  if (fallbackResult.error) {
+    if (isMissingSupabaseRelation(fallbackResult.error)) return [];
+    throw fallbackResult.error;
+  }
+  return fallbackResult.data || [];
+}
+
 function profileSkills(profile = {}) {
   if (Array.isArray(profile.skills) && profile.skills.length) return profile.skills;
   if (Array.isArray(profile.inferred_skills)) return profile.inferred_skills;
@@ -1394,12 +1438,152 @@ async function loadAircallDashboardRoute(req) {
     }
   }
 
+  if (callRows.length) {
+    const syncedCallIds = callRows.map(call => call.id).filter(Boolean);
+    if (syncedCallIds.length) {
+      const noteRows = await loadSharedAircallCallNotes(serviceClient, user.organizationId, syncedCallIds);
+      const noteByCallId = new Map((noteRows || []).map(note => [note.call_id, note]));
+      callRows = callRows.map(call => {
+        const note = noteByCallId.get(call.id);
+        if (!note) return call;
+        const noteText = compactString(note.note || note.private_note);
+        return {
+          ...call,
+          contact_id: call.contact_id || note.contact_id || null,
+          my_outcome: note.outcome || call.my_outcome,
+          call_note: noteText,
+          my_call_note: noteText,
+          my_private_note: noteText,
+        };
+      });
+    }
+  }
+
   return {
     users: usersResult.data || [],
     calls: callRows,
     callsSource,
     dailyStats: statsResult.data || [],
     resolvedAircallUserIds,
+  };
+}
+
+async function saveAircallCallNote(req, input = {}) {
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  const serviceClient = getServiceClient();
+  const internalCallId = compactString(input.callId);
+  const aircallCallId = compactString(input.aircallCallId);
+  const noteText = compactString(input.note ?? input.privateNote);
+  const inputContactId = compactString(input.contactId);
+  let callQuery = serviceClient
+    .from('aircall_calls')
+    .select('id,organization_id,contact_id,user_id,aircall_user_id,aircall_call_id')
+    .eq('organization_id', user.organizationId);
+
+  if (UUID_PATTERN.test(internalCallId)) {
+    callQuery = callQuery.eq('id', internalCallId);
+  } else if (aircallCallId) {
+    callQuery = callQuery.eq('aircall_call_id', aircallCallId);
+  } else {
+    const error = new Error('Aircall call is required.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const { data: callRow, error: callError } = await callQuery.maybeSingle();
+  if (callError) throw callError;
+  if (!callRow) {
+    const error = new Error('Aircall call is not synced in this workspace.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const canAccessCall = isAdminRole(user.role)
+    || callRow.user_id === user.id
+    || (user.aircallUserId && String(callRow.aircall_user_id) === String(user.aircallUserId));
+  if (!canAccessCall) {
+    const error = new Error('You can only add notes to calls you can access.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  let linkedContactId = callRow.contact_id || null;
+  if (!linkedContactId && UUID_PATTERN.test(inputContactId)) {
+    const { data: contactRow, error: contactError } = await serviceClient
+      .from('contacts')
+      .select('id')
+      .eq('organization_id', user.organizationId)
+      .eq('id', inputContactId)
+      .maybeSingle();
+    if (contactError) throw contactError;
+    if (contactRow?.id) {
+      linkedContactId = contactRow.id;
+      const { error: updateCallError } = await serviceClient
+        .from('aircall_calls')
+        .update({ contact_id: linkedContactId })
+        .eq('organization_id', user.organizationId)
+        .eq('id', callRow.id);
+      if (updateCallError) throw updateCallError;
+    }
+  }
+
+  if (!noteText) {
+    const { error } = await serviceClient
+      .from('aircall_call_user_notes')
+      .delete()
+      .eq('organization_id', user.organizationId)
+      .eq('call_id', callRow.id);
+    if (error) throw error;
+    return {
+      callId: callRow.id,
+      aircallCallId: callRow.aircall_call_id,
+      contactId: linkedContactId || '',
+      note: '',
+      callNote: '',
+      privateNote: '',
+    };
+  }
+
+  const payload = {
+    organization_id: user.organizationId,
+    call_id: callRow.id,
+    contact_id: linkedContactId || null,
+    user_id: user.id,
+    note: noteText,
+    private_note: noteText,
+  };
+
+  let upsertResult = await serviceClient
+    .from('aircall_call_user_notes')
+    .upsert(payload, { onConflict: 'organization_id,call_id' })
+    .select('call_id,contact_id,note,private_note,outcome')
+    .single();
+
+  if (upsertResult.error && (isMissingSupabaseColumn(upsertResult.error) || isMissingSupabaseConflictTarget(upsertResult.error))) {
+    upsertResult = await serviceClient
+      .from('aircall_call_user_notes')
+      .upsert({
+        organization_id: user.organizationId,
+        call_id: callRow.id,
+        contact_id: linkedContactId || null,
+        user_id: user.id,
+        private_note: noteText,
+      }, { onConflict: 'organization_id,call_id,user_id' })
+      .select('call_id,contact_id,private_note,outcome')
+      .single();
+  }
+
+  if (upsertResult.error) throw upsertResult.error;
+  const data = upsertResult.data || {};
+  const savedNote = compactString(data.note || data.private_note);
+  return {
+    callId: data.call_id,
+    aircallCallId: callRow.aircall_call_id,
+    contactId: data.contact_id || linkedContactId || '',
+    note: savedNote,
+    callNote: savedNote,
+    privateNote: savedNote,
+    outcome: data.outcome || '',
   };
 }
 
@@ -1723,6 +1907,10 @@ export async function handleApiRequest(req, res) {
         apiToken: await getCredentialValue(req, 'aircall', 'apiToken', 'AIRCALL_API_TOKEN'),
       });
     }, 'Aircall recording link refresh failed');
+  }
+
+  if (pathname === '/api/aircall/call-note') {
+    return handlePostRoute(req, res, async body => saveAircallCallNote(req, body), 'Aircall call note save failed');
   }
 
   if (pathname === '/api/hubspot/contacts/export') {

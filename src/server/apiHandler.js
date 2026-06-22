@@ -128,7 +128,7 @@ async function getAuthenticatedCrmUserWithOrganization(req) {
   const serviceClient = getServiceClient();
   const { data, error } = await serviceClient
     .from('users')
-    .select('organization_id, role, aircall_user_id')
+    .select('organization_id, role, email, first_name, last_name, display_name, aircall_user_id')
     .eq('id', user.id)
     .single();
 
@@ -142,6 +142,10 @@ async function getAuthenticatedCrmUserWithOrganization(req) {
     ...user,
     organizationId: data.organization_id,
     role: data.role || 'member',
+    email: data.email || '',
+    firstName: data.first_name || '',
+    lastName: data.last_name || '',
+    displayName: data.display_name || '',
     aircallUserId: data.aircall_user_id || user.aircallUserId,
   };
 }
@@ -174,6 +178,51 @@ function assertAdmin(user) {
 
 function compactString(value) {
   return String(value || '').trim();
+}
+
+function normalizeAircallIdentityName(value) {
+  return compactString(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function userDisplayNameForAircall(user = {}) {
+  return compactString(
+    user.displayName
+    || user.display_name
+    || [user.firstName || user.first_name, user.lastName || user.last_name].filter(Boolean).join(' ')
+    || String(user.email || '').split('@')[0],
+  );
+}
+
+export function resolvePersonalAircallUserRows(user = {}, aircallUsers = []) {
+  const explicitAircallUserId = compactString(user.aircallUserId || user.aircall_user_id);
+  const userEmail = compactString(user.email).toLowerCase();
+  const userName = normalizeAircallIdentityName(userDisplayNameForAircall(user));
+  const nameMatches = userName
+    ? aircallUsers.filter(row => normalizeAircallIdentityName(row.name || [row.first_name, row.last_name].filter(Boolean).join(' ') || row.email?.split('@')[0]) === userName)
+    : [];
+  const uniqueNameMatch = nameMatches.length === 1 ? nameMatches[0] : null;
+  const byKey = new Map();
+
+  for (const row of aircallUsers) {
+    const rowAircallUserId = compactString(row.aircall_user_id);
+    const isMatch = row.linked_user_id === user.id
+      || (explicitAircallUserId && rowAircallUserId === explicitAircallUserId)
+      || (userEmail && compactString(row.email).toLowerCase() === userEmail)
+      || (uniqueNameMatch && row === uniqueNameMatch);
+    if (!isMatch || !rowAircallUserId) continue;
+    byKey.set(rowAircallUserId, row);
+  }
+
+  return [...byKey.values()];
+}
+
+function personalAircallFilterParts(userId, aircallUserIds = []) {
+  const parts = [`user_id.eq.${userId}`];
+  aircallUserIds.forEach(id => {
+    const value = compactString(id);
+    if (value) parts.push(`aircall_user_id.eq.${value}`);
+  });
+  return parts;
 }
 
 function isMissingSupabaseRelation(error) {
@@ -1259,6 +1308,24 @@ async function loadAircallDashboardRoute(req) {
   const url = new URL(req.url, 'http://localhost');
   const callsLimit = Math.max(100, Math.min(Number(url.searchParams.get('callsLimit')) || 1500, 5000));
   const canSeeWorkspaceAircall = isAdminRole(user.role);
+  let resolvedAircallUserIds = compactString(user.aircallUserId) ? [compactString(user.aircallUserId)] : [];
+
+  if (!canSeeWorkspaceAircall) {
+    const { data: aircallIdentityRows, error: aircallIdentityError } = await serviceClient
+      .from('aircall_users')
+      .select('id,organization_id,aircall_user_id,linked_user_id,email,name,first_name,last_name,availability_status,match_status,match_reason,match_confidence,last_seen_at')
+      .eq('organization_id', user.organizationId)
+      .limit(5000);
+
+    if (aircallIdentityError && !isMissingSupabaseRelation(aircallIdentityError)) throw aircallIdentityError;
+    const resolvedRows = resolvePersonalAircallUserRows(user, aircallIdentityRows || []);
+    resolvedAircallUserIds = [
+      ...new Set([
+        ...resolvedAircallUserIds,
+        ...resolvedRows.map(row => compactString(row.aircall_user_id)),
+      ].filter(Boolean)),
+    ];
+  }
 
   let usersQuery = serviceClient
     .from('aircall_users')
@@ -1281,15 +1348,19 @@ async function loadAircallDashboardRoute(req) {
     .limit(180);
 
   if (!canSeeWorkspaceAircall) {
-    const aircallUserId = String(user.aircallUserId || '').trim();
-    usersQuery = aircallUserId
-      ? usersQuery.or(`linked_user_id.eq.${user.id},aircall_user_id.eq.${aircallUserId}`)
+    const filterParts = personalAircallFilterParts(user.id, resolvedAircallUserIds);
+    const userFilterParts = [
+      `linked_user_id.eq.${user.id}`,
+      ...resolvedAircallUserIds.map(id => `aircall_user_id.eq.${id}`),
+    ];
+    usersQuery = resolvedAircallUserIds.length
+      ? usersQuery.or(userFilterParts.join(','))
       : usersQuery.eq('linked_user_id', user.id);
-    callsQuery = aircallUserId
-      ? callsQuery.or(`user_id.eq.${user.id},aircall_user_id.eq.${aircallUserId}`)
+    callsQuery = resolvedAircallUserIds.length
+      ? callsQuery.or(filterParts.join(','))
       : callsQuery.eq('user_id', user.id);
-    statsQuery = aircallUserId
-      ? statsQuery.or(`user_id.eq.${user.id},aircall_user_id.eq.${aircallUserId}`)
+    statsQuery = resolvedAircallUserIds.length
+      ? statsQuery.or(filterParts.join(','))
       : statsQuery.eq('user_id', user.id);
   }
 
@@ -1310,9 +1381,9 @@ async function loadAircallDashboardRoute(req) {
       .order('started_at', { ascending: false })
       .limit(callsLimit);
     if (!canSeeWorkspaceAircall) {
-      const aircallUserId = String(user.aircallUserId || '').trim();
-      fallbackQuery = aircallUserId
-        ? fallbackQuery.or(`user_id.eq.${user.id},aircall_user_id.eq.${aircallUserId}`)
+      const filterParts = personalAircallFilterParts(user.id, resolvedAircallUserIds);
+      fallbackQuery = resolvedAircallUserIds.length
+        ? fallbackQuery.or(filterParts.join(','))
         : fallbackQuery.eq('user_id', user.id);
     }
     const fallbackResult = await fallbackQuery;
@@ -1328,6 +1399,7 @@ async function loadAircallDashboardRoute(req) {
     calls: callRows,
     callsSource,
     dailyStats: statsResult.data || [],
+    resolvedAircallUserIds,
   };
 }
 

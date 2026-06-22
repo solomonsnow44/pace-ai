@@ -2687,6 +2687,7 @@ async function loadAircallDashboardData(organizationId, options = {}) {
     users: (payload.users || []).map(mapAircallUserRecord),
     calls: callRows.map(mapAircallCallRecord),
     callsSource: payload.callsSource || "server",
+    resolvedAircallUserIds: Array.isArray(payload.resolvedAircallUserIds) ? payload.resolvedAircallUserIds.map(String).filter(Boolean) : [],
     unavailable: Boolean(payload.unavailable),
     dailyStats: (payload.dailyStats || []).map(record => ({
       organizationId: record.organization_id,
@@ -6682,6 +6683,7 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const visibleWorkspaceUsers = isAdmin ? workspaceUsers : workspaceUsers.filter(item => item.id === currentUserId);
   const currentAircallUserIds = new Set([
     currentAircallUserId,
+    ...(Array.isArray(aircallData?.resolvedAircallUserIds) ? aircallData.resolvedAircallUserIds : []),
     ...visibleWorkspaceUsers.map(user => user.aircallUserId),
   ].filter(Boolean).map(String));
   const visibleAircallUsers = isAdmin

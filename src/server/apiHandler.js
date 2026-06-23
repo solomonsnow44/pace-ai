@@ -1402,14 +1402,40 @@ async function loadAircallDashboardRoute(req) {
   }
 
   const [usersResult, callsResult, statsResult] = await Promise.all([usersQuery, callsQuery, statsQuery]);
-  const missingAircallTables = [usersResult, callsResult, statsResult].some(result => ['42P01', '42703'].includes(result.error?.code));
-  if (missingAircallTables) return { users: [], calls: [], dailyStats: [], unavailable: true };
+  if (usersResult.error) {
+    if (isMissingSupabaseRelation(usersResult.error) || isMissingSupabaseColumn(usersResult.error)) {
+      return { users: [], calls: [], dailyStats: [], unavailable: true };
+    }
+    throw usersResult.error;
+  }
 
-  const failedResult = [usersResult, callsResult, statsResult].find(result => result.error);
-  if (failedResult?.error) throw failedResult.error;
-
-  let callRows = callsResult.data || [];
+  let callRows = [];
   let callsSource = 'timeline';
+  let callsUnavailable = false;
+  let statsUnavailable = false;
+  if (callsResult.error) {
+    callsUnavailable = true;
+    console.warn('Aircall dashboard call timeline failed; returning users without timeline rows', {
+      code: callsResult.error.code,
+      message: callsResult.error.message,
+      details: callsResult.error.details,
+      hint: callsResult.error.hint,
+    });
+  } else {
+    callRows = callsResult.data || [];
+  }
+
+  const dailyStats = statsResult.error ? [] : (statsResult.data || []);
+  if (statsResult.error) {
+    statsUnavailable = true;
+    console.warn('Aircall dashboard daily stats failed; returning users without daily stats', {
+      code: statsResult.error.code,
+      message: statsResult.error.message,
+      details: statsResult.error.details,
+      hint: statsResult.error.hint,
+    });
+  }
+
   if (!callRows.length) {
     let fallbackQuery = serviceClient
       .from('aircall_calls')
@@ -1424,10 +1450,19 @@ async function loadAircallDashboardRoute(req) {
         : fallbackQuery.eq('user_id', user.id);
     }
     const fallbackResult = await fallbackQuery;
-    if (fallbackResult.error && !['42P01', '42703'].includes(fallbackResult.error.code)) throw fallbackResult.error;
+    if (fallbackResult.error) {
+      callsUnavailable = true;
+      console.warn('Aircall dashboard call fallback failed; returning users without call rows', {
+        code: fallbackResult.error.code,
+        message: fallbackResult.error.message,
+        details: fallbackResult.error.details,
+        hint: fallbackResult.error.hint,
+      });
+    }
     if (fallbackResult.data?.length) {
       callRows = fallbackResult.data;
       callsSource = 'aircall_calls';
+      callsUnavailable = false;
     }
   }
 
@@ -1456,8 +1491,10 @@ async function loadAircallDashboardRoute(req) {
     users: usersResult.data || [],
     calls: callRows,
     callsSource,
-    dailyStats: statsResult.data || [],
+    dailyStats,
     resolvedAircallUserIds,
+    callsUnavailable,
+    statsUnavailable,
   };
 }
 
@@ -1802,6 +1839,9 @@ export async function handleApiRequest(req, res) {
     } catch (error) {
       console.error('Aircall dashboard load failed', {
         message: error?.message || String(error),
+        code: error?.code,
+        details: error?.details,
+        hint: error?.hint,
         statusCode: error?.statusCode,
         path: req.url,
       });

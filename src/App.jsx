@@ -7843,9 +7843,14 @@ async function exportAircallClientProgressHtml({
       const payload = await onSyncAircall({
         dateRangeStart: dateRangeStartIso,
         dateRangeEnd: dateRangeEndIso,
+        includeIntelligence: true,
       });
       const syncedCount = Number(payload?.callsSynced ?? payload?.callsFetched);
-      setSyncSummary(Number.isFinite(syncedCount) ? `${syncedCount} calls synced for ${dateRangeLabel}.` : `Aircall calls synced for ${dateRangeLabel}.`);
+      const transcriptCount = Number(payload?.transcriptsSynced);
+      const intelligenceSummary = Number.isFinite(transcriptCount) && transcriptCount > 0
+        ? ` ${transcriptCount} transcripts synced.`
+        : "";
+      setSyncSummary(Number.isFinite(syncedCount) ? `${syncedCount} calls synced for ${dateRangeLabel}.${intelligenceSummary}` : `Aircall calls synced for ${dateRangeLabel}.${intelligenceSummary}`);
       setSyncStatus("synced");
       window.setTimeout(() => setSyncStatus(current => current === "synced" ? "idle" : current), 3500);
     } catch (error) {
@@ -19862,7 +19867,7 @@ export default function App() {
         maxUserPages: 10,
         dateRangeStart: options.dateRangeStart,
         dateRangeEnd: options.dateRangeEnd,
-        includeIntelligence: options.includeIntelligence === true,
+        includeIntelligence: options.includeIntelligence !== false,
       }),
     });
     const payload = await readJsonResponse(response);

@@ -2153,6 +2153,45 @@ textarea::placeholder {
   display: flex;
   justify-content: space-between;
   gap: 14px;
+  align-items: flex-start;
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.metric-card-button {
+  width: 100%;
+  appearance: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.metric-card-button:hover,
+.metric-card-button:focus-visible {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.metric-card-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  outline-offset: 2px;
+}
+
+.metric-card-icons {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.metric-card .metric-card-action-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--card));
+  color: var(--accent);
 }
 
 .metric-card p,
@@ -2492,6 +2531,24 @@ textarea::placeholder {
   width: 100%;
   min-height: 38px;
   border-radius: 7px;
+}
+
+.aircall-user-filter input {
+  width: 100%;
+  min-height: 38px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 78%, white);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.aircall-user-filter input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .aircall-activity-panel {
@@ -3468,6 +3525,13 @@ textarea::placeholder {
   color: var(--warning);
 }
 
+.pipeline-stage-badge {
+  --pipeline-stage-accent: var(--accent);
+  --pipeline-stage-soft: var(--accent-soft);
+  background: color-mix(in srgb, var(--pipeline-stage-soft) 72%, transparent);
+  color: var(--pipeline-stage-accent);
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -3617,6 +3681,72 @@ textarea::placeholder {
 .campaign-setup-panel {
   display: grid;
   gap: 14px;
+}
+
+.campaign-contact-panel {
+  align-content: start;
+  gap: 10px;
+}
+
+.campaign-contact-panel .panel-header {
+  margin-bottom: 0;
+}
+
+.campaign-contact-panel .panel-header strong {
+  white-space: nowrap;
+}
+
+.campaign-contact-list {
+  margin-top: 10px;
+  max-height: 340px;
+  overflow: auto;
+  gap: 6px;
+  padding-right: 2px;
+}
+
+.campaign-contact-list .contact-scope-row {
+  min-height: 44px;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 6px;
+  padding: 4px;
+}
+
+.campaign-contact-list .compact-list-main {
+  min-height: 34px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 4px 6px;
+}
+
+.campaign-contact-list .compact-list-main > span:first-child {
+  min-width: 0;
+}
+
+.campaign-contact-list .compact-list-main strong,
+.campaign-contact-list .compact-list-main small,
+.campaign-contact-list .muted-inline {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-contact-list .compact-list-main strong {
+  font-size: 13px;
+}
+
+.campaign-contact-list .compact-list-main small,
+.campaign-contact-list .muted-inline {
+  font-size: 12px;
+}
+
+.campaign-contact-list .contact-direct-action {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+}
+
+.campaign-bottom-grid {
+  margin-top: 16px;
 }
 
 .campaign-setup-actions {
@@ -3864,6 +3994,25 @@ textarea::placeholder {
 .row-actions .icon-action {
   width: 36px;
   padding: 0;
+}
+
+.row-actions .icon-text-action {
+  width: 40px;
+  min-height: 40px;
+  height: auto;
+  padding: 4px 4px 3px;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  justify-content: center;
+  align-items: center;
+  line-height: 1;
+}
+
+.row-actions .icon-text-action span {
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .aircall-call-action {
@@ -5860,6 +6009,22 @@ textarea::placeholder {
 .campaign-card.compact .campaign-card-actions .icon-action {
   width: 36px;
   padding: 0;
+}
+
+.campaign-card.compact .campaign-card-actions .icon-text-action {
+  width: auto;
+  min-height: 32px;
+  padding: 4px 8px 3px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.campaign-card.compact .campaign-card-actions .icon-text-action span {
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .mini-stats {

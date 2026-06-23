@@ -1346,6 +1346,13 @@ async function createRelationalClient(organizationId, userId, client) {
   return data;
 }
 
+async function canCreateClientRecord(organizationId) {
+  if (!supabase || !organizationId) return false;
+  const { data, error } = await supabase.rpc("is_crm_admin", { target_organization_id: organizationId });
+  if (error) return false;
+  return Boolean(data);
+}
+
 async function createRelationalCampaign(organizationId, campaign) {
   if (!supabase || !organizationId) return null;
   const payload = {
@@ -21933,6 +21940,11 @@ export default function App() {
     }
 
     if (type === "client") {
+      const isAuthorized = await canCreateClientRecord(dataOrgId);
+      if (!isAuthorized) {
+        throw new Error("You do not have permission to create client accounts. Ask a CRM admin.");
+      }
+
       const creatorMemberIds = effectiveWorkspaceUser?.id && UUID_PATTERN.test(String(effectiveWorkspaceUser.id)) && !effectiveWorkspaceUser.isTestAccount
         ? [effectiveWorkspaceUser.id]
         : [];

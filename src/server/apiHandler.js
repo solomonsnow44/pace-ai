@@ -34,6 +34,7 @@ const DEFAULT_ADMIN_SETTINGS = {
 const SUPPORTED_CURRENCY_CODES = new Set(['EUR', 'GBP', 'USD']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GOOGLE_PLACES_COUNTRY_AREA_LIMIT = 60;
+const AIRCALL_NOTE_CALL_ID_BATCH_SIZE = 100;
 
 const GOOGLE_PLACES_CITY_EXPANSIONS = {
   'new york': ['Manhattan', 'Brooklyn', 'Queens', 'Bronx', 'Staten Island'],
@@ -253,29 +254,46 @@ async function loadSharedAircallCallNotes(serviceClient, organizationId, callIds
   const syncedCallIds = [...new Set((callIds || []).filter(Boolean))];
   if (!syncedCallIds.length) return [];
 
-  const primaryResult = await serviceClient
-    .from('aircall_call_user_notes')
-    .select('call_id,contact_id,outcome,note,private_note')
-    .eq('organization_id', organizationId)
-    .in('call_id', syncedCallIds);
+  const noteRows = [];
+  let shouldUseFallbackColumns = false;
+  for (let index = 0; index < syncedCallIds.length; index += AIRCALL_NOTE_CALL_ID_BATCH_SIZE) {
+    const batchCallIds = syncedCallIds.slice(index, index + AIRCALL_NOTE_CALL_ID_BATCH_SIZE);
+    const primaryResult = await serviceClient
+      .from('aircall_call_user_notes')
+      .select('call_id,contact_id,outcome,note,private_note')
+      .eq('organization_id', organizationId)
+      .in('call_id', batchCallIds);
 
-  if (!primaryResult.error) return primaryResult.data || [];
-  if (!isMissingSupabaseColumn(primaryResult.error)) {
+    if (!primaryResult.error) {
+      noteRows.push(...(primaryResult.data || []));
+      continue;
+    }
     if (isMissingSupabaseRelation(primaryResult.error)) return [];
+    if (isMissingSupabaseColumn(primaryResult.error)) {
+      shouldUseFallbackColumns = true;
+      break;
+    }
     throw primaryResult.error;
   }
+  if (!shouldUseFallbackColumns) return noteRows;
 
-  const fallbackResult = await serviceClient
-    .from('aircall_call_user_notes')
-    .select('call_id,contact_id,outcome,private_note')
-    .eq('organization_id', organizationId)
-    .in('call_id', syncedCallIds);
+  const fallbackRows = [];
+  for (let index = 0; index < syncedCallIds.length; index += AIRCALL_NOTE_CALL_ID_BATCH_SIZE) {
+    const batchCallIds = syncedCallIds.slice(index, index + AIRCALL_NOTE_CALL_ID_BATCH_SIZE);
+    const fallbackResult = await serviceClient
+      .from('aircall_call_user_notes')
+      .select('call_id,contact_id,outcome,private_note')
+      .eq('organization_id', organizationId)
+      .in('call_id', batchCallIds);
 
-  if (fallbackResult.error) {
+    if (!fallbackResult.error) {
+      fallbackRows.push(...(fallbackResult.data || []));
+      continue;
+    }
     if (isMissingSupabaseRelation(fallbackResult.error)) return [];
     throw fallbackResult.error;
   }
-  return fallbackResult.data || [];
+  return fallbackRows;
 }
 
 function profileSkills(profile = {}) {
@@ -1469,7 +1487,17 @@ async function loadAircallDashboardRoute(req) {
   if (callRows.length) {
     const syncedCallIds = callRows.map(call => call.id).filter(Boolean);
     if (syncedCallIds.length) {
-      const noteRows = await loadSharedAircallCallNotes(serviceClient, user.organizationId, syncedCallIds);
+      let noteRows = [];
+      try {
+        noteRows = await loadSharedAircallCallNotes(serviceClient, user.organizationId, syncedCallIds);
+      } catch (error) {
+        console.warn('Aircall dashboard call notes failed; returning users and calls without notes', {
+          code: error?.code,
+          message: error?.message || String(error),
+          details: error?.details,
+          hint: error?.hint,
+        });
+      }
       const noteByCallId = new Map((noteRows || []).map(note => [note.call_id, note]));
       callRows = callRows.map(call => {
         const note = noteByCallId.get(call.id);

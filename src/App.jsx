@@ -126,6 +126,12 @@ const CRM_MANAGEMENT_WORKFLOWS = new Set([
   "file",
 ]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CLIENT_CREATE_RLS_ERROR = "You do not have permission to create client accounts. Ask a CRM admin.";
+
+function isClientInsertRlsError(error) {
+  const message = String(error?.message || "");
+  return error?.code === "42501" && /row-level security policy/i.test(message) && /table "clients"/i.test(message);
+}
 
 function AircallLogoIcon({ size = 16, className = "", ...props }) {
   return (
@@ -1342,7 +1348,12 @@ async function createRelationalClient(organizationId, userId, client) {
     .select("id,name,status,industry,website,owner_id,metadata")
     .single();
 
-  if (error) throw error;
+  if (error) {
+    if (isClientInsertRlsError(error)) {
+      throw new Error(CLIENT_CREATE_RLS_ERROR);
+    }
+    throw error;
+  }
   return data;
 }
 

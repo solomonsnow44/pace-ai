@@ -2707,7 +2707,12 @@ function mapAircallCallRecord(record = {}) {
 async function loadAircallDashboardData(organizationId, options = {}) {
   if (!supabase || !organizationId) return { users: [], calls: [], dailyStats: [] };
   const callsLimit = Math.max(100, Math.min(Number(options.callsLimit) || 1500, 5000));
-  const response = await fetch(`/api/aircall/dashboard?callsLimit=${encodeURIComponent(callsLimit)}`, {
+  const query = new URLSearchParams({ callsLimit: String(callsLimit) });
+  const dateRangeStart = options.dateRangeStart || options.from || "";
+  const dateRangeEnd = options.dateRangeEnd || options.to || "";
+  if (dateRangeStart) query.set("dateRangeStart", dateRangeStart);
+  if (dateRangeEnd) query.set("dateRangeEnd", dateRangeEnd);
+  const response = await fetch(`/api/aircall/dashboard?${query.toString()}`, {
     method: "GET",
     headers: await buildApiHeaders(),
   });
@@ -6997,7 +7002,7 @@ function findIntentEventCompanyDuplicates(intentEvent = {}, companies = []) {
   });
 }
 
-function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [], onOpenContact, canSync = false, onSyncAircall, onBookMeeting, onSaveCallNote, currentUserId = "", currentAircallUserId = "", selectedAircallUserId = "", isAdmin = false }) {
+function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [], onOpenContact, canSync = false, onSyncAircall, onLoadAircallRange, onBookMeeting, onSaveCallNote, currentUserId = "", currentAircallUserId = "", selectedAircallUserId = "", isAdmin = false }) {
   const { clients: crmClients = [], campaigns: crmCampaigns = [] } = useCrmData();
   const todayKey = toLocalDateKey(new Date());
   const [rangeMode, setRangeMode] = useState("today");
@@ -7042,6 +7047,8 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const selectedDateKey = normalizeDateKey(selectedDate) || todayKey;
   const dateRange = getAircallDateRange(rangeMode, selectedDateKey, customStartDate, customEndDate);
   const dateRangeLabel = describeAircallDateRange(rangeMode, selectedDateKey, dateRange);
+  const dateRangeStartIso = dateRange.start.toISOString();
+  const dateRangeEndIso = dateRange.end.toISOString();
   const dateRangeDayKeys = Array.isArray(dateRange.dayKeys) ? new Set(dateRange.dayKeys) : null;
   const userById = new Map(visibleWorkspaceUsers.map(item => [item.id, item]));
   const contactById = new Map(contacts.map(item => [item.id, item]));
@@ -7262,6 +7269,16 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   useEffect(() => {
     if (selectedAircallUserId) setSelectedUserId(selectedAircallUserId);
   }, [selectedAircallUserId]);
+
+  useEffect(() => {
+    if (!onLoadAircallRange) return;
+    onLoadAircallRange({
+      dateRangeStart: dateRangeStartIso,
+      dateRangeEnd: dateRangeEndIso,
+    }).catch(error => {
+      console.error("Could not load Aircall range", error);
+    });
+  }, [dateRangeEndIso, dateRangeStartIso, onLoadAircallRange]);
 
   useEffect(() => {
     if (reportCampaignId !== "all" && !accessibleCampaigns.some(campaign => campaign.id === reportCampaignId)) {
@@ -7824,8 +7841,8 @@ async function exportAircallClientProgressHtml({
     setSyncSummary("");
     try {
       const payload = await onSyncAircall({
-        dateRangeStart: dateRange.start.toISOString(),
-        dateRangeEnd: dateRange.end.toISOString(),
+        dateRangeStart: dateRangeStartIso,
+        dateRangeEnd: dateRangeEndIso,
       });
       const syncedCount = Number(payload?.callsSynced ?? payload?.callsFetched);
       setSyncSummary(Number.isFinite(syncedCount) ? `${syncedCount} calls synced for ${dateRangeLabel}.` : `Aircall calls synced for ${dateRangeLabel}.`);
@@ -19828,6 +19845,13 @@ export default function App() {
     return payload;
   }
 
+  const handleLoadAircallRange = useCallback(async (options = {}) => {
+    if (!dataOrgId) return null;
+    const nextAircallData = await loadAircallDashboardData(dataOrgId, options);
+    setAircallData(current => mergeAircallDashboardData(current, nextAircallData));
+    return nextAircallData;
+  }, [dataOrgId]);
+
   async function handleSyncAircall(options = {}) {
     const response = await fetch("/api/aircall/sync", {
       method: "POST",
@@ -19848,8 +19872,10 @@ export default function App() {
     }
 
     if (dataOrgId) {
-      loadAircallDashboardData(dataOrgId)
-        .then(nextAircallData => setAircallData(current => mergeAircallDashboardData(current, nextAircallData)))
+      handleLoadAircallRange({
+        dateRangeStart: options.dateRangeStart,
+        dateRangeEnd: options.dateRangeEnd,
+      })
         .catch(error => {
           console.error("Could not refresh Aircall dashboard after sync", error);
           setAircallData(current => ({
@@ -22381,7 +22407,7 @@ export default function App() {
       case "lead-lists":
         return <LeadListsPage leadLists={leadLists} workspaceUsers={workspaceUsers} contactDatabase={leadContactDatabase} error={leadListsError} onSaveLeadList={handleSaveLeadList} onAppendToLeadList={handleAppendToLeadList} onUpdateLeadList={handleUpdateLeadList} onDeleteLeadList={handleDeleteLeadList} onSaveLeadContact={handleUpsertLeadContact} />;
       case "aircall":
-        return <AircallDashboardPage aircallData={aircallData} workspaceUsers={workspaceUsers} contacts={contacts} onOpenContact={openContact} canSync={effectiveAccessState.isAdmin} onSyncAircall={handleSyncAircall} onBookMeeting={handleBookMeeting} onSaveCallNote={handleSaveAircallCallNote} currentUserId={effectiveWorkspaceUser?.id || ""} currentAircallUserId={effectiveWorkspaceUser?.aircallUserId || ""} selectedAircallUserId={selectedAircallUserId} isAdmin={effectiveAccessState.isAdmin} />;
+        return <AircallDashboardPage aircallData={aircallData} workspaceUsers={workspaceUsers} contacts={contacts} onOpenContact={openContact} canSync={effectiveAccessState.isAdmin} onSyncAircall={handleSyncAircall} onLoadAircallRange={handleLoadAircallRange} onBookMeeting={handleBookMeeting} onSaveCallNote={handleSaveAircallCallNote} currentUserId={effectiveWorkspaceUser?.id || ""} currentAircallUserId={effectiveWorkspaceUser?.aircallUserId || ""} selectedAircallUserId={selectedAircallUserId} isAdmin={effectiveAccessState.isAdmin} />;
       case "pipeline":
         return <PipelinePage
           activeClient={activeClient}

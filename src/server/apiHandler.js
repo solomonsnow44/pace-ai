@@ -181,6 +181,21 @@ function compactString(value) {
   return String(value || '').trim();
 }
 
+function normalizedDateTimeParam(value) {
+  const date = new Date(compactString(value));
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function dateKeyFromIso(value) {
+  return compactString(value).slice(0, 10);
+}
+
+function inclusiveEndDateKeyFromIso(value) {
+  const date = new Date(compactString(value));
+  if (Number.isNaN(date.getTime())) return '';
+  return new Date(date.getTime() - 1).toISOString().slice(0, 10);
+}
+
 function normalizeAircallIdentityName(value) {
   return compactString(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -1369,6 +1384,8 @@ async function loadAircallDashboardRoute(req) {
   const serviceClient = getServiceClient();
   const url = new URL(req.url, 'http://localhost');
   const callsLimit = Math.max(100, Math.min(Number(url.searchParams.get('callsLimit')) || 1500, 5000));
+  const dateRangeStart = normalizedDateTimeParam(url.searchParams.get('dateRangeStart') || url.searchParams.get('from'));
+  const dateRangeEnd = normalizedDateTimeParam(url.searchParams.get('dateRangeEnd') || url.searchParams.get('to'));
   const canSeeWorkspaceAircall = isAdminRole(user.role);
   let resolvedAircallUserIds = compactString(user.aircallUserId) ? [compactString(user.aircallUserId)] : [];
 
@@ -1401,6 +1418,8 @@ async function loadAircallDashboardRoute(req) {
     .eq('organization_id', user.organizationId)
     .order('started_at', { ascending: false })
     .limit(callsLimit);
+  if (dateRangeStart) callsQuery = callsQuery.gte('started_at', dateRangeStart);
+  if (dateRangeEnd) callsQuery = callsQuery.lt('started_at', dateRangeEnd);
 
   let statsQuery = serviceClient
     .from('aircall_user_daily_stats')
@@ -1408,6 +1427,8 @@ async function loadAircallDashboardRoute(req) {
     .eq('organization_id', user.organizationId)
     .order('call_date', { ascending: false })
     .limit(180);
+  if (dateRangeStart) statsQuery = statsQuery.gte('call_date', dateKeyFromIso(dateRangeStart));
+  if (dateRangeEnd) statsQuery = statsQuery.lte('call_date', inclusiveEndDateKeyFromIso(dateRangeEnd));
 
   if (!canSeeWorkspaceAircall) {
     const filterParts = personalAircallFilterParts(user.id, resolvedAircallUserIds);
@@ -1461,6 +1482,8 @@ async function loadAircallDashboardRoute(req) {
       .eq('organization_id', user.organizationId)
       .order('started_at', { ascending: false })
       .limit(callsLimit);
+    if (dateRangeStart) fallbackQuery = fallbackQuery.gte('started_at', dateRangeStart);
+    if (dateRangeEnd) fallbackQuery = fallbackQuery.lt('started_at', dateRangeEnd);
     if (!canSeeWorkspaceAircall) {
       const filterParts = personalAircallFilterParts(user.id, resolvedAircallUserIds);
       fallbackQuery = resolvedAircallUserIds.length

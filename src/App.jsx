@@ -39,6 +39,7 @@ import {
   PanelRight,
   Pencil,
   Phone,
+  PhoneCall,
   PlayCircle,
   Plug,
   Plus,
@@ -65,7 +66,16 @@ import logoUrl from "../images/paceops-logo.jpeg";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const supabase = (() => {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  if (typeof window === "undefined") {
+    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  if (!window.__paceopsSupabaseClient) {
+    window.__paceopsSupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return window.__paceopsSupabaseClient;
+})();
 const BRAND_IMAGE_BUCKET = "client-campaign-images";
 const PROFILE_IMAGE_BUCKET = "profile-images";
 const BRAND_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
@@ -79,6 +89,7 @@ const DEFAULT_ADMIN_SETTINGS = {
   cognism_preview_enabled: true,
   contact_deletion_enabled: false,
   test_account_enabled: false,
+  cognism_redeem_enabled: false,
 };
 
 let xlsxModulePromise = null;
@@ -144,6 +155,43 @@ function AircallLogoIcon({ size = 16, className = "", ...props }) {
       aria-hidden="true"
       {...props}
     />
+  );
+}
+
+function LinkedInLogoIcon({ size = 16, className = "", ...props }) {
+  return (
+    <svg
+      className={`linkedin-logo-icon ${className}`.trim()}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+      {...props}
+    >
+      <path
+        fill="currentColor"
+        d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286ZM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065Zm1.782 13.019H3.555V9h3.564v11.452ZM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.225 0Z"
+      />
+    </svg>
+  );
+}
+
+function LinkedInIconLink({ href, label = "Open LinkedIn", className = "", onClick }) {
+  if (!href) return null;
+  return (
+    <a
+      className={`linkedin-icon-link ${className}`.trim()}
+      href={normalizeLinkedinUrl(href) || href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+    >
+      <LinkedInLogoIcon size={16} />
+      <span className="visually-hidden">{label}</span>
+    </a>
   );
 }
 
@@ -586,9 +634,24 @@ const workspaceViewIds = new Set(navItems.map(item => item.id).concat([
   "lead-lookup",
 ]));
 const workspacePathViews = new Map([
+  ["/aircall", "aircall"],
+  ["/dashboard", "dashboard"],
+  ["/clients", "clients"],
+  ["/client-accounts", "clients"],
+  ["/campaigns", "campaigns"],
+  ["/contacts", "contacts"],
   ["/intent-research", "intent-research"],
+  ["/lead-finder", "cognism"],
+  ["/lemlist", "lemlist"],
+  ["/lead-lists", "lead-lists"],
+  ["/pipeline", "pipeline"],
+  ["/research", "research"],
+  ["/location-finder", "locker-finder"],
+  ["/integrations", "integrations"],
+  ["/settings", "settings"],
 ]);
 const workspaceViewPaths = new Map([...workspacePathViews.entries()].map(([path, view]) => [view, path]));
+const WORKSPACE_UI_STATE_STORAGE_KEY = "paceops.workspaceUiState.v1";
 
 function readWorkspaceViewFromUrl() {
   if (typeof window === "undefined") return "";
@@ -862,16 +925,58 @@ function isAllowedEmail(email) {
   return String(email || "").trim().toLowerCase().endsWith(`@${ALLOWED_EMAIL_DOMAIN}`);
 }
 
-function loadUiState() {
-  return {};
+function buildWorkspaceUiStateStorageKey(userId = "") {
+  return `${WORKSPACE_UI_STATE_STORAGE_KEY}:${String(userId || "").trim()}`;
 }
 
-function hasSavedUiState() {
-  return false;
+function normalizeWorkspaceUiState(state = {}) {
+  const normalized = {};
+  if (typeof state.activeView === "string" && workspaceViewIds.has(state.activeView)) {
+    normalized.activeView = state.activeView;
+  }
+  if (typeof state.activeClientId === "string" && state.activeClientId.trim()) {
+    normalized.activeClientId = state.activeClientId.trim();
+  }
+  if (typeof state.activeCampaignId === "string" && state.activeCampaignId.trim()) {
+    normalized.activeCampaignId = state.activeCampaignId.trim();
+  }
+  if (typeof state.selectedAccountId === "string" && state.selectedAccountId.trim()) {
+    normalized.selectedAccountId = state.selectedAccountId.trim();
+  }
+  if (typeof state.selectedContactId === "string" && state.selectedContactId.trim()) {
+    normalized.selectedContactId = state.selectedContactId.trim();
+  }
+  return normalized;
 }
 
-function saveUiState() {
-  return undefined;
+function loadUiState(userId = "") {
+  if (typeof window === "undefined") return {};
+  const key = buildWorkspaceUiStateStorageKey(userId);
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return normalizeWorkspaceUiState(parsed);
+  } catch {
+    return {};
+  }
+}
+
+function hasSavedUiState(userId = "") {
+  if (typeof window === "undefined") return false;
+  return Object.keys(loadUiState(userId)).length > 0;
+}
+
+function saveUiState(userId = "", nextState = {}) {
+  if (typeof window === "undefined" || !userId) return;
+  const key = buildWorkspaceUiStateStorageKey(userId);
+  const normalized = normalizeWorkspaceUiState(nextState);
+  try {
+    window.localStorage.setItem(key, JSON.stringify(normalized));
+  } catch {
+    return;
+  }
 }
 
 function formatOwnerRole(role) {
@@ -1365,6 +1470,17 @@ async function canCreateClientRecord(organizationId, options = {}) {
   return Boolean(data);
 }
 
+async function resolveUserOrganizationId(authUserId) {
+  if (!supabase || !UUID_PATTERN.test(String(authUserId || ""))) return "";
+  const { data, error } = await supabase
+    .from("users")
+    .select("organization_id")
+    .eq("id", authUserId)
+    .maybeSingle();
+  if (error || !data?.organization_id) return "";
+  return data.organization_id;
+}
+
 async function createRelationalCampaign(organizationId, campaign) {
   if (!supabase || !organizationId) return null;
   const payload = {
@@ -1613,8 +1729,8 @@ async function createRelationalCompany(organizationId, company) {
 }
 
 const CONTACT_BASE_SELECT = "id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,status,custom_fields";
-const CONTACT_PROFILE_SELECT = "id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,profile_picture_url,summary,tagline,skills,status,custom_fields";
-const OPTIONAL_CONTACT_PROFILE_COLUMNS = ["profile_picture_url", "summary", "tagline", "skills"];
+const CONTACT_PROFILE_SELECT = "id,client_id,company_id,first_name,last_name,full_name,email,phone,mobile,direct_dial,job_title,linkedin_url,linkedin_profile_url,profile_picture_url,summary,tagline,skills,status,custom_fields";
+const OPTIONAL_CONTACT_PROFILE_COLUMNS = ["linkedin_profile_url", "profile_picture_url", "summary", "tagline", "skills"];
 
 function normalizeContactSkills(skills = []) {
   if (Array.isArray(skills)) {
@@ -1635,6 +1751,7 @@ function buildContactPayload(organizationId, contact) {
   const { firstName, lastName } = splitContactName(contact.name);
   const mobile = normalizePhoneFieldValue(contact.mobile);
   const directDial = normalizePhoneFieldValue(contact.directDial);
+  const linkedinProfileUrl = normalizeLinkedinUrl(contact.linkedinProfileUrl || contact.linkedinUrl || contact.linkedin);
   const profilePictureUrl = normalizeLookupValue(contact.profilePictureUrl);
   const summary = normalizeLookupValue(contact.summary);
   const skills = normalizeContactSkills(contact.skills);
@@ -1655,6 +1772,8 @@ function buildContactPayload(organizationId, contact) {
     manual_mobile: mobile || null,
     manual_direct_dial: directDial || null,
     job_title: contact.role || contact.title || null,
+    linkedin_url: linkedinProfileUrl || null,
+    linkedin_profile_url: linkedinProfileUrl || null,
     profile_picture_url: profilePictureUrl || null,
     summary: summary || null,
     skills,
@@ -1664,6 +1783,7 @@ function buildContactPayload(organizationId, contact) {
     custom_fields: {
       ui_status: contact.status || "",
       pipeline_stage: pipelineStageIdForValue(contact.stage || "lead"),
+      linkedin_profile_url: linkedinProfileUrl || undefined,
       profile_picture_url: profilePictureUrl || undefined,
       profile_picture_path: normalizeLookupValue(contact.profilePicturePath) || undefined,
       profile_picture_name: normalizeLookupValue(contact.profilePictureName) || undefined,
@@ -2067,6 +2187,7 @@ function normalizeAdminSettings(settings = {}) {
     cognism_preview_enabled: settings?.cognism_preview_enabled !== false,
     contact_deletion_enabled: settings?.contact_deletion_enabled === true,
     test_account_enabled: settings?.test_account_enabled === true,
+    cognism_redeem_enabled: settings?.cognism_redeem_enabled === true,
   };
 }
 
@@ -2140,6 +2261,20 @@ function workspaceMembersForRecord(record = {}, workspaceUsers = [], fallbackUse
 function scopeCrmDataForWorkspaceUser(data, workspaceUser = {}, accessState = {}) {
   if (accessState.isAdmin) return data;
   const userId = workspaceUser?.id || "";
+  const scopedClients = filterContactRecords(data?.clients || []) || [];
+  const scopedCampaigns = filterContactRecords(data?.campaigns || []);
+  const scopedAccounts = filterContactRecords(data?.accounts || []);
+  const scopedContacts = filterContactRecords(data?.contacts || []);
+  const scopedDeals = filterContactRecords(data?.deals || []);
+  const scopedActivities = filterContactRecords(data?.activities || []);
+  const scopedMeetings = filterContactRecords(data?.meetings || []);
+  const scopedResearchItems = filterContactRecords(data?.researchItems || []);
+  const scopedScriptItems = filterContactRecords(data?.scriptItems || []);
+  const scopedActionNotes = filterContactRecords(data?.actionNotes || []);
+  const scopedWeeklyReports = filterContactRecords(data?.weeklyReports || []);
+  const scopedLockerProspects = filterContactRecords(data?.lockerProspects || []);
+  const scopedPipelineBoards = filterContactRecords(data?.pipelineBoards || []);
+  const scopedPipelineBoardInvites = filterContactRecords(data?.pipelineBoardInvites || []);
   if (!userId) {
     return {
       ...data,
@@ -2162,64 +2297,64 @@ function scopeCrmDataForWorkspaceUser(data, workspaceUser = {}, accessState = {}
   };
   }
 
-  const invitedCampaignIds = new Set((data.pipelineBoardInvites || [])
+  const invitedCampaignIds = new Set((scopedPipelineBoardInvites || [])
     .filter(invite => invite.inviteeId === userId && invite.status === "pending")
     .map(invite => invite.campaignId)
     .filter(Boolean));
-  const boardCampaignIds = new Set((data.pipelineBoards || [])
+  const boardCampaignIds = new Set((scopedPipelineBoards || [])
     .filter(board => recordHasMember(board, userId) || board.createdBy === userId)
     .map(board => board.campaignId)
     .filter(Boolean));
-  const campaignIds = new Set((data.campaigns || [])
+  const campaignIds = new Set((scopedCampaigns || [])
     .filter(campaign => (
       normalizeCampaignStatus(campaign.status) === "active"
       && (recordHasMember(campaign, userId) || invitedCampaignIds.has(campaign.id) || boardCampaignIds.has(campaign.id))
     ))
     .map(campaign => campaign.id));
-  const directClientIds = new Set((data.clients || []).filter(client => recordHasMember(client, userId)).map(client => client.id));
+  const directClientIds = new Set((scopedClients || []).filter(client => recordHasMember(client, userId)).map(client => client.id));
   const clientIds = new Set([
     ...directClientIds,
-    ...(data.campaigns || []).filter(campaign => campaignIds.has(campaign.id)).map(campaign => campaign.clientId),
+    ...scopedCampaigns.filter(campaign => campaignIds.has(campaign.id)).map(campaign => campaign.clientId),
   ]);
-  const campaignAccountIds = new Set((data.campaigns || [])
+  const campaignAccountIds = new Set((scopedCampaigns || [])
     .filter(campaign => campaignIds.has(campaign.id))
     .flatMap(campaign => Array.isArray(campaign.companyIds) ? campaign.companyIds : []));
-  const campaignContactIds = new Set((data.campaigns || [])
+  const campaignContactIds = new Set((scopedCampaigns || [])
     .filter(campaign => campaignIds.has(campaign.id))
     .flatMap(campaign => Array.isArray(campaign.contactIds) ? campaign.contactIds : []));
-  const accountIds = new Set((data.accounts || [])
+  const accountIds = new Set((scopedAccounts || [])
     .filter(account => directClientIds.has(account.clientId) || campaignAccountIds.has(account.id))
     .map(account => account.id));
-  const contactIds = new Set((data.contacts || [])
+  const contactIds = new Set((scopedContacts || [])
     .filter(contact => directClientIds.has(contact.clientId) || campaignContactIds.has(contact.id) || accountIds.has(contact.accountId) || accountIds.has(contact.companyId))
     .map(contact => contact.id));
 
   return refreshCrmData({
     ...data,
-    clientAccounts: (data.clients || []).filter(client => clientIds.has(client.id)),
-    clients: (data.clients || []).filter(client => clientIds.has(client.id)),
-    campaigns: (data.campaigns || []).filter(campaign => campaignIds.has(campaign.id)),
-    companies: (data.accounts || []).filter(account => accountIds.has(account.id)),
-    accounts: (data.accounts || []).filter(account => accountIds.has(account.id)),
-    contacts: (data.contacts || []).filter(contact => contactIds.has(contact.id)),
-    deals: (data.deals || []).filter(deal => clientIds.has(deal.clientId) || accountIds.has(deal.accountId) || contactIds.has(deal.contactId) || campaignIds.has(deal.campaignId)),
-    activities: (data.activities || []).filter(activity => (
+    clientAccounts: (scopedClients || []).filter(client => clientIds.has(client.id)),
+    clients: (scopedClients || []).filter(client => clientIds.has(client.id)),
+    campaigns: (scopedCampaigns || []).filter(campaign => campaignIds.has(campaign.id)),
+    companies: (scopedAccounts || []).filter(account => accountIds.has(account.id)),
+    accounts: (scopedAccounts || []).filter(account => accountIds.has(account.id)),
+    contacts: (scopedContacts || []).filter(contact => contactIds.has(contact.id)),
+    deals: (scopedDeals || []).filter(deal => clientIds.has(deal.clientId) || accountIds.has(deal.accountId) || contactIds.has(deal.contactId) || campaignIds.has(deal.campaignId)),
+    activities: (scopedActivities || []).filter(activity => (
       !activity.clientId || clientIds.has(activity.clientId) || !activity.campaignId || campaignIds.has(activity.campaignId) || !activity.contactId || contactIds.has(activity.contactId)
     )),
-    meetings: (data.meetings || []).filter(meeting => clientIds.has(meeting.clientId) || campaignIds.has(meeting.campaignId)),
-    researchItems: (data.researchItems || []).filter(item => clientIds.has(item.clientId) || accountIds.has(item.accountId) || campaignIds.has(item.campaignId)),
-    scriptItems: (data.scriptItems || []).filter(item => clientIds.has(item.clientId) || accountIds.has(item.accountId) || campaignIds.has(item.campaignId)),
-    actionNotes: (data.actionNotes || []).filter(note => (
+    meetings: (scopedMeetings || []).filter(meeting => clientIds.has(meeting.clientId) || campaignIds.has(meeting.campaignId)),
+    researchItems: (scopedResearchItems || []).filter(item => clientIds.has(item.clientId) || accountIds.has(item.accountId) || campaignIds.has(item.campaignId)),
+    scriptItems: (scopedScriptItems || []).filter(item => clientIds.has(item.clientId) || accountIds.has(item.accountId) || campaignIds.has(item.campaignId)),
+    actionNotes: (scopedActionNotes || []).filter(note => (
       clientIds.has(note.clientId)
       || accountIds.has(note.accountId)
       || accountIds.has(note.companyId)
       || campaignIds.has(note.campaignId)
       || (note.contactIds || []).some(contactId => contactIds.has(contactId))
     )),
-    weeklyReports: (data.weeklyReports || []).filter(report => clientIds.has(report.clientId) || campaignIds.has(report.campaignId)),
-    lockerProspects: (data.lockerProspects || []).filter(prospect => !prospect.clientId || clientIds.has(prospect.clientId)),
-    pipelineBoards: (data.pipelineBoards || []).filter(board => campaignIds.has(board.campaignId) && (recordHasMember(board, userId) || board.createdBy === userId)),
-    pipelineBoardInvites: (data.pipelineBoardInvites || []).filter(invite => invite.inviteeId === userId || invite.inviterId === userId),
+    weeklyReports: (scopedWeeklyReports || []).filter(report => clientIds.has(report.clientId) || campaignIds.has(report.campaignId)),
+    lockerProspects: (scopedLockerProspects || []).filter(prospect => !prospect.clientId || clientIds.has(prospect.clientId)),
+    pipelineBoards: (scopedPipelineBoards || []).filter(board => campaignIds.has(board.campaignId) && (recordHasMember(board, userId) || board.createdBy === userId)),
+    pipelineBoardInvites: (scopedPipelineBoardInvites || []).filter(invite => invite.inviteeId === userId || invite.inviterId === userId),
   });
 }
 
@@ -3714,6 +3849,36 @@ function getContactDirectDialNumber(contact) {
   return getDisplayPhoneNumber(contact?.directDial) || getDisplayPhoneNumber(contact?.phone);
 }
 
+function filterContactRecords(records) {
+  return Array.isArray(records) ? records.filter(contact => contact && typeof contact === "object") : [];
+}
+
+function sanitizeContactListRecord(contact = {}) {
+  if (!contact || typeof contact !== "object") return null;
+  const firstName = normalizeLookupValue(contact.firstName);
+  const lastName = normalizeLookupValue(contact.lastName);
+  const fallbackName = normalizeLookupValue([firstName, lastName].filter(Boolean).join(" "));
+  return {
+    ...contact,
+    id: normalizeLookupValue(contact.id),
+    name: normalizeLookupValue(contact.name || fallbackName),
+    email: normalizeLookupValue(contact.email),
+    role: normalizeLookupValue(contact.role || contact.title || contact.jobTitle || contact.persona),
+    account: normalizeLookupValue(contact.account || contact.company || contact.companyName),
+    mobile: normalizeLookupValue(contact.mobile || contact.phone || contact.phoneNumber || ""),
+    directDial: normalizeLookupValue(contact.directDial || contact.phone || contact.phoneNumber || ""),
+    phone: normalizeLookupValue(contact.phone || contact.mobile || ""),
+    linkedin: normalizeLookupValue(contact.linkedin),
+    linkedinUrl: normalizeLookupValue(contact.linkedinUrl),
+    linkedinProfileUrl: normalizeLookupValue(contact.linkedinProfileUrl),
+    profilePictureUrl: normalizeLookupValue(contact.profilePictureUrl || contact.profilePicture),
+    summary: normalizeLookupValue(contact.summary),
+    tagline: normalizeLookupValue(contact.tagline),
+    status: normalizeLookupValue(contact.status || "new"),
+    owner: normalizeLookupValue(contact.owner || "Unassigned"),
+  };
+}
+
 function phoneLookupKeys(value) {
   const normalized = normalizePhone(value);
   const digits = normalized.replace(/\D/g, "");
@@ -3895,12 +4060,15 @@ function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", lab
 }
 
 function PageHeader({ title, eyebrow, description, children }) {
+  const hasEyebrow = Boolean(eyebrow && String(eyebrow).trim());
+  const hasTitle = Boolean(title && String(title).trim());
+  const hasDescription = Boolean(description && String(description).trim());
   return (
     <header className="page-header">
       <div>
-        <div className="eyebrow">{eyebrow}</div>
-        <h1>{title}</h1>
-        <p>{description}</p>
+        {hasEyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
+        {hasTitle ? <h1>{title}</h1> : null}
+        {hasDescription ? <p>{description}</p> : null}
       </div>
       <div className="page-actions">{children}</div>
     </header>
@@ -4293,6 +4461,7 @@ function ClientRemovalDialog({ client, onCancel, onConfirm }) {
 
 function ClientMembershipModal({ client, campaigns, workspaceUsers, currentUserId = "", onClose, onSave }) {
   const [query, setQuery] = useState("");
+  const campaignIds = useMemo(() => Array.isArray(campaigns) ? campaigns.map(campaign => campaign.id).filter(Boolean) : [], [campaigns]);
   const [clientMemberIds, setClientMemberIds] = useState(() => {
     const ids = Array.isArray(client.memberIds) ? client.memberIds : [];
     return ids.length || !currentUserId ? ids : [currentUserId];
@@ -4325,6 +4494,26 @@ function ClientMembershipModal({ client, campaigns, workspaceUsers, currentUserI
           ? selected.filter(id => id !== userId)
           : [...selected, userId],
       };
+    });
+  }
+
+  function toggleAllCampaignsForUser(userId) {
+    if (!campaignIds.length) return;
+    const hasAllCampaigns = campaignIds.every(campaignId => (campaignMemberIds[campaignId] || []).includes(userId));
+    if (!hasAllCampaigns) {
+      setClientMemberIds(current => current.includes(userId) ? current : [...current, userId]);
+    }
+    setCampaignMemberIds(current => {
+      const next = { ...current };
+      for (const campaignId of campaignIds) {
+        const existing = current[campaignId] || [];
+        if (hasAllCampaigns) {
+          next[campaignId] = existing.filter(id => id !== userId);
+        } else {
+          next[campaignId] = existing.includes(userId) ? existing : [...existing, userId];
+        }
+      }
+      return next;
     });
   }
 
@@ -4368,6 +4557,7 @@ function ClientMembershipModal({ client, campaigns, workspaceUsers, currentUserI
         <div className="membership-matrix">
           <div className="membership-matrix-body">
             {filteredUsers.map(user => {
+              const isAllCampaignsSelected = campaignIds.every(campaignId => (campaignMemberIds[campaignId] || []).includes(user.id));
               return (
                 <article key={user.id} className="membership-member-row">
                   <div className="membership-person">
@@ -4395,7 +4585,20 @@ function ClientMembershipModal({ client, campaigns, workspaceUsers, currentUserI
                       </button>
                     </div>
                     <div className="membership-campaign-section">
-                      <span>Can work on these campaigns</span>
+                      <div className="membership-campaign-header">
+                        <span>Can work on these campaigns</span>
+                        {campaignIds.length ? (
+                          <button
+                            className={`membership-toggle ${isAllCampaignsSelected ? "selected" : ""}`}
+                            type="button"
+                            aria-pressed={isAllCampaignsSelected}
+                            onClick={() => toggleAllCampaignsForUser(user.id)}
+                          >
+                            {isAllCampaignsSelected ? <CheckCircle2 size={16} /> : <Circle size={16} />}
+                            All
+                          </button>
+                        ) : null}
+                      </div>
                       <div className="membership-campaign-chips" aria-label={`Campaign access for ${user.name}`}>
                         {campaigns.map(campaign => {
                           const selected = (campaignMemberIds[campaign.id] || []).includes(user.id);
@@ -5370,20 +5573,20 @@ function CampaignList({ campaigns: providedCampaigns, onOpenCampaign, onEditCamp
               <span><strong>{campaign.meetings}</strong><small>Booked meetings</small></span>
             </div>
             <div className="campaign-card-actions">
-              <button className={compact ? "icon-action icon-text-action" : "secondary-button"} type="button" onClick={event => {
+              <button className="icon-action icon-text-action" type="button" onClick={event => {
                 event.stopPropagation();
                 onOpenCampaign?.(campaign.id);
               }} aria-label={`View ${campaign.name}`}>
-                {compact ? <ArrowRight size={16} /> : "View campaign"}
-                {compact ? <span>View</span> : <ArrowRight size={14} />}
+                <Eye size={16} />
+                <span>View</span>
               </button>
               {onEditCampaign ? (
-                <button className={compact ? "icon-action icon-text-action" : "secondary-button"} type="button" onClick={event => {
+                <button className="icon-action icon-text-action" type="button" onClick={event => {
                   event.stopPropagation();
                   onEditCampaign?.(campaign);
                 }}>
                   <Pencil size={16} />
-                  {compact ? <span>Edit</span> : "Edit"}
+                  <span>Edit</span>
                 </button>
               ) : null}
             </div>
@@ -5471,7 +5674,7 @@ function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, o
     ])
     .flatMap(phoneLookupKeys));
   const companiesExpanded = expandedCampaignSection === "companies";
-  const visibleCampaignContacts = filteredCampaignContacts.slice(0, 8);
+  const visibleCampaignContacts = filteredCampaignContacts;
   const assignedUsers = workspaceMembersForRecord(campaign, workspaceUsers || [], currentUserId, canManageCrmRecords);
   const campaignCalls = (aircallData?.calls || [])
     .filter(call => {
@@ -5578,7 +5781,7 @@ function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, o
     </section>
   );
   const campaignUsersPanel = (
-    <section className="panel campaign-setup-panel">
+    <section className="panel campaign-users-panel">
       <div className="setup-section-header">
         <div>
           <span className="eyebrow">Team</span>
@@ -5587,15 +5790,17 @@ function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, o
         <strong>{assignedUsers.length}</strong>
       </div>
       {assignedUsers.length ? (
-        <div className="team-list compact-team-list">
+        <div className="campaign-team-list">
           {assignedUsers.map(member => (
-            <div key={member.id} className="team-row">
-              <span>{member.initials}</span>
-              <div>
-                <strong>{member.name}</strong>
+            <div key={member.id} className="campaign-team-row">
+              <span className="campaign-team-avatar">{member.initials}</span>
+              <div className="campaign-team-copy">
+                <div className="campaign-team-name-line">
+                  <strong>{member.name}</strong>
+                  <StatusBadge>{member.role}</StatusBadge>
+                </div>
                 <small>{member.email}</small>
               </div>
-              <StatusBadge>{member.role}</StatusBadge>
             </div>
           ))}
         </div>
@@ -5612,9 +5817,7 @@ function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, o
   return (
     <>
       <PageHeader
-        eyebrow="Campaign detail"
-        title={campaign.name}
-        description={campaign.nextAction}
+        title="Campaign"
       >
         {campaignClient ? (
           <button className="secondary-button" type="button" onClick={() => onOpenClient?.(campaignClient.id)}>
@@ -5632,15 +5835,19 @@ function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, o
         ) : null}
         {/* Calls workspace disabled: <button className="primary-button" type="button" onClick={() => onNavigate("calls")}>Call queue</button> */}
       </PageHeader>
-      {campaign.imageUrl ? (
-        <section className="panel client-brand-panel">
-          <img src={campaign.imageUrl} alt="" />
-          <div>
-            <span className="eyebrow">Campaign image</span>
-            <strong>{campaign.imageName || campaign.name}</strong>
+      <section className="panel campaign-detail-brand">
+        {campaign.imageUrl ? (
+          <img src={campaign.imageUrl} alt={`${campaign.name} campaign logo`} />
+        ) : (
+          <div className="campaign-brand-fallback" aria-hidden="true">
+            {campaign.name ? campaign.name.trim().charAt(0).toUpperCase() : "C"}
           </div>
-        </section>
-      ) : null}
+        )}
+        <div className="campaign-detail-brand-copy">
+          <h2>{campaign.name}</h2>
+          {campaign.nextAction ? <p>{campaign.nextAction}</p> : null}
+        </div>
+      </section>
       <div className="metrics-grid">
         <MetricCard
           label="Companies"
@@ -5779,7 +5986,7 @@ function AccountTable({ accounts: providedAccounts, onOpenAccount, onEditAccount
     <DataTable
       columns={["Company", "Stage", "Value", "Last activity", "Next action", ""]}
       rows={accounts.map(account => [
-        <RecordName key="account" name={account.name} meta={`${account.industry} - ${account.domain}`} />,
+        <RecordName key="account" name={account.name} imageUrl={account.pictureUrl} meta={`${account.industry} - ${account.domain}`} />,
         <StatusBadge
           key="stage"
           tone="neutral"
@@ -5841,7 +6048,7 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onNewContact
         ) : null}
       </PageHeader>
       <div className="record-hero">
-        <span className="record-avatar large">{accountInitial(account.name)}</span>
+        <RecordAvatar name={account.name} imageUrl={account.pictureUrl} size="large" />
         <div className="detail-list inline">
           <div><span>Stage</span><strong>{account.stage}</strong></div>
           <div><span>Location</span><strong>{account.location}</strong></div>
@@ -6977,14 +7184,15 @@ function IntentResearchPage({
                       {person.boardDate ? <small>{person.boardDate}</small> : null}
                       <div className="intent-cb-person-actions">
                         <a
-                          className={person.linkedinUrl ? "intent-linkedin-action" : "intent-linkedin-action intent-linkedin-search"}
+                          className={person.linkedinUrl ? "intent-linkedin-action linkedin-icon-link" : "intent-linkedin-action intent-linkedin-search linkedin-icon-link"}
                           href={buildIntentPersonLinkedInUrl(person)}
                           target="_blank"
                           rel="noreferrer"
                           title={person.linkedinUrl ? `Open ${person.name || "person"} on LinkedIn` : `Search LinkedIn for ${person.name || "this person"}`}
+                          aria-label={person.linkedinUrl ? `Open ${person.name || "person"} on LinkedIn` : `Search LinkedIn for ${person.name || "this person"}`}
                         >
-                          {person.linkedinUrl ? <ExternalLink size={15} /> : <Search size={14} />}
-                          {person.linkedinUrl ? "LinkedIn" : "Search LinkedIn"}
+                          <LinkedInLogoIcon size={16} />
+                          <span className="visually-hidden">{person.linkedinUrl ? "LinkedIn" : "Search LinkedIn"}</span>
                         </a>
                         <button type="button" onClick={() => onPromotePerson(person, selectedEvent)} disabled={!selectedEventIsPersisted || person.promotedContactId}>Promote</button>
                       </div>
@@ -8411,6 +8619,7 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
     email: contact.email || "",
     mobile: getContactMobileNumber(contact),
     directDial: getContactDirectDialNumber(contact),
+    linkedinProfileUrl: contact.linkedinProfileUrl || contact.linkedinUrl || contact.linkedin || "",
     profilePictureUrl: contact.profilePictureUrl || "",
     summary: contact.summary || "",
     skills: profileSkillsText(contact.skills),
@@ -8418,6 +8627,7 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
   const phoneNumber = getContactPhoneNumber(contact);
   const mobileNumber = getContactMobileNumber(contact);
   const directDialNumber = getContactDirectDialNumber(contact);
+  const contactLinkedinUrl = contact.linkedinProfileUrl || contact.linkedinUrl || contact.linkedin || "";
   const contactMeetings = (meetings || []).filter(meeting => meeting.contactId === contact.id);
   const contactCallNotes = contactCalls.filter(call => getAircallCallNote(call));
 
@@ -8514,6 +8724,9 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
               <FormField label="Role">
                 <input value={draft.role} onChange={event => updateDraft("role", event.target.value)} />
               </FormField>
+              <FormField label="LinkedIn">
+                <input value={draft.linkedinProfileUrl} onChange={event => updateDraft("linkedinProfileUrl", event.target.value)} placeholder="linkedin.com/in/name" />
+              </FormField>
               <FormField label="Image URL">
                 <input value={draft.profilePictureUrl} onChange={event => updateDraft("profilePictureUrl", event.target.value)} placeholder="https://image-url" />
               </FormField>
@@ -8538,6 +8751,14 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
               <div><span>Email</span><strong>{contact.email || "Email needed"}</strong></div>
               <div><span>Mobile</span><strong>{mobileNumber || "Mobile needed"}</strong></div>
               <div><span>Direct dial</span><strong>{directDialNumber || "Direct dial needed"}</strong></div>
+              <div>
+                <span>LinkedIn</span>
+                <strong>
+                  {contactLinkedinUrl ? (
+                    <LinkedInIconLink href={contactLinkedinUrl} label={`Open LinkedIn for ${contact.name}`} />
+                  ) : "LinkedIn needed"}
+                </strong>
+              </div>
               <div><span>Summary</span><strong>{contact.summary || "Summary needed"}</strong></div>
               <div><span>Skills</span><strong>{profileSkillsText(contact.skills) || "Skills needed"}</strong></div>
             </div>
@@ -10812,7 +11033,7 @@ function LinkedInProfileField({ value, onChange, onBlur, onOpen, canSearch = tru
           title={buttonLabel}
           aria-label={buttonLabel}
         >
-          <span className="linkedin-in-mark" aria-hidden="true">in</span>
+          <LinkedInLogoIcon size={16} />
           <span className="visually-hidden">{buttonLabel}</span>
         </button>
         <StatusBadge tone={hasProfile ? "success" : "neutral"}>{hasProfile ? "Profile" : "Search"}</StatusBadge>
@@ -10837,14 +11058,15 @@ function LeadLookupLinkedInButton({ contact }) {
 
   return (
     <a
-      className="lookup-linkedin-button"
+      className="lookup-linkedin-button linkedin-icon-link"
       href={buildLinkedInTargetUrl(contact)}
       target="_blank"
       rel="noreferrer noopener"
       title={hasProfile ? "Open LinkedIn" : "Search LinkedIn"}
       aria-label={`Open LinkedIn for ${displayName}`}
     >
-      <span aria-hidden="true">in</span>
+      <LinkedInLogoIcon size={13} />
+      <span className="visually-hidden">{hasProfile ? "Open LinkedIn" : "Search LinkedIn"}</span>
     </a>
   );
 }
@@ -10872,8 +11094,27 @@ function LeadLookupCopyCell({ icon: CopyIcon, label, value, copied = false, onCo
 
 function ExportMenu({ label = "Export", disabled = false, options = [] }) {
   const enabledOptions = options.filter(Boolean);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    function closeOnOutsideInteraction(event) {
+      const menu = menuRef.current;
+      if (!menu?.open) return;
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      if (event.type !== "keydown" && menu.contains(event.target)) return;
+      menu.removeAttribute("open");
+    }
+
+    document.addEventListener("pointerdown", closeOnOutsideInteraction);
+    document.addEventListener("keydown", closeOnOutsideInteraction);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideInteraction);
+      document.removeEventListener("keydown", closeOnOutsideInteraction);
+    };
+  }, []);
+
   return (
-    <details className="export-menu">
+    <details ref={menuRef} className="export-menu">
       <summary className={`secondary-button ${disabled ? "disabled" : ""}`} onClick={event => {
         if (disabled || !enabledOptions.length) event.preventDefault();
       }}>
@@ -10981,6 +11222,12 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
   const [leadLookupCompany, setLeadLookupCompany] = useState("");
   const [leadLookupIndustry, setLeadLookupIndustry] = useState("");
   const [leadLookupTitle, setLeadLookupTitle] = useState("");
+  const [leadLookupFieldFilters, setLeadLookupFieldFilters] = useState({
+    email: false,
+    mobile: false,
+    directNumber: false,
+    linkedin: false,
+  });
   const [companiesOnly, setCompaniesOnly] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -10992,7 +11239,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
   const [editMode, setEditMode] = useState(false);
   const [leadLookupDrafts, setLeadLookupDrafts] = useState({});
   const [leadLookupSaveStatuses, setLeadLookupSaveStatuses] = useState({});
-  const [leadLookupPageSize, setLeadLookupPageSize] = useState("10");
+  const [leadLookupPageSize, setLeadLookupPageSize] = useState("50");
   const [leadLookupPage, setLeadLookupPage] = useState(1);
   const [copiedLookupCell, setCopiedLookupCell] = useState("");
   const [selectedContactIds, setSelectedContactIds] = useState([]);
@@ -11010,6 +11257,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
   const savedEmailCount = contactDatabase.filter(contact => normalizeLookupValue(contact.manualEmail)).length;
   const savedMobileCount = contactDatabase.filter(contact => getDisplayPhoneNumber(contact.manualMobile)).length;
   const savedDirectDialCount = contactDatabase.filter(contact => getDisplayPhoneNumber(contact.manualDirectDial)).length;
+  const savedLinkedInCount = contactDatabase.filter(contact => normalizeLookupValue(contact.linkedinProfileUrl || contact.linkedinUrl || contact.linkedin)).length;
   const clientById = new Map(clients.map(client => [client.id, client]));
   const crmContactCountByAccountId = crmContacts.reduce((map, contact) => {
     if (!contact.accountId) return map;
@@ -11063,8 +11311,17 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
   }
 
   const leadLookupTerms = normalizeLookupValue(leadLookupQuery).toLowerCase().split(/\s+/).filter(Boolean);
+  const activeLeadLookupFieldFilterCount = Object.values(leadLookupFieldFilters).filter(Boolean).length;
   const filteredLeadLookupResults = contactDatabase.filter(contact => {
     const contactIndustry = industryByCompany.get(normalizeLookupValue(contact.company).toLowerCase()) || "";
+    const hasEmail = Boolean(normalizeEmail(contact.manualEmail));
+    const hasMobile = Boolean(getDisplayPhoneNumber(contact.manualMobile));
+    const hasDirectNumber = Boolean(getDisplayPhoneNumber(contact.manualDirectDial));
+    const hasLinkedIn = Boolean(normalizeLookupValue(contact.linkedinProfileUrl || contact.linkedinUrl || contact.linkedin));
+    if (leadLookupFieldFilters.email && !hasEmail) return false;
+    if (leadLookupFieldFilters.mobile && !hasMobile) return false;
+    if (leadLookupFieldFilters.directNumber && !hasDirectNumber) return false;
+    if (leadLookupFieldFilters.linkedin && !hasLinkedIn) return false;
     if (leadLookupCompany && !normalizeLookupValue(contact.company).toLowerCase().includes(normalizeLookupValue(leadLookupCompany).toLowerCase())) return false;
     if (leadLookupIndustry && !contactIndustry.toLowerCase().includes(normalizeLookupValue(leadLookupIndustry).toLowerCase())) return false;
     if (leadLookupTitle && !normalizeLookupValue(contact.jobTitle).toLowerCase().includes(normalizeLookupValue(leadLookupTitle).toLowerCase())) return false;
@@ -11087,6 +11344,12 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       profileSkillsText(contact.skills),
     ].map(value => normalizeLookupValue(value).toLowerCase()).join(" ");
     return leadLookupTerms.every(term => searchableText.includes(term));
+  }).sort((first, second) => {
+    const firstName = normalizeLookupValue(first.contactName || [first.firstName, first.lastName].filter(Boolean).join(" ") || first.company);
+    const secondName = normalizeLookupValue(second.contactName || [second.firstName, second.lastName].filter(Boolean).join(" ") || second.company);
+    return firstName.localeCompare(secondName, undefined, { sensitivity: "base" })
+      || normalizeLookupValue(first.company).localeCompare(normalizeLookupValue(second.company), undefined, { sensitivity: "base" })
+      || normalizeLookupValue(first.jobTitle).localeCompare(normalizeLookupValue(second.jobTitle), undefined, { sensitivity: "base" });
   });
   const filteredCompanyLookupResults = companyLookupRows.filter(company => {
     if (leadLookupCompany && !normalizeLookupValue(company.name).toLowerCase().includes(normalizeLookupValue(leadLookupCompany).toLowerCase())) return false;
@@ -11107,7 +11370,9 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       company.customFields?.each_and_other_fit,
     ].map(value => normalizeLookupValue(value).toLowerCase()).join(" ");
     return leadLookupTerms.every(term => searchableText.includes(term));
-  });
+  }).sort((first, second) => (
+    normalizeLookupValue(first.name).localeCompare(normalizeLookupValue(second.name), undefined, { sensitivity: "base" })
+  ));
   const leadLookupRowsPerPage = leadLookupPageSize === "all" ? filteredLeadLookupResults.length || 1 : Number(leadLookupPageSize);
   const leadLookupPageCount = Math.max(Math.ceil(filteredLeadLookupResults.length / leadLookupRowsPerPage), 1);
   const safeLeadLookupPage = Math.min(leadLookupPage, leadLookupPageCount);
@@ -11128,8 +11393,8 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
   const selectedCampaigns = campaigns.filter(campaign => contactListCampaignIds.includes(campaign.id));
   const selectedCampaignUserIds = selectedCampaigns.flatMap(campaign => Array.isArray(campaign.memberIds) ? campaign.memberIds : []);
   const contactListEffectiveAssignedUserIds = [...new Set([...contactListAssignedUserIds, ...selectedCampaignUserIds].filter(Boolean))];
-  const exportableContacts = companiesOnly ? [] : selectedContacts.length ? selectedContacts : filteredLeadLookupResults;
-  const hasLookupFilters = Boolean(leadLookupQuery || leadLookupCompany || leadLookupIndustry || leadLookupTitle);
+  const exportableContacts = companiesOnly ? [] : selectedContacts;
+  const hasLookupFilters = Boolean(leadLookupQuery || leadLookupCompany || leadLookupIndustry || leadLookupTitle || activeLeadLookupFieldFilterCount);
 
   function getLookupDraft(contact) {
     return leadLookupDrafts[contact.id] || contact;
@@ -11192,6 +11457,14 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       : [...current, contactId]);
   }
 
+  function toggleLeadLookupFieldFilter(field) {
+    setLeadLookupFieldFilters(current => ({
+      ...current,
+      [field]: !current[field],
+    }));
+    setLeadLookupPage(1);
+  }
+
   function toggleCompaniesOnlyMode(checked) {
     setCompaniesOnly(checked);
     if (typeof window !== "undefined") {
@@ -11221,13 +11494,12 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
 
   function exportContacts(format = "csv") {
     if (!exportableContacts.length) return;
-    const base = selectedContacts.length ? "selected-contacts" : "matching-contacts";
-    exportCognismResults(exportableContacts.map(contactToLead), format, [], defaultLeadExportFilename(base, format));
+    exportCognismResults(exportableContacts.map(contactToLead), format, [], defaultLeadExportFilename("selected-contacts", format));
   }
 
   async function exportContactsToHubSpot() {
     if (!exportableContacts.length) {
-      setContactListError("Select or filter at least one contact before exporting to HubSpot.");
+      setContactListError("Select at least one contact before exporting to HubSpot.");
       return;
     }
     setContactHubspotExportStatus("exporting");
@@ -11397,7 +11669,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
         description={companiesOnly ? "Search and open CRM companies from a scrollable company list." : "Search, filter, copy, and open saved contacts from a spreadsheet-style CRM contact list."}
       >
         {!companiesOnly ? <ExportMenu
-          label={selectedContacts.length ? "Export selected" : "Export matching"}
+          label="Export selected"
           disabled={!exportableContacts.length}
           options={[
             { label: "CSV", icon: FileText, onClick: () => exportContacts("csv") },
@@ -11541,12 +11813,48 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
             setLeadLookupCompany("");
             setLeadLookupIndustry("");
             setLeadLookupTitle("");
+            setLeadLookupFieldFilters({
+              email: false,
+              mobile: false,
+              directNumber: false,
+              linkedin: false,
+            });
             setLeadLookupPage(1);
           }} disabled={!hasLookupFilters}>
             <Circle size={16} />
             Clear
           </button>
         </div>
+        {!companiesOnly ? (
+          <div className="lead-lookup-field-filters" aria-label="Contact data filters">
+            <span className="lead-lookup-field-filter-label">Filter by available data</span>
+            <label className={`lead-lookup-field-filter ${leadLookupFieldFilters.email ? "active" : ""}`}>
+              <input type="checkbox" checked={leadLookupFieldFilters.email} onChange={() => toggleLeadLookupFieldFilter("email")} />
+              <Mail size={15} aria-hidden="true" />
+              <span>Email</span>
+              <small>{savedEmailCount}</small>
+            </label>
+            <label className={`lead-lookup-field-filter ${leadLookupFieldFilters.mobile ? "active" : ""}`}>
+              <input type="checkbox" checked={leadLookupFieldFilters.mobile} onChange={() => toggleLeadLookupFieldFilter("mobile")} />
+              <Phone size={15} aria-hidden="true" />
+              <span>Mobile</span>
+              <small>{savedMobileCount}</small>
+            </label>
+            <label className={`lead-lookup-field-filter ${leadLookupFieldFilters.directNumber ? "active" : ""}`}>
+              <input type="checkbox" checked={leadLookupFieldFilters.directNumber} onChange={() => toggleLeadLookupFieldFilter("directNumber")} />
+              <PhoneCall size={15} aria-hidden="true" />
+              <span>Direct number</span>
+              <small>{savedDirectDialCount}</small>
+            </label>
+            <label className={`lead-lookup-field-filter ${leadLookupFieldFilters.linkedin ? "active" : ""}`}>
+              <input type="checkbox" checked={leadLookupFieldFilters.linkedin} onChange={() => toggleLeadLookupFieldFilter("linkedin")} />
+              <LinkedInLogoIcon size={15} />
+              <span>LinkedIn</span>
+              <small>{savedLinkedInCount}</small>
+            </label>
+            {activeLeadLookupFieldFilterCount ? <StatusBadge>{activeLeadLookupFieldFilterCount} active</StatusBadge> : null}
+          </div>
+        ) : null}
         <div className="table-pagination">
           <div>
             <span className="eyebrow">Rows</span>
@@ -12641,7 +12949,11 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
                               canSearch={Boolean(draft.contactName || draft.company)}
                             />
                           ) : lead.linkedinProfileUrl ? (
-                            <a href={lead.linkedinProfileUrl} target="_blank" rel="noreferrer">Open profile</a>
+                            <LinkedInIconLink
+                              href={lead.linkedinProfileUrl}
+                              label={`Open LinkedIn for ${lead.contactName || "lead"}`}
+                              className="lead-list-linkedin-button"
+                            />
                           ) : "Not available"}
                         </td>
                         <td>{editMode ? <input className="table-input" value={draft.manualEmail || ""} onChange={event => updateLeadEditDraft(lead, "manualEmail", event.target.value)} placeholder="name@company.com" /> : lead.manualEmail || "Not available"}</td>
@@ -12854,7 +13166,16 @@ function LeadListsPage({ leadLists, workspaceUsers, contactDatabase = [], error,
   );
 }
 
-function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLeadContact, onPersistSearchResults, cognismPreviewEnabled = true, canUseRedeemMode = false, currentUserId = "" }) {
+function CognismContactFinder({
+  contactDatabase = [],
+  onSaveLeadList,
+  onSaveLeadContact,
+  onPersistSearchResults,
+  cognismPreviewEnabled = true,
+  canUseRedeemMode = false,
+  isTestAccount = false,
+  currentUserId = "",
+}) {
   const { workspaceUsers = [] } = useCrmData();
   const savedSearchState = loadLeadFinderSearchState();
   const savedDebugCache = loadLeadFinderDebugCache();
@@ -13905,6 +14226,14 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
     }
   }
 
+  const cognismModeLabel = isTestAccount
+    ? "Full data disabled in test mode"
+    : canUseRedeemMode
+      ? "Full data enabled"
+      : cognismPreviewEnabled
+        ? "Preview mode: limited fields"
+        : "Full data unavailable";
+
   return (
     <>
       <PageHeader
@@ -13914,7 +14243,7 @@ function CognismContactFinder({ contactDatabase = [], onSaveLeadList, onSaveLead
       >
         <button className="secondary-button" type="button" disabled>
           <LockKeyhole size={16} />
-          Full data disabled in test mode
+          {cognismModeLabel}
         </button>
       </PageHeader>
 
@@ -15246,11 +15575,14 @@ function LemlistRecordIdentity({ name, imageUrl = "", subtitle = "", meta = "" }
 
 function LemlistDetailValue({ label, value, href = "" }) {
   const displayValue = formatDebugValue(value);
+  const isLinkedInField = /linkedin|sales navigator/i.test(label);
   return (
     <div>
       <dt>{label}</dt>
       <dd>
-        {href && value ? (
+        {isLinkedInField && href && value ? (
+          <LinkedInIconLink href={href} label={`Open ${label}`} className="lemlist-linkedin-button" />
+        ) : href && value ? (
           <a href={href} target="_blank" rel="noreferrer">
             {displayValue} <ExternalLink size={13} />
           </a>
@@ -17398,8 +17730,6 @@ function SettingsPage({
   adminSettingsState,
   onUpdateAdminSettings,
   onUpdateWorkspaceUserRole,
-  cognismRedeemEnabled,
-  onUpdateIntegration,
 }) {
   const { teamMembers, workspaceUsers } = useCrmData();
   const { currencyOptions: availableCurrencies } = useCurrency();
@@ -17426,6 +17756,7 @@ function SettingsPage({
   const [cognismRedeemError, setCognismRedeemError] = useState("");
   const [cognismRedeemModalOpen, setCognismRedeemModalOpen] = useState(false);
   const adminSettings = normalizeAdminSettings(adminSettingsState?.settings);
+  const cognismRedeemEnabled = adminSettings.cognism_redeem_enabled;
   const testAccountActive = adminSettings.test_account_enabled;
   const visibleTeamMembers = workspaceUsers?.length
     ? workspaceUsersForTestMode(workspaceUsers, adminSettings)
@@ -17563,7 +17894,7 @@ function SettingsPage({
     setCognismRedeemError("");
     setCognismRedeemCode("");
     setCognismRedeemModalOpen(false);
-    onUpdateIntegration?.("Cognism", { redeemEnabled: true });
+    toggleAdminSetting("cognism_redeem_enabled", true);
   }
 
   return (
@@ -17765,7 +18096,7 @@ function SettingsPage({
                 </div>
                 <div className="admin-control-meta">
                   <StatusBadge tone={cognismRedeemEnabled ? "warning" : "success"}>{cognismRedeemEnabled ? "Enabled" : "Preview only"}</StatusBadge>
-                  <button className="secondary-button" type="button" onClick={() => cognismRedeemEnabled ? onUpdateIntegration?.("Cognism", { redeemEnabled: false }) : setCognismRedeemModalOpen(true)}>
+                  <button className="secondary-button" type="button" disabled={adminSettingsStatus === "saving"} onClick={() => cognismRedeemEnabled ? toggleAdminSetting("cognism_redeem_enabled", false) : setCognismRedeemModalOpen(true)}>
                     {cognismRedeemEnabled ? "Disable" : "Enable"}
                   </button>
                 </div>
@@ -18441,15 +18772,15 @@ function getWorkflowInitialValues(workflow, activeClientId, selectedAccountId, s
     case "client":
       return { name: "", workspace: "Prospecting workspace", ownerId: "", owner: "Workspace user", industry: "", website: "", imageUrl: "", imagePath: "", imageName: "" };
     case "campaign":
-      return { clientId, ownerUserId: "", name: "", channel: "Research-led outbound", status: "active", nextAction: "Define company focus and first call block", memberIds: [], imageUrl: "", imagePath: "", imageName: "" };
+      return { clientId, ownerUserId: "", name: "", channel: "Research-led outbound", status: "active", nextAction: "Define account focus and ownership, then start the first outreach sequence.", memberIds: [], imageUrl: "", imagePath: "", imageName: "" };
     case "campaign-company":
       return { clientId, campaignId: context.campaignId || "", mode: "existing", search: "", selectedCompanyIds: [], importRows: [], name: "", website: "", industry: "", location: "", employees: "", value: "", stage: data.pipelineStages?.[0]?.name || pipelineColumns[0].name, status: "New", nextAction: "Map buying committee", insight: "" };
     case "account":
       return { clientId, name: "", website: "", industry: "", location: "", employees: "", value: "", stage: data.pipelineStages?.[0]?.name || pipelineColumns[0].name, status: "New", nextAction: "Map buying committee", insight: "" };
     case "campaign-contact":
-      return { accountId, accountName: "", name: "", role: "", email: "", mobile: "", directDial: "", profilePictureUrl: "", profilePicturePath: "", profilePictureName: "", summary: "", skills: [], source: "", status: "New", campaignId: campaignId || "" };
+      return { accountId, accountName: "", name: "", role: "", email: "", mobile: "", directDial: "", linkedinProfileUrl: "", profilePictureUrl: "", profilePicturePath: "", profilePictureName: "", summary: "", skills: [], source: "", status: "New", campaignId: campaignId || "" };
     case "contact":
-      return { accountId, accountName: data.accounts.find(account => account.id === accountId)?.name || "", name: "", role: "", email: "", mobile: "", directDial: "", profilePictureUrl: "", profilePicturePath: "", profilePictureName: "", summary: "", skills: [], source: "", status: "New" };
+      return { accountId, accountName: data.accounts.find(account => account.id === accountId)?.name || "", name: "", role: "", email: "", mobile: "", directDial: "", linkedinProfileUrl: "", profilePictureUrl: "", profilePicturePath: "", profilePictureName: "", summary: "", skills: [], source: "", status: "New" };
     case "deal":
       return { accountId, contactId, stage: pipelineColumns[0].id, value: "0", due: "Today", owner: "Workspace user" };
     case "call":
@@ -18690,10 +19021,10 @@ function WorkflowModal({
   }
 
   function renderBrandImageField(entityType) {
-    const label = entityType === "campaign" ? "Campaign image (optional)" : "Client logo";
+    const label = entityType === "campaign" ? "" : "Client logo";
     return (
       <div className="form-field brand-image-field">
-        <span>{label}</span>
+        {label ? <span>{label}</span> : null}
         <div className="brand-image-uploader">
           <div className="brand-image-preview">
             {values.imageUrl ? <img src={values.imageUrl} alt="" /> : <Upload size={20} />}
@@ -18708,7 +19039,7 @@ function WorkflowModal({
                 onChange={event => handleBrandImageChange(entityType, event.target.files?.[0])}
               />
             </label>
-            <small>{values.imageName || "PNG, JPG, WebP, GIF, or SVG up to 5 MB"}</small>
+            <small>{entityType === "campaign" ? "PNG, JPG, WebP, GIF, or SVG up to 5 MB" : values.imageName || "PNG, JPG, WebP, GIF, or SVG up to 5 MB"}</small>
             {imageUploadError ? <small className="form-error-text">{imageUploadError}</small> : null}
           </div>
         </div>
@@ -18952,7 +19283,7 @@ function WorkflowModal({
               </div>
             </div>
             <FormField label="Action plan">
-              <textarea rows={3} value={values.nextAction} onChange={event => update("nextAction", event.target.value)} placeholder="Define company focus, owner responsibilities, and first call block" />
+              <textarea rows={3} value={values.nextAction} onChange={event => update("nextAction", event.target.value)} placeholder="Define account focus, owner responsibilities, and first call block." />
             </FormField>
             <FormField label="Owner">
               <select value={values.ownerUserId || ""} onChange={event => updateCampaignOwner(event.target.value)}>
@@ -19089,7 +19420,7 @@ function WorkflowModal({
                           checked={selected}
                           onChange={() => toggleCampaignCompany(company.id)}
                         />
-                        <span className="record-avatar">{accountInitial(company.name)}</span>
+                        <RecordAvatar name={company.name} imageUrl={company.pictureUrl} />
                         <span>
                           <strong>{company.name}</strong>
                           <small>{[company.domain, company.industry, company.location].filter(Boolean).join(" - ") || "CRM company"}</small>
@@ -19279,6 +19610,9 @@ function WorkflowModal({
                 <FormField label="Role">
                   <input value={values.role} onChange={event => update("role", event.target.value)} placeholder="Head of Product" />
                 </FormField>
+                <FormField label="LinkedIn">
+                  <input value={values.linkedinProfileUrl || ""} onChange={event => update("linkedinProfileUrl", event.target.value)} placeholder="linkedin.com/in/name" />
+                </FormField>
                 <FormField label="Skills">
                   <input value={Array.isArray(values.skills) ? profileSkillsText(values.skills) : values.skills || ""} onChange={event => update("skills", event.target.value)} placeholder="Procurement, operations, sustainability" />
                 </FormField>
@@ -19335,6 +19669,9 @@ function WorkflowModal({
               <div className="workflow-field-grid">
                 <FormField label="Role">
                   <input value={values.role} onChange={event => update("role", event.target.value)} placeholder="Head of Product" />
+                </FormField>
+                <FormField label="LinkedIn">
+                  <input value={values.linkedinProfileUrl || ""} onChange={event => update("linkedinProfileUrl", event.target.value)} placeholder="linkedin.com/in/name" />
                 </FormField>
                 <FormField label="Skills">
                   <input value={Array.isArray(values.skills) ? profileSkillsText(values.skills) : values.skills || ""} onChange={event => update("skills", event.target.value)} placeholder="Procurement, operations, sustainability" />
@@ -19644,12 +19981,38 @@ export default function App() {
         resetSignedOutState();
         return;
       }
+      if (event === "SIGNED_IN") {
+        if (session?.user) {
+          handleAuthenticatedUser(session.user);
+        }
+        setLoggingOut(false);
+        return;
+      }
+      if (event === "INITIAL_SESSION" && session?.user) {
+        handleAuthenticatedUser(session.user);
+        return;
+      }
       if (event === "TOKEN_REFRESHED") {
         if (session?.user) {
-          setUser(current => current ? {
-            ...session.user,
-            crm_profile: current.crm_profile,
-          } : current);
+          setUser(current => {
+            const currentProfile = current?.crm_profile || {
+              firstName: session.user.user_metadata?.first_name || "",
+              lastName: session.user.user_metadata?.last_name || "",
+              displayName: session.user.user_metadata?.display_name || "",
+              aircallUserId: session.user.user_metadata?.aircallUserId || "",
+              currencyCode: normalizeCurrencyCode(session.user.user_metadata?.currency_code),
+              avatarUrl: session.user.user_metadata?.avatar_url || "",
+            };
+            return {
+              ...session.user,
+              ...current,
+              crm_profile: currentProfile,
+              user_metadata: {
+                ...(current?.user_metadata || {}),
+                ...(session.user.user_metadata || {}),
+              },
+            };
+          });
         }
         setLoggingOut(false);
         return;
@@ -19753,16 +20116,58 @@ export default function App() {
   }, [effectiveAccessState.isOrgAdmin, user?.id]);
 
   async function handleAuthenticatedUser(nextUser) {
+    const normalizedNextUser = {
+      ...nextUser,
+      crm_profile: nextUser.crm_profile || {
+        firstName: nextUser.user_metadata?.first_name || "",
+        lastName: nextUser.user_metadata?.last_name || "",
+        displayName: nextUser.user_metadata?.display_name || "",
+        aircallUserId: nextUser.user_metadata?.aircallUserId || "",
+        currencyCode: normalizeCurrencyCode(nextUser.user_metadata?.currency_code),
+        avatarUrl: nextUser.user_metadata?.avatar_url || "",
+      },
+    };
+
     if (authLoadRef.current.userId === nextUser.id && authLoadRef.current.promise) {
       await authLoadRef.current.promise;
       return;
     }
 
     if (loadedAuthUserIdRef.current === nextUser.id) {
-      setUser(current => current ? {
+      const requestedView = readWorkspaceViewFromUrl();
+      if (requestedView) {
+        setActiveView(canAccessWorkspaceView(requestedView, effectiveAccessState) ? requestedView : "dashboard");
+      }
+      setUser(current => current?.id === nextUser.id ? {
+        ...current,
         ...nextUser,
-        crm_profile: current.crm_profile,
-      } : nextUser);
+        email: nextUser.email || current.email,
+        user_metadata: {
+          ...(current.user_metadata || {}),
+          ...(nextUser.user_metadata || {}),
+        },
+        crm_profile: current.crm_profile || normalizedNextUser.crm_profile,
+      } : normalizedNextUser);
+      setAuthReady(true);
+      setLoggingOut(false);
+      return;
+    }
+
+    if (dataUserId === nextUser.id && dataOrgId && Array.isArray(crmData?.clients) && crmData.clients.length) {
+      const requestedView = readWorkspaceViewFromUrl();
+      if (requestedView) {
+        setActiveView(canAccessWorkspaceView(requestedView, effectiveAccessState) ? requestedView : "dashboard");
+      }
+      setUser(current => current?.id === nextUser.id ? {
+        ...current,
+        ...nextUser,
+        email: nextUser.email || current.email,
+        user_metadata: {
+          ...(current.user_metadata || {}),
+          ...(nextUser.user_metadata || {}),
+        },
+        crm_profile: current.crm_profile || normalizedNextUser.crm_profile,
+      } : normalizedNextUser);
       setAuthReady(true);
       setLoggingOut(false);
       return;
@@ -19814,23 +20219,7 @@ export default function App() {
         isAdmin: Boolean(nextAdminSettings.isAdmin) || ADMIN_ROLES.has(resolvedRole),
         isOrgAdmin: Boolean(nextAdminSettings.isOrgAdmin) || ORG_ADMIN_ROLES.has(resolvedRole),
       };
-
-      const isFirstAuthenticatedLoad = !hasSavedUiState(nextUser.id);
-      if (isFirstAuthenticatedLoad) {
-        const urlView = readWorkspaceViewFromUrl();
-        setActiveView(canAccessWorkspaceView(urlView, nextAccessState) ? (urlView || "dashboard") : "dashboard");
-        setSelectedAccountId(null);
-        setSelectedContactId(null);
-      } else {
-        const uiState = loadUiState(nextUser.id);
-        const urlView = readWorkspaceViewFromUrl();
-        const requestedView = urlView || uiState.activeView;
-        if (requestedView) setActiveView(canAccessWorkspaceView(requestedView, nextAccessState) ? requestedView : "dashboard");
-        if (uiState.activeClientId) setActiveClientId(uiState.activeClientId);
-        if (uiState.activeCampaignId) setActiveCampaignId(uiState.activeCampaignId);
-        if (uiState.selectedAccountId) setSelectedAccountId(uiState.selectedAccountId);
-        if (uiState.selectedContactId) setSelectedContactId(uiState.selectedContactId);
-      }
+      const uiState = loadUiState(nextUser.id);
       const [syncedCrmData, nextLeadLists, nextIntentData, nextLeadContactDatabase, nextPrivateContactNotes, nextAircallData] = await Promise.all([
         loadSyncedCrmData(nextUser.id, organizationId, workspaceUsers).catch(error => {
           console.error("Could not load synced CRM data", error);
@@ -19864,6 +20253,24 @@ export default function App() {
         ...syncedCrmData,
         workspaceUsers: mergedWorkspaceUsers,
       };
+      const allClientIds = new Set((nextCrmData.clients || []).map(client => client.id).filter(Boolean));
+      const restoredClientId = (typeof uiState.activeClientId === "string" && allClientIds.has(uiState.activeClientId))
+        ? uiState.activeClientId
+        : (nextCrmData.clients[0]?.id || "none");
+      const restoredClientCampaigns = nextCrmData.campaigns.filter(campaign => campaign.clientId === restoredClientId);
+      const allCampaignIds = new Set(restoredClientCampaigns.map(campaign => campaign.id).filter(Boolean));
+      const restoredCampaignId = (typeof uiState.activeCampaignId === "string" && allCampaignIds.has(uiState.activeCampaignId))
+        ? uiState.activeCampaignId
+        : (restoredClientCampaigns[0]?.id || "none");
+      const allAccountIds = new Set((nextCrmData.accounts || []).map(account => account.id).filter(Boolean));
+      const allContactIds = new Set((nextCrmData.contacts || []).map(contact => contact.id).filter(Boolean));
+      const urlView = readWorkspaceViewFromUrl();
+      const requestedView = urlView || uiState.activeView || "dashboard";
+      setActiveView(canAccessWorkspaceView(requestedView, nextAccessState) ? requestedView : "dashboard");
+      setActiveClientId(restoredClientId);
+      setActiveCampaignId(restoredCampaignId);
+      setSelectedAccountId(typeof uiState.selectedAccountId === "string" && allAccountIds.has(uiState.selectedAccountId) ? uiState.selectedAccountId : null);
+      setSelectedContactId(typeof uiState.selectedContactId === "string" && allContactIds.has(uiState.selectedContactId) ? uiState.selectedContactId : null);
       setCrmData(refreshCrmData(nextCrmData));
       setLeadLists(nextLeadLists);
       setIntentData(nextIntentData);
@@ -20041,13 +20448,16 @@ export default function App() {
   }
 
   async function handleUpdateAdminSettings(values) {
+    if (!values || typeof values !== "object") return { settings: normalizeAdminSettings(adminSettingsState.settings), role: adminSettingsState.role };
+    const rpcPayload = {
+      target_organization_id: dataOrgId,
+      cognism_preview_enabled: typeof values.cognism_preview_enabled === "boolean" ? values.cognism_preview_enabled : null,
+      contact_deletion_enabled: typeof values.contact_deletion_enabled === "boolean" ? values.contact_deletion_enabled : null,
+      test_account_enabled: typeof values.test_account_enabled === "boolean" ? values.test_account_enabled : null,
+      cognism_redeem_enabled: typeof values.cognism_redeem_enabled === "boolean" ? values.cognism_redeem_enabled : null,
+    };
     if (supabase && dataOrgId) {
-      const { data, error } = await supabase.rpc("update_admin_settings", {
-        target_organization_id: dataOrgId,
-        cognism_preview_enabled: typeof values.cognism_preview_enabled === "boolean" ? values.cognism_preview_enabled : null,
-        contact_deletion_enabled: typeof values.contact_deletion_enabled === "boolean" ? values.contact_deletion_enabled : null,
-        test_account_enabled: typeof values.test_account_enabled === "boolean" ? values.test_account_enabled : null,
-      });
+      const { data, error } = await supabase.rpc("update_admin_settings", rpcPayload);
       if (!error) {
         const nextState = {
           settings: normalizeAdminSettings(data),
@@ -20061,12 +20471,23 @@ export default function App() {
         }));
         return nextState;
       }
+      console.warn("Fallback to API admin settings update after RPC error:", error);
+    }
+
+    const responsePayload = {
+      ...(typeof values.cognism_preview_enabled === "boolean" ? { cognism_preview_enabled: values.cognism_preview_enabled } : {}),
+      ...(typeof values.contact_deletion_enabled === "boolean" ? { contact_deletion_enabled: values.contact_deletion_enabled } : {}),
+      ...(typeof values.test_account_enabled === "boolean" ? { test_account_enabled: values.test_account_enabled } : {}),
+      ...(typeof values.cognism_redeem_enabled === "boolean" ? { cognism_redeem_enabled: values.cognism_redeem_enabled } : {}),
+    };
+    if (!Object.keys(responsePayload).length) {
+      throw new Error("No admin settings to update.");
     }
 
     const response = await fetch("/api/admin-settings", {
       method: "POST",
       headers: await buildApiHeaders(),
-      body: JSON.stringify(values),
+      body: JSON.stringify(responsePayload),
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload.error || "Could not update admin settings.");
@@ -20600,11 +21021,64 @@ export default function App() {
     }
   }
 
-  if (!authReady && !user) {
-    return <ProspectIqLoadingScreen isDark={isDark} />;
-  }
+  const scopedCrmData = scopeCrmDataForWorkspaceUser(crmDataWithoutTestAccount, effectiveWorkspaceUser, effectiveAccessState);
+  const safeVisibleCrmData = {
+    ...scopedCrmData,
+    clients: filterContactRecords(scopedCrmData.clients),
+    campaigns: filterContactRecords(scopedCrmData.campaigns),
+    accounts: filterContactRecords(scopedCrmData.accounts),
+    companies: filterContactRecords(scopedCrmData.companies),
+    contacts: filterContactRecords(scopedCrmData.contacts),
+    deals: filterContactRecords(scopedCrmData.deals),
+    activities: filterContactRecords(scopedCrmData.activities),
+    meetings: filterContactRecords(scopedCrmData.meetings),
+    researchItems: filterContactRecords(scopedCrmData.researchItems),
+    scriptItems: filterContactRecords(scopedCrmData.scriptItems),
+    actionNotes: filterContactRecords(scopedCrmData.actionNotes),
+    weeklyReports: filterContactRecords(scopedCrmData.weeklyReports),
+    lockerProspects: filterContactRecords(scopedCrmData.lockerProspects),
+    pipelineBoards: filterContactRecords(scopedCrmData.pipelineBoards),
+    pipelineBoardInvites: filterContactRecords(scopedCrmData.pipelineBoardInvites),
+    workspaceUsers: filterContactRecords(scopedCrmData.workspaceUsers || workspaceUsers),
+  };
+  const { clients, campaigns, accounts, contacts, workspaceUsers: visibleWorkspaceUsers } = safeVisibleCrmData;
+  const activeClient = clients.find(client => client.id === activeClientId) || clients[0] || emptyClient;
+  const activeClientCampaigns = activeClient.id !== "none" ? campaigns.filter(campaign => campaign.clientId === activeClient.id) : [];
+  const activeCampaign = activeClientCampaigns.find(campaign => campaign.id === activeCampaignId) || activeClientCampaigns[0] || emptyCampaign;
+  const selectedAccount = selectedAccountId
+    ? accounts.find(account => account.id === selectedAccountId) || null
+    : null;
+  const selectedContact = selectedContactId
+    ? contacts.find(contact => contact.id === selectedContactId) || null
+    : null;
+  const currencyFormatter = createCurrencyFormatter(currencyCode);
+  const currencyContextValue = {
+    currencyCode,
+    currencyOptions,
+    formatCurrency: value => currencyFormatter.format(Number(value) || 0),
+  };
+
+  useEffect(() => {
+    if (!clients.length) return;
+    if (activeClientId !== "none" && !clients.some(client => client.id === activeClientId)) {
+      setActiveClientId(clients[0]?.id || "none");
+      return;
+    }
+    if (activeClientId !== "none" && activeClientCampaigns.length) {
+      if (activeCampaignId !== "none" && !activeClientCampaigns.some(campaign => campaign.id === activeCampaignId)) {
+        setActiveCampaignId(activeClientCampaigns[0]?.id || "none");
+      }
+      return;
+    }
+    if (activeClientId !== "none") {
+      setActiveCampaignId("none");
+    }
+  }, [activeClientId, activeCampaignId, clients, activeClientCampaigns]);
 
   if (!user) {
+    if (!authReady) {
+      return <ProspectIqLoadingScreen isDark={isDark} />;
+    }
     return (
       <HomePage
         isDark={isDark}
@@ -20625,27 +21099,6 @@ export default function App() {
       />
     );
   }
-
-  const visibleCrmData = {
-    ...scopeCrmDataForWorkspaceUser(crmDataWithoutTestAccount, effectiveWorkspaceUser, effectiveAccessState),
-    workspaceUsers,
-  };
-  const { clients, campaigns, accounts, contacts } = visibleCrmData;
-  const activeClient = clients.find(client => client.id === activeClientId) || clients[0] || emptyClient;
-  const activeClientCampaigns = activeClient.id !== "none" ? campaigns.filter(campaign => campaign.clientId === activeClient.id) : [];
-  const activeCampaign = activeClientCampaigns.find(campaign => campaign.id === activeCampaignId) || activeClientCampaigns[0] || emptyCampaign;
-  const selectedAccount = selectedAccountId
-    ? accounts.find(account => account.id === selectedAccountId) || null
-    : null;
-  const selectedContact = selectedContactId
-    ? contacts.find(contact => contact.id === selectedContactId) || null
-    : null;
-  const currencyFormatter = createCurrencyFormatter(currencyCode);
-  const currencyContextValue = {
-    currencyCode,
-    currencyOptions,
-    formatCurrency: value => currencyFormatter.format(Number(value) || 0),
-  };
 
   const searchQuery = search.trim().toLowerCase();
   const searchResults = searchQuery.length < 2 ? [] : [
@@ -20673,10 +21126,10 @@ export default function App() {
     if (options.pushHistory !== false) {
       setViewHistory(current => [...current.slice(-9), currentNavigationState()]);
     }
-    if (updates.activeClientId) setActiveClientId(updates.activeClientId);
-    if (updates.activeCampaignId) setActiveCampaignId(updates.activeCampaignId);
-    if (updates.selectedAccountId) setSelectedAccountId(updates.selectedAccountId);
-    if (updates.selectedContactId) setSelectedContactId(updates.selectedContactId);
+    if (Object.prototype.hasOwnProperty.call(updates, "activeClientId")) setActiveClientId(updates.activeClientId);
+    if (Object.prototype.hasOwnProperty.call(updates, "activeCampaignId")) setActiveCampaignId(updates.activeCampaignId);
+    if (Object.prototype.hasOwnProperty.call(updates, "selectedAccountId")) setSelectedAccountId(updates.selectedAccountId || null);
+    if (Object.prototype.hasOwnProperty.call(updates, "selectedContactId")) setSelectedContactId(updates.selectedContactId || null);
     if (options.browserHistory !== false) {
       writeWorkspaceHistory({
         ...currentNavigationState(),
@@ -20689,13 +21142,17 @@ export default function App() {
 
   function navigatePrimary(view) {
     if (!canAccessWorkspaceView(view, effectiveAccessState)) view = "dashboard";
+    const nextSelectedAccountId = ["clients", "accounts", "contacts"].includes(view) ? null : selectedAccountId;
+    const nextSelectedContactId = view === "contacts" ? null : selectedContactId;
     setViewHistory([]);
     writeWorkspaceHistory({
       ...currentNavigationState(),
       activeView: view,
-      selectedAccountId,
-      selectedContactId,
+      selectedAccountId: nextSelectedAccountId,
+      selectedContactId: nextSelectedContactId,
     });
+    setSelectedAccountId(nextSelectedAccountId);
+    setSelectedContactId(nextSelectedContactId);
     setActiveView(view);
   }
 
@@ -20824,6 +21281,9 @@ export default function App() {
       phone: values.directDial,
       mobile: values.mobile,
       directDial: values.directDial,
+      linkedin: normalizeLinkedinUrl(values.linkedinProfileUrl),
+      linkedinUrl: normalizeLinkedinUrl(values.linkedinProfileUrl),
+      linkedinProfileUrl: normalizeLinkedinUrl(values.linkedinProfileUrl),
       profilePictureUrl: normalizeLookupValue(values.profilePictureUrl),
       profilePicturePath: values.profilePicturePath || previous.profilePicturePath || "",
       profilePictureName: values.profilePictureName || previous.profilePictureName || "",
@@ -20854,6 +21314,9 @@ export default function App() {
         email: values.email,
         mobile: values.mobile,
         directDial: values.directDial,
+        linkedin: normalizeLinkedinUrl(values.linkedinProfileUrl),
+        linkedinUrl: normalizeLinkedinUrl(values.linkedinProfileUrl),
+        linkedinProfileUrl: normalizeLinkedinUrl(values.linkedinProfileUrl),
         profilePictureUrl: values.profilePictureUrl || "",
         profilePicturePath: values.profilePicturePath || previous.profilePicturePath || "",
         profilePictureName: values.profilePictureName || previous.profilePictureName || "",
@@ -21568,6 +22031,127 @@ export default function App() {
     return { addedCount: newAccounts.length, skippedCount };
   }
 
+  async function handleImportContacts(rows = [], files = []) {
+    if (!effectiveAccessState.isAdmin) throw new Error("Admin access is required to import contacts.");
+    if (!supabase || !dataOrgId) throw new Error("Database connection is required to import contacts.");
+
+    const fallbackClient = UUID_PATTERN.test(String(activeClient?.id || ""))
+      ? activeClient
+      : crmData.clients.find(client => UUID_PATTERN.test(String(client.id || "")));
+    if (!fallbackClient?.id) throw new Error("Create or select a database-backed client account before importing contacts.");
+
+    const accountsByName = new Map(crmData.accounts.map(account => [
+      normalizeLookupValue(account.name).toLowerCase(),
+      account,
+    ]).filter(([key]) => key));
+    const existingContactKeys = new Set(crmData.contacts.map(contact => [
+      normalizeLookupValue(contact.name).toLowerCase(),
+      normalizeLookupValue(contact.account || contact.company).toLowerCase(),
+      normalizeEmail(contact.email),
+      normalizePhone(contact.mobile || contact.directDial || contact.phone),
+    ].join("|")));
+    const newAccounts = [];
+    const newContacts = [];
+    let skippedCount = 0;
+
+    for (const row of rows) {
+      const name = normalizeLookupValue(row.name);
+      const accountName = normalizeLookupValue(row.account || row.company || row.companyName);
+      if (!name || !accountName) {
+        skippedCount += 1;
+        continue;
+      }
+
+      const duplicateKey = [
+        name.toLowerCase(),
+        accountName.toLowerCase(),
+        normalizeEmail(row.email),
+        normalizePhone(row.mobile || row.directDial || row.phone),
+      ].join("|");
+      if (existingContactKeys.has(duplicateKey)) {
+        skippedCount += 1;
+        continue;
+      }
+
+      let account = accountsByName.get(accountName.toLowerCase());
+      if (!account) {
+        const accountDraft = {
+          clientId: fallbackClient.id,
+          name: accountName,
+          website: "",
+          domain: "No domain",
+          industry: "Unspecified",
+          location: "Unspecified",
+          employees: "Unknown",
+          value: null,
+          stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
+          status: "New",
+          nextAction: "Map buying committee",
+          insight: `Created from ${row.sourceFile || "contact import"}.`,
+          scripts: null,
+        };
+        const persistedCompany = await createRelationalCompany(dataOrgId, accountDraft);
+        account = {
+          ...accountDraft,
+          id: persistedCompany.id,
+          owner: "Workspace user",
+          lastActivity: "Created from contact import",
+        };
+        newAccounts.push(account);
+        accountsByName.set(accountName.toLowerCase(), account);
+      }
+
+      const directDial = normalizePhoneFieldValue(row.directDial || row.phone);
+      const mobile = normalizePhoneFieldValue(row.mobile);
+      const contactDraft = {
+        clientId: account.clientId || fallbackClient.id,
+        accountId: account.id,
+        companyId: account.id,
+        account: account.name,
+        company: account.name,
+        name,
+        role: normalizeLookupValue(row.role || row.title) || "Stakeholder",
+        email: normalizeEmail(row.email),
+        phone: directDial,
+        mobile,
+        directDial,
+        linkedinProfileUrl: normalizeLinkedinUrl(row.linkedinProfileUrl || row.linkedinUrl || row.linkedin),
+        profilePictureUrl: normalizeLookupValue(row.profilePictureUrl),
+        summary: normalizeLookupValue(row.summary),
+        skills: normalizeContactSkills(row.skills),
+        source: normalizeLookupValue(row.sourceFile || "Contact import"),
+        status: "New",
+      };
+      const persistedContact = await createRelationalContact(dataOrgId, contactDraft);
+      const contact = {
+        ...contactDraft,
+        id: persistedContact.id,
+        linkedin: contactDraft.linkedinProfileUrl,
+        linkedinUrl: contactDraft.linkedinProfileUrl,
+        owner: "Workspace user",
+        stage: pipelineStageIdForValue("lead", crmData.pipelineStages || pipelineColumns),
+        lastTouch: `Imported from ${row.sourceFile || "contact import"}`,
+        customFields: persistedContact.custom_fields || {},
+      };
+      newContacts.push(contact);
+      existingContactKeys.add(duplicateKey);
+    }
+
+    if (newAccounts.length || newContacts.length) {
+      const fileLabel = Array.isArray(files) && files.length
+        ? files.map(file => file.name).filter(Boolean).join(", ")
+        : "contact import";
+      updateData(current => ({
+        ...current,
+        accounts: newAccounts.length ? [...newAccounts, ...current.accounts] : current.accounts,
+        contacts: newContacts.length ? [...newContacts, ...current.contacts] : current.contacts,
+        activities: [makeActivity("Import", `${newContacts.length} contacts imported from ${fileLabel}`, fallbackClient.name), ...current.activities],
+      }));
+    }
+
+    return { addedCount: newContacts.length, skippedCount };
+  }
+
   async function refreshIntentData() {
     if (!dataOrgId) return { sources: [], runs: [], events: [], people: [] };
     const nextIntentData = await loadIntentData(dataOrgId);
@@ -21739,6 +22323,7 @@ export default function App() {
       email: person.email || "",
       mobile: person.phone || "",
       directDial: person.phone || "",
+      linkedinProfileUrl: person.linkedinUrl || "",
       profilePictureUrl: person.profilePictureUrl || "",
       status: "New",
       stage: pipelineColumns[0].id,
@@ -21768,6 +22353,8 @@ export default function App() {
       title: person.title || "",
       role: person.title || "",
       linkedin: person.linkedinUrl || "",
+      linkedinUrl: person.linkedinUrl || "",
+      linkedinProfileUrl: person.linkedinUrl || "",
       profilePictureUrl: person.profilePictureUrl || "",
       status: "New",
       stage: pipelineColumns[0].id,
@@ -21952,11 +22539,6 @@ export default function App() {
     }
 
     if (type === "client") {
-      const isAuthorized = effectiveAccessState.isAdmin || await canCreateClientRecord(dataOrgId, { skipCheck: Boolean(effectiveAccessState.isAdmin) });
-      if (!isAuthorized) {
-        throw new Error("You do not have permission to create client accounts. Ask a CRM admin.");
-      }
-
       const creatorMemberIds = effectiveWorkspaceUser?.id && UUID_PATTERN.test(String(effectiveWorkspaceUser.id)) && !effectiveWorkspaceUser.isTestAccount
         ? [effectiveWorkspaceUser.id]
         : [];
@@ -21968,24 +22550,68 @@ export default function App() {
           .map(workspaceUser => workspaceUser.id),
         ...clientMemberIds,
       ]).filter(id => UUID_PATTERN.test(String(id || "")));
-      const persistedClient = await createRelationalClient(dataOrgId, user?.id, {
+      const clientPayload = {
         name: values.name.trim() || "Untitled client",
         workspace: values.workspace.trim() || "Prospecting workspace",
         ownerId: requestedClientOwnerId,
         industry: values.industry,
         website: values.website,
+        owner: formatWorkspaceOwnerLabel(selectedClientOwner || effectiveWorkspaceUser, "Workspace user"),
         imageUrl: values.imageUrl || "",
         imagePath: values.imagePath || "",
         imageName: values.imageName || "",
-      });
-      await replaceRelationalClientMembers(dataOrgId, persistedClient.id, clientMemberIds, persistableUserIds);
-      values = {
-        ...values,
-        id: persistedClient.id,
-        ownerId: persistedClient.owner_id || requestedClientOwnerId,
-        owner: formatWorkspaceOwnerLabel(selectedClientOwner || effectiveWorkspaceUser, "Workspace user"),
         memberIds: clientMemberIds,
       };
+      let persistedClient = null;
+      const apiHeaders = await buildApiHeaders();
+
+      if (apiHeaders.Authorization) {
+        const response = await fetch("/api/clients/create", {
+          method: "POST",
+          headers: apiHeaders,
+          body: JSON.stringify(clientPayload),
+        });
+        if (response.status === 404) {
+          // Legacy fallback for environments without this API route.
+        } else {
+          const payload = await readJsonResponse(response);
+          if (!response.ok) throw new Error(payload.error || "Could not create client account.");
+          if (!payload.client?.id) {
+            throw new Error("Server returned an invalid client record.");
+          }
+          persistedClient = payload.client;
+        }
+      }
+
+      if (persistedClient) {
+        values = {
+          ...values,
+          id: persistedClient.id,
+          ownerId: persistedClient.owner_id || requestedClientOwnerId,
+          owner: formatWorkspaceOwnerLabel(selectedClientOwner || effectiveWorkspaceUser, "Workspace user"),
+          memberIds: uniqueIds(Array.isArray(persistedClient.memberIds) && persistedClient.memberIds.length
+            ? persistedClient.memberIds
+            : clientMemberIds),
+        };
+      }
+
+      if (!persistedClient) {
+        const resolvedOrgId = await resolveUserOrganizationId(user?.id) || dataOrgId;
+        const isAuthorized = effectiveAccessState.isAdmin || await canCreateClientRecord(resolvedOrgId, { skipCheck: Boolean(effectiveAccessState.isAdmin) });
+        if (!isAuthorized) {
+          throw new Error("You do not have permission to create client accounts. Ask a CRM admin.");
+        }
+
+        const persistedClient = await createRelationalClient(resolvedOrgId, user?.id, clientPayload);
+        await replaceRelationalClientMembers(resolvedOrgId, persistedClient.id, clientMemberIds, persistableUserIds);
+        values = {
+          ...values,
+          id: persistedClient.id,
+          ownerId: persistedClient.owner_id || requestedClientOwnerId,
+          owner: formatWorkspaceOwnerLabel(selectedClientOwner || effectiveWorkspaceUser, "Workspace user"),
+          memberIds: clientMemberIds,
+        };
+      }
     }
 
     if (type === "campaign") {
@@ -22008,7 +22634,7 @@ export default function App() {
         name: values.name.trim() || "Untitled campaign",
         status: values.status || "active",
         channel: values.channel || "Research-led outbound",
-        nextAction: values.nextAction || "Define company focus and next action",
+          nextAction: values.nextAction || "Define account focus and ownership, then start the first outreach sequence.",
         ownerUserId: requestedCampaignOwnerId,
         memberIds: campaignMemberIds,
         imageUrl: values.imageUrl || "",
@@ -22084,6 +22710,7 @@ export default function App() {
         email: values.email,
         mobile: values.mobile,
         directDial: values.directDial,
+        linkedinProfileUrl: values.linkedinProfileUrl || "",
         profilePictureUrl: values.profilePictureUrl || "",
         profilePicturePath: values.profilePicturePath || "",
         profilePictureName: values.profilePictureName || "",
@@ -22191,6 +22818,9 @@ export default function App() {
           email: values.email,
           mobile: values.mobile,
           directDial: values.directDial,
+          linkedin: normalizeLinkedinUrl(values.linkedinProfileUrl || previous.linkedinProfileUrl || previous.linkedinUrl || previous.linkedin),
+          linkedinUrl: normalizeLinkedinUrl(values.linkedinProfileUrl || previous.linkedinProfileUrl || previous.linkedinUrl || previous.linkedin),
+          linkedinProfileUrl: normalizeLinkedinUrl(values.linkedinProfileUrl || previous.linkedinProfileUrl || previous.linkedinUrl || previous.linkedin),
           profilePictureUrl: values.profilePictureUrl || previous.profilePictureUrl || "",
           profilePicturePath: values.profilePicturePath || previous.profilePicturePath || "",
           profilePictureName: values.profilePictureName || previous.profilePictureName || "",
@@ -22311,6 +22941,9 @@ export default function App() {
               phone: values.directDial,
               mobile: values.mobile,
               directDial: values.directDial,
+              linkedin: normalizeLinkedinUrl(values.linkedinProfileUrl || contact.linkedinProfileUrl || contact.linkedinUrl || contact.linkedin),
+              linkedinUrl: normalizeLinkedinUrl(values.linkedinProfileUrl || contact.linkedinProfileUrl || contact.linkedinUrl || contact.linkedin),
+              linkedinProfileUrl: normalizeLinkedinUrl(values.linkedinProfileUrl || contact.linkedinProfileUrl || contact.linkedinUrl || contact.linkedin),
               profilePictureUrl: values.profilePictureUrl || contact.profilePictureUrl || "",
               profilePicturePath: values.profilePicturePath || contact.profilePicturePath || "",
               profilePictureName: values.profilePictureName || contact.profilePictureName || "",
@@ -22375,7 +23008,7 @@ export default function App() {
             companies: 0,
             contacts: 0,
             meetings: 0,
-            nextAction: values.nextAction || "Define company focus and next action",
+            nextAction: values.nextAction || "Define account focus and ownership, then start the first outreach sequence.",
             memberIds: Array.isArray(values.memberIds) ? values.memberIds : [],
             imageUrl: values.imageUrl || "",
             imagePath: values.imagePath || "",
@@ -22383,13 +23016,14 @@ export default function App() {
             companyIds: [],
             contactIds: [],
             settings: {
-              next_action: values.nextAction || "Define company focus and next action",
+              next_action: values.nextAction || "Define account focus and ownership, then start the first outreach sequence.",
               owner_user_id: values.ownerUserId || "",
               imageUrl: values.imageUrl || "",
               imagePath: values.imagePath || "",
               imageName: values.imageName || "",
             },
           };
+          setViewHistory(current => [...current.slice(-9), currentNavigationState()]);
           setActiveClientId(clientId);
           setActiveCampaignId(campaign.id);
           setActiveView("campaign-detail");
@@ -22473,6 +23107,9 @@ export default function App() {
             phone: values.directDial,
             mobile: values.mobile,
             directDial: values.directDial,
+            linkedin: normalizeLinkedinUrl(values.linkedinProfileUrl),
+            linkedinUrl: normalizeLinkedinUrl(values.linkedinProfileUrl),
+            linkedinProfileUrl: normalizeLinkedinUrl(values.linkedinProfileUrl),
             profilePictureUrl: values.profilePictureUrl || "",
             profilePicturePath: values.profilePicturePath || "",
             profilePictureName: values.profilePictureName || "",
@@ -22513,6 +23150,9 @@ export default function App() {
             phone: values.directDial,
             mobile: values.mobile,
             directDial: values.directDial,
+            linkedin: normalizeLinkedinUrl(values.linkedinProfileUrl),
+            linkedinUrl: normalizeLinkedinUrl(values.linkedinProfileUrl),
+            linkedinProfileUrl: normalizeLinkedinUrl(values.linkedinProfileUrl),
             profilePictureUrl: values.profilePictureUrl || "",
             profilePicturePath: values.profilePicturePath || "",
             profilePictureName: values.profilePictureName || "",
@@ -22623,16 +23263,22 @@ export default function App() {
     if (result.type === "User") openView("settings");
   }
 
+  function listViewSelectionResets(view) {
+    if (view === "contacts") return { selectedAccountId: null, selectedContactId: null };
+    if (view === "clients" || view === "accounts") return { selectedAccountId: null };
+    return {};
+  }
+
   function openView(view) {
-    navigateTo(view);
+    navigateTo(view, listViewSelectionResets(view));
   }
 
   function renderPage() {
     const canManageCrmRecords = Boolean(effectiveAccessState.isAdmin);
     const canEditContacts = canManageCrmRecords;
     const canDeleteContacts = Boolean(effectiveAccessState.isAdmin && normalizedAdminSettings.contact_deletion_enabled);
-    const cognismRedeemEnabled = Boolean(crmData.integrations?.find(integration => integration.name === "Cognism" || integration.key === "Cognism")?.redeemEnabled);
-    const canUseCognismRedeemMode = Boolean(effectiveAccessState.isAdmin && cognismRedeemEnabled);
+  const cognismRedeemEnabled = Boolean(normalizedAdminSettings.cognism_redeem_enabled);
+  const canUseCognismRedeemMode = Boolean(effectiveAccessState.isAdmin && cognismRedeemEnabled);
     switch (activeView) {
       case "clients":
         return <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} canManageCrmRecords={canManageCrmRecords} />;
@@ -22683,14 +23329,6 @@ export default function App() {
           ? <AccountDetailPage account={selectedAccount} onOpenContact={openContact} onEditAccount={editAccount} onNewContact={(accountId) => openWorkflow("contact", { accountId })} onNewDeal={(accountId) => openWorkflow("deal", { accountId })} canManageCrmRecords={canManageCrmRecords} />
           : <ClientsPage onOpenClient={openClient} onEditClient={editClient} onRemoveClient={handleRemoveClient} onNewClient={() => openWorkflow("client")} canManageCrmRecords={canManageCrmRecords} />;
       case "contacts":
-        return <ContactsPage
-          onOpenContact={openContact}
-          onNewContact={() => openWorkflow("contact", { forceCompanySelection: true })}
-          onImportContacts={handleImportContacts}
-          onRemoveContact={handleRemoveContact}
-          canDeleteContacts={false}
-          canManageCrmRecords={canManageCrmRecords}
-        />;
       case "lead-lookup":
         return <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} onSaveLeadList={handleSaveLeadList} onOpenCompany={openAccount} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
       case "intent-research":
@@ -22719,7 +23357,16 @@ export default function App() {
           />
           : <LeadDatabasePage leadLists={leadLists} contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onAddToCrmContacts={handleAddLeadToCrmContacts} onSaveLeadList={handleSaveLeadList} onOpenCompany={openAccount} currentUserId={effectiveWorkspaceUser?.id || ""} isAdmin={effectiveAccessState.isAdmin} />;
       case "cognism":
-        return <CognismContactFinder contactDatabase={leadContactDatabase} onSaveLeadList={handleSaveLeadList} onSaveLeadContact={handleUpsertLeadContact} onPersistSearchResults={handlePersistSearchResults} cognismPreviewEnabled={normalizedAdminSettings.cognism_preview_enabled} canUseRedeemMode={canUseCognismRedeemMode} currentUserId={effectiveWorkspaceUser?.id || ""} />;
+        return <CognismContactFinder
+          contactDatabase={leadContactDatabase}
+          onSaveLeadList={handleSaveLeadList}
+          onSaveLeadContact={handleUpsertLeadContact}
+          onPersistSearchResults={handlePersistSearchResults}
+          cognismPreviewEnabled={normalizedAdminSettings.cognism_preview_enabled}
+          canUseRedeemMode={canUseCognismRedeemMode}
+          isTestAccount={effectiveAccessState.isTestAccount}
+          currentUserId={effectiveWorkspaceUser?.id || ""}
+        />;
       case "lemlist":
         return <LemlistPage contactDatabase={leadContactDatabase} onSaveLeadContact={handleUpsertLeadContact} onSaveLemlistCompany={handleSaveLemlistCompany} />;
       case "lead-lists":
@@ -22770,8 +23417,6 @@ export default function App() {
           adminSettingsState={adminSettingsState}
           onUpdateAdminSettings={handleUpdateAdminSettings}
           onUpdateWorkspaceUserRole={handleUpdateWorkspaceUserRole}
-          cognismRedeemEnabled={cognismRedeemEnabled}
-          onUpdateIntegration={updateIntegration}
         />;
       default:
         return (
@@ -22787,7 +23432,7 @@ export default function App() {
   }
 
   return (
-    <CrmDataContext.Provider value={visibleCrmData}>
+    <CrmDataContext.Provider value={safeVisibleCrmData}>
       <CurrencyContext.Provider value={currencyContextValue}>
         <div className={`crm-app ${isDark ? "dark" : "light"}`}>
         <Sidebar activeView={activeView} onNavigate={navigatePrimary} isAdmin={effectiveAccessState.isAdmin} isOrgAdmin={effectiveAccessState.isOrgAdmin} />

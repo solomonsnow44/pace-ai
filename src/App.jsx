@@ -8046,7 +8046,7 @@ async function exportAircallClientProgressHtml({
             ))}
           </div>
         </section>
-        <section className="panel">
+        <section className="panel aircall-users-panel">
           <div className="panel-header">
             <div>
               <span className="eyebrow">Users</span>

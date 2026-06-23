@@ -2512,6 +2512,13 @@ textarea::placeholder {
   overscroll-behavior: contain;
 }
 
+.aircall-users-panel .user-call-list {
+  max-height: min(620px, calc(100vh - 300px));
+  overflow-y: auto;
+  padding-right: 6px;
+  overscroll-behavior: contain;
+}
+
 .campaign-call-timeline-list {
   max-height: min(620px, calc(100vh - 260px));
   overflow-y: auto;
@@ -2520,12 +2527,14 @@ textarea::placeholder {
 }
 
 .aircall-detail-panel .call-timeline-list::-webkit-scrollbar,
+.aircall-users-panel .user-call-list::-webkit-scrollbar,
 .campaign-call-timeline-list::-webkit-scrollbar,
 .transcript-modal-body::-webkit-scrollbar {
   width: 10px;
 }
 
 .aircall-detail-panel .call-timeline-list::-webkit-scrollbar-track,
+.aircall-users-panel .user-call-list::-webkit-scrollbar-track,
 .campaign-call-timeline-list::-webkit-scrollbar-track,
 .transcript-modal-body::-webkit-scrollbar-track {
   background: var(--surface);
@@ -2533,6 +2542,7 @@ textarea::placeholder {
 }
 
 .aircall-detail-panel .call-timeline-list::-webkit-scrollbar-thumb,
+.aircall-users-panel .user-call-list::-webkit-scrollbar-thumb,
 .campaign-call-timeline-list::-webkit-scrollbar-thumb,
 .transcript-modal-body::-webkit-scrollbar-thumb {
   background: var(--border-strong);

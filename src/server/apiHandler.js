@@ -30,7 +30,10 @@ const DEFAULT_ADMIN_SETTINGS = {
   cognism_preview_enabled: true,
   contact_deletion_enabled: false,
   test_account_enabled: false,
+  cognism_redeem_enabled: false,
 };
+const ADMIN_ROLES = new Set(['platform_admin', 'org_owner', 'org_admin', 'admin']);
+const ORG_ADMIN_ROLES = new Set(['platform_admin', 'org_owner', 'org_admin']);
 const SUPPORTED_CURRENCY_CODES = new Set(['EUR', 'GBP', 'USD']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GOOGLE_PLACES_COUNTRY_AREA_LIMIT = 60;
@@ -142,7 +145,7 @@ async function getAuthenticatedCrmUserWithOrganization(req) {
   return {
     ...user,
     organizationId: data.organization_id,
-    role: data.role || 'member',
+    role: normalizeRole(data.role) || 'member',
     email: data.email || '',
     firstName: data.first_name || '',
     lastName: data.last_name || '',
@@ -151,16 +154,25 @@ async function getAuthenticatedCrmUserWithOrganization(req) {
   };
 }
 
+function normalizeRole(role = 'member') {
+  return String(role || 'member')
+    .trim()
+    .toLowerCase()
+    .replaceAll('_', ' ')
+    .replace(/\s+/g, '_');
+}
+
 function isAdminRole(role) {
-  return ['platform_admin', 'org_owner', 'org_admin', 'admin'].includes(role);
+  return ADMIN_ROLES.has(normalizeRole(role));
 }
 
 function isOrgAdminRole(role) {
-  return ['platform_admin', 'org_owner', 'org_admin'].includes(role);
+  return ORG_ADMIN_ROLES.has(normalizeRole(role));
 }
 
 function isProtectedAdminRole(role) {
-  return ['platform_admin', 'org_owner'].includes(role);
+  const normalized = normalizeRole(role);
+  return normalized === 'platform_admin' || normalized === 'org_owner';
 }
 
 function assertOrgAdmin(user) {
@@ -179,6 +191,23 @@ function assertAdmin(user) {
 
 function compactString(value) {
   return String(value || '').trim();
+}
+
+function makeClientSlug(value = '') {
+  const slugRoot = compactString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
+  return `${slugRoot || 'client'}-${Date.now().toString(36)}`;
+}
+
+function uniqueIds(values = []) {
+  const set = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    if (UUID_PATTERN.test(String(value || ''))) set.add(String(value));
+  }
+  return [...set];
 }
 
 function normalizedDateTimeParam(value) {
@@ -422,6 +451,7 @@ function normalizeAdminSettings(settings = {}) {
     cognism_preview_enabled: settings?.cognism_preview_enabled !== false,
     contact_deletion_enabled: settings?.contact_deletion_enabled === true,
     test_account_enabled: settings?.test_account_enabled === true,
+    cognism_redeem_enabled: settings?.cognism_redeem_enabled === true,
   };
 }
 
@@ -492,6 +522,7 @@ async function updateAdminSettings(req, input = {}) {
     ...(typeof input.cognism_preview_enabled === 'boolean' ? { cognism_preview_enabled: input.cognism_preview_enabled } : {}),
     ...(typeof input.contact_deletion_enabled === 'boolean' ? { contact_deletion_enabled: input.contact_deletion_enabled } : {}),
     ...(typeof input.test_account_enabled === 'boolean' ? { test_account_enabled: input.test_account_enabled } : {}),
+    ...(typeof input.cognism_redeem_enabled === 'boolean' ? { cognism_redeem_enabled: input.cognism_redeem_enabled } : {}),
     updated_at: new Date().toISOString(),
     updated_by: user.id,
   });
@@ -682,6 +713,105 @@ async function updateWorkspaceUserRole(req, input = {}) {
     role: user.role,
     isAdmin: isAdminRole(user.role),
     isOrgAdmin: isOrgAdminRole(user.role),
+  };
+}
+
+async function createClientAccount(req, input = {}) {
+  const user = await getAuthenticatedCrmUserWithOrganization(req);
+  assertAdmin(user);
+
+  const name = compactString(input.name);
+  if (!name) {
+    const error = new Error('Client name is required.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const requestedWorkspace = compactString(input.workspace);
+  const requestedOwnerId = compactString(input.ownerId);
+  const requestedMembers = uniqueIds([
+    user.id,
+    ...(Array.isArray(input.memberIds) ? input.memberIds : []),
+    requestedOwnerId,
+  ]);
+  const serviceClient = getServiceClient();
+
+  const { data: workspaceUserRows, error: workspaceUserError } = await serviceClient
+    .from('users')
+    .select('id')
+    .eq('organization_id', user.organizationId)
+    .eq('status', 'active')
+    .in('id', requestedMembers);
+
+  if (workspaceUserError) throw workspaceUserError;
+  const memberIds = uniqueIds((workspaceUserRows || []).map(row => row.id));
+  const ownerId = UUID_PATTERN.test(requestedOwnerId) && memberIds.includes(requestedOwnerId)
+    ? requestedOwnerId
+    : user.id;
+  const createdAt = new Date().toISOString();
+  const clientPayload = {
+    organization_id: user.organizationId,
+    name,
+    slug: makeClientSlug(name),
+    status: 'active',
+    owner_id: ownerId,
+    website: compactString(input.website) || null,
+    industry: compactString(input.industry) || null,
+    metadata: {
+      workspace: requestedWorkspace || 'Prospecting workspace',
+      owner: compactString(input.owner),
+      imageUrl: compactString(input.imageUrl),
+      imagePath: compactString(input.imagePath),
+      imageName: compactString(input.imageName),
+      created_at: createdAt,
+      created_by: user.id,
+    },
+  };
+
+  const { data: insertedClient, error: clientError } = await serviceClient
+    .from('clients')
+    .insert(clientPayload)
+    .select('id,name,status,industry,website,owner_id,metadata')
+    .single();
+
+  if (clientError) throw clientError;
+
+  const membershipRows = memberIds.map(memberId => ({
+    organization_id: user.organizationId,
+    client_id: insertedClient.id,
+    user_id: memberId,
+    role: memberId === ownerId ? 'admin' : 'member',
+  }));
+
+  if (membershipRows.length) {
+    const { error: membershipError } = await serviceClient
+      .from('client_members')
+      .upsert(membershipRows, { onConflict: 'client_id,user_id' });
+    if (membershipError) throw membershipError;
+  }
+
+  await writeAuditLog(
+    serviceClient,
+    user,
+    'client.created',
+    'client',
+    insertedClient.id,
+    null,
+    {
+      name,
+      website: insertedClient.website,
+      industry: insertedClient.industry,
+      workspace: requestedWorkspace || 'Prospecting workspace',
+      ownerId,
+      memberIds,
+    },
+  );
+
+  return {
+    client: {
+      ...insertedClient,
+      memberIds,
+    },
   };
 }
 
@@ -1779,6 +1909,10 @@ export async function handleApiRequest(req, res) {
 
   if (pathname === '/api/workspace-users/role') {
     return handlePostRoute(req, res, async body => updateWorkspaceUserRole(req, body), 'Workspace user role update failed');
+  }
+
+  if (pathname === '/api/clients/create') {
+    return handlePostRoute(req, res, async body => createClientAccount(req, body), 'Client create failed');
   }
 
   if (pathname === '/api/google-places/search') {

@@ -463,7 +463,8 @@ CREATE OR REPLACE FUNCTION "public"."default_admin_settings"() RETURNS "jsonb"
   select jsonb_build_object(
     'cognism_preview_enabled', true,
     'contact_deletion_enabled', false,
-    'test_account_enabled', false
+    'test_account_enabled', false,
+    'cognism_redeem_enabled', false
   )
 $$;
 
@@ -773,7 +774,7 @@ $$;
 ALTER FUNCTION "public"."set_updated_at"() OWNER TO "postgres";
 
 
-CREATE OR REPLACE FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean DEFAULT NULL::boolean, "contact_deletion_enabled" boolean DEFAULT NULL::boolean, "test_account_enabled" boolean DEFAULT NULL::boolean) RETURNS "jsonb"
+CREATE OR REPLACE FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean DEFAULT NULL::boolean, "contact_deletion_enabled" boolean DEFAULT NULL::boolean, "test_account_enabled" boolean DEFAULT NULL::boolean, "cognism_redeem_enabled" boolean DEFAULT NULL::boolean) RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
     AS $$
@@ -794,6 +795,7 @@ begin
     || case when cognism_preview_enabled is null then '{}'::jsonb else jsonb_build_object('cognism_preview_enabled', cognism_preview_enabled) end
     || case when contact_deletion_enabled is null then '{}'::jsonb else jsonb_build_object('contact_deletion_enabled', contact_deletion_enabled) end
     || case when test_account_enabled is null then '{}'::jsonb else jsonb_build_object('test_account_enabled', test_account_enabled) end
+    || case when cognism_redeem_enabled is null then '{}'::jsonb else jsonb_build_object('cognism_redeem_enabled', cognism_redeem_enabled) end
     || jsonb_build_object('updated_at', now(), 'updated_by', auth.uid());
 
   update public.organizations
@@ -808,7 +810,7 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean) OWNER TO "postgres";
+ALTER FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean, "cognism_redeem_enabled" boolean) OWNER TO "postgres";
 
 SET default_tablespace = '';
 
@@ -2226,9 +2228,9 @@ GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "service_role";
 
 
 
-GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean) TO "anon";
-GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean) TO "authenticated";
-GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean) TO "service_role";
+GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean, "cognism_redeem_enabled" boolean) TO "anon";
+GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean, "cognism_redeem_enabled" boolean) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."update_admin_settings"("target_organization_id" "uuid", "cognism_preview_enabled" boolean, "contact_deletion_enabled" boolean, "test_account_enabled" boolean, "cognism_redeem_enabled" boolean) TO "service_role";
 
 
 

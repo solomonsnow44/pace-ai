@@ -112,10 +112,7 @@ begin
       'ods_code', r.payload ->> 'ODS Code',
       'turnover_currency', r.payload ->> 'Turnover (£) - currency',
       'company_hq_location', r.payload ->> 'Company HQ Location',
-      'other_locations', r.payload ->> 'Other Locations',
-      'source_file', r.source_file,
-      'source_sheet', r.source_sheet,
-      'source_row', r.source_row
+      'other_locations', r.payload ->> 'Other Locations'
     ));
 
     select id into v_company_id

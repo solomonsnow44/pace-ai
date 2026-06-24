@@ -1055,6 +1055,36 @@ html {
   font-weight: 800;
 }
 
+.linkedin-logo-icon {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.linkedin-icon-link {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, #0a66c2 28%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, #0a66c2 9%, var(--card));
+  color: #0a66c2;
+  text-decoration: none;
+}
+
+.linkedin-icon-link:hover,
+.linkedin-icon-link:focus-visible {
+  border-color: #0a66c2;
+  background: color-mix(in srgb, #0a66c2 14%, var(--card));
+  color: #0a66c2;
+}
+
+.linkedin-icon-link:focus-visible {
+  outline: 2px solid color-mix(in srgb, #0a66c2 24%, transparent);
+  outline-offset: 2px;
+}
+
 .intent-cb-product-table,
 .intent-cb-news-list,
 .intent-cb-competitor-grid,
@@ -2105,6 +2135,10 @@ textarea::placeholder {
   margin: 0;
   max-width: 740px;
   color: var(--muted);
+}
+
+.page-header-meta {
+  margin: 4px 0 6px;
 }
 
 .page-actions {
@@ -3664,14 +3698,14 @@ textarea::placeholder {
 }
 
 .client-activity-viewport {
-  min-height: 260px;
-  max-height: min(560px, calc(100vh - 260px));
-  overflow: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
   padding-right: 2px;
 }
 
 .client-activity-viewport > section {
-  min-height: 100%;
+  min-height: auto;
 }
 
 .client-activity-companies-frame .table-wrap {
@@ -3747,6 +3781,86 @@ textarea::placeholder {
 
 .campaign-bottom-grid {
   margin-top: 16px;
+  align-items: start;
+}
+
+.campaign-users-panel {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.campaign-team-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.campaign-team-row {
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.campaign-team-avatar {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.campaign-team-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.campaign-team-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.campaign-team-name-line strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.campaign-team-name-line .status-badge {
+  min-width: 0;
+  min-height: 20px;
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.campaign-team-copy small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .campaign-setup-actions {
@@ -3905,15 +4019,6 @@ textarea::placeholder {
   max-width: 260px;
   font-size: 13px;
   line-height: 1.4;
-}
-
-.compact-team-list .team-row {
-  grid-template-columns: 32px minmax(0, 1fr);
-}
-
-.compact-team-list .team-row .status-badge {
-  grid-column: 2;
-  justify-self: start;
 }
 
 .data-table {
@@ -6052,6 +6157,76 @@ textarea::placeholder {
   margin-bottom: 18px;
 }
 
+.company-header-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+  min-width: 188px;
+}
+
+.company-header-actions > .secondary-button {
+  width: 100%;
+}
+
+.company-header-links {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
+}
+
+.company-header-website,
+.company-header-linkedin {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-decoration: none;
+}
+
+.company-header-website span,
+.company-header-linkedin span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.company-header-website:hover,
+.company-header-website:focus-visible,
+.company-header-linkedin:hover,
+.company-header-linkedin:focus-visible {
+  border-color: var(--border-strong);
+  background: var(--soft);
+  color: var(--text);
+}
+
+.company-header-linkedin {
+  color: #0a66c2;
+}
+
+.company-header-linkedin:hover,
+.company-header-linkedin:focus-visible {
+  color: #0a66c2;
+}
+
+.company-header-website:focus-visible,
+.company-header-linkedin:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  outline-offset: 2px;
+}
+
 .detail-list.inline {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   width: 100%;
@@ -6404,6 +6579,10 @@ textarea::placeholder {
   .workflow-field-grid,
   .contact-list-row {
     grid-template-columns: 1fr;
+  }
+
+  .contact-list-actions {
+    justify-content: flex-start;
   }
 
   .contact-image-action-row {
@@ -6774,6 +6953,20 @@ textarea::placeholder {
 
 .pipeline-card:hover {
   border-color: var(--accent);
+}
+
+.pipeline-card.intent-to-buy-card {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 58%),
+    color-mix(in srgb, var(--accent) 6%, var(--card));
+}
+
+.pipeline-card.intent-to-buy-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, transparent), transparent 58%),
+    color-mix(in srgb, var(--accent) 9%, var(--card));
 }
 
 .pipeline-card.dragging {
@@ -7589,6 +7782,43 @@ textarea::placeholder {
   margin-top: 2px;
 }
 
+.campaign-detail-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.campaign-detail-brand img,
+.campaign-brand-fallback {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.campaign-brand-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 24px;
+  color: var(--text);
+}
+
+.campaign-detail-brand h2 {
+  margin: 0 0 5px;
+  font-size: 26px;
+  color: var(--text);
+}
+
+.campaign-detail-brand p {
+  margin: 0;
+  color: var(--muted);
+}
+
 .client-identity-panel {
   display: grid;
   gap: 4px;
@@ -7752,6 +7982,14 @@ textarea::placeholder {
   min-width: 0;
   display: grid;
   gap: 3px;
+}
+
+.membership-campaign-header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .membership-control-row strong {
@@ -8850,12 +9088,6 @@ textarea::placeholder {
   color: var(--success);
 }
 
-.linkedin-in-mark {
-  font-size: 12px;
-  font-weight: 900;
-  line-height: 1;
-}
-
 .linkedin-url-field {
   display: grid;
   gap: 4px;
@@ -9079,6 +9311,59 @@ textarea::placeholder {
 
 .contact-company-only-toggle {
   min-width: 160px;
+}
+
+.lead-lookup-field-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -4px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--background));
+}
+
+.lead-lookup-field-filter-label {
+  margin-right: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.lead-lookup-field-filter {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.lead-lookup-field-filter.active {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--accent);
+}
+
+.lead-lookup-field-filter input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+
+.lead-lookup-field-filter small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
 }
 
 .table-pagination {
@@ -9514,6 +9799,12 @@ textarea::placeholder {
   font-size: 11px;
   font-weight: 900;
   line-height: 1;
+}
+
+.lead-list-linkedin-button.linkedin-icon-link,
+.lemlist-linkedin-button.linkedin-icon-link {
+  width: 26px;
+  height: 26px;
 }
 
 .lookup-linkedin-button:hover {
@@ -10914,6 +11205,20 @@ textarea::placeholder {
     justify-content: flex-start;
   }
 
+  .company-header-actions {
+    align-items: flex-start;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .company-header-actions > .secondary-button {
+    width: auto;
+  }
+
+  .company-header-links {
+    justify-content: flex-start;
+  }
+
   .role-choice-grid {
     grid-template-columns: 1fr;
   }
@@ -10955,7 +11260,7 @@ textarea::placeholder {
   }
 
   .client-activity-viewport {
-    max-height: 520px;
+    max-height: none;
   }
 
   .lead-database-strip div,
@@ -11273,4 +11578,77 @@ textarea::placeholder {
     justify-content: center;
   }
 
+}
+
+select:not([multiple]) {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 50%,
+    calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.2;
+  padding: 7px 34px 7px 10px;
+  outline: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+select:not([multiple]):hover {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border-strong));
+}
+
+select:not([multiple]):focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+select:not([multiple]):disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+select:not([multiple]) option {
+  background: var(--card);
+  color: var(--text);
+}
+
+.switchers select,
+.pipeline-board-selector select {
+  background-image: none;
+  box-shadow: none;
+}
+
+.pipeline-board-selector select {
+  width: auto;
+  min-height: auto;
+  border: 0;
+  background-color: transparent;
+  padding: 0;
+}
+
+.report-range-controls select,
+.settings-list select,
+.intent-cb-section-head select,
+.compact-select select {
+  width: auto;
+}
+
+.settings-list select {
+  min-width: 150px;
+}
+
+.compact-select select {
+  min-width: 88px;
 }

@@ -443,6 +443,61 @@ async function upsertRows(serviceClient, table, rows, onConflict) {
   return rows.length;
 }
 
+async function loadPagedRows(buildQuery, pageSize = 1000) {
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  return rows;
+}
+
+async function loadCallsMissingTranscripts(serviceClient, organizationId) {
+  const [calls, transcripts] = await Promise.all([
+    loadPagedRows(() => serviceClient
+      .from("aircall_calls")
+      .select("id,organization_id,aircall_call_id,started_at,recording_url,asset_url,voicemail_url")
+      .eq("organization_id", organizationId)
+      .not("aircall_call_id", "is", null)
+      .order("started_at", { ascending: false })),
+    loadPagedRows(() => serviceClient
+      .from("aircall_call_transcripts")
+      .select("call_id")
+      .eq("organization_id", organizationId)),
+  ]);
+  const transcriptCallIds = new Set((transcripts || []).map(row => row.call_id).filter(Boolean));
+  return (calls || []).filter(call => (
+    !transcriptCallIds.has(call.id)
+    && (call.recording_url || call.asset_url || call.voicemail_url)
+  ));
+}
+
+async function backfillMissingTranscripts({ serviceClient, organizationId, apiId, apiToken, fetcher, enabled }) {
+  if (!enabled) {
+    return {
+      missingTranscriptCallsChecked: 0,
+      missingTranscriptsSynced: 0,
+    };
+  }
+
+  const missingCalls = await loadCallsMissingTranscripts(serviceClient, organizationId);
+  const options = { apiId, apiToken, fetcher };
+  const transcriptRows = [];
+
+  for (const callRow of missingCalls) {
+    const transcriptPayload = await fetchOptionalAircallJson(`/calls/${callRow.aircall_call_id}/transcription`, options);
+    const transcript = mapTranscript(organizationId, callRow, transcriptPayload);
+    if (transcript) transcriptRows.push(transcript);
+  }
+
+  return {
+    missingTranscriptCallsChecked: missingCalls.length,
+    missingTranscriptsSynced: await upsertRows(serviceClient, "aircall_call_transcripts", transcriptRows, "organization_id,call_id"),
+  };
+}
+
 async function syncCallIntelligence({ serviceClient, organizationId, aircallCalls, callByAircallId, userByAircallId, apiId, apiToken, fetcher, enabled }) {
   if (!enabled) {
     return {
@@ -594,6 +649,14 @@ export async function syncAircallData(input = {}, options = {}) {
     fetcher,
     enabled: includeIntelligence,
   });
+  const transcriptBackfillResult = await backfillMissingTranscripts({
+    serviceClient,
+    organizationId,
+    apiId,
+    apiToken,
+    fetcher,
+    enabled: includeIntelligence,
+  });
 
   return {
     status: "synced",
@@ -604,5 +667,6 @@ export async function syncAircallData(input = {}, options = {}) {
     callsFetched: aircallCalls.length,
     callsSynced: syncedCalls,
     ...intelligenceResult,
+    ...transcriptBackfillResult,
   };
 }

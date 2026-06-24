@@ -395,7 +395,7 @@ if (!organizationId) throw new Error("No organization found.");
 const [users, existingCampaigns, existingCompanies, existingContacts, existingTargets, existingMeetings, existingClientMembers, existingCampaignMembers] = await Promise.all([
   restAll(`users?select=id,organization_id,email,display_name,role,status&organization_id=eq.${organizationId}&status=eq.active`),
   restAll(`campaigns?select=id,organization_id,client_id,name,status,channel,settings&organization_id=eq.${organizationId}`),
-  restAll(`companies?select=id,organization_id,client_id,name,domain,website,industry,employee_count,annual_revenue,status,notes,custom_fields&organization_id=eq.${organizationId}`),
+  restAll(`companies?select=id,organization_id,client_id,name,website,industry,employee_count,annual_revenue,status,notes,custom_fields&organization_id=eq.${organizationId}`),
   restAll(`contacts?select=id,organization_id,client_id,company_id,contact_name,first_name,last_name,full_name,email,phone,mobile,direct_dial,manual_email,manual_mobile,manual_direct_dial,job_title,linkedin_url,linkedin_profile_url,location,normalized_identity_key,status,custom_fields&organization_id=eq.${organizationId}`),
   restAll(`campaign_targets?select=id,campaign_id,company_id,contact_id&organization_id=eq.${organizationId}`),
   restAll(`meetings?select=id,client_id,campaign_id,company_id,contact_id,user_id,owner_user_id,booked_by_user_id,title,meeting_at,phone_number&organization_id=eq.${organizationId}`),
@@ -424,7 +424,7 @@ const stats = {
 const clientByName = new Map(clients.map(client => [normalizeKey(client.name), client]));
 const campaignByClientAndName = new Map(existingCampaigns.map(campaign => [`${campaign.client_id}|${normalizeKey(campaign.name)}`, campaign]));
 const companyByClientAndName = new Map(existingCompanies.map(company => [`${company.client_id}|${normalizeKey(company.name)}`, company]));
-const companyByClientAndDomain = new Map(existingCompanies.filter(company => company.domain).map(company => [`${company.client_id}|${normalizeKey(company.domain)}`, company]));
+const companyByClientAndDomain = new Map(existingCompanies.filter(company => domainFromWebsite(company.website)).map(company => [`${company.client_id}|${normalizeKey(domainFromWebsite(company.website))}`, company]));
 const contactsByIdentity = new Map(existingContacts.filter(contact => contact.normalized_identity_key).map(contact => [contact.normalized_identity_key, contact]));
 const contactsByClientEmail = new Map(existingContacts.filter(contact => contact.email).map(contact => [`${contact.client_id}|${normalizeKey(contact.email)}`, contact]));
 const targetKeys = new Set(existingTargets.map(target => targetKey(target.campaign_id, target.company_id, target.contact_id)));
@@ -523,7 +523,6 @@ for (const row of sourceRows) {
     client_id: client.id,
     name: row.companyName,
     slug: `${slugify(row.companyName)}-${Date.now().toString(36)}`,
-    domain: row.domain || null,
     website: row.website || null,
     industry: row.industry || null,
     employee_count: row.employeeCount,
@@ -534,9 +533,6 @@ for (const row of sourceRows) {
       company_hq_location: row.location || "",
       ui_stage: "Lead In",
       ui_status: row.status || "",
-      source: sourceName,
-      source_file: row.file,
-      source_row: row.sourceRow,
     },
   };
 
@@ -544,10 +540,10 @@ for (const row of sourceRows) {
     company = await insert("companies", companyPayload);
     stats.companiesCreated += 1;
     companyByClientAndName.set(`${client.id}|${normalizeKey(company.name)}`, company);
-    if (company.domain) companyByClientAndDomain.set(`${client.id}|${normalizeKey(company.domain)}`, company);
+    if (domainFromWebsite(company.website)) companyByClientAndDomain.set(`${client.id}|${normalizeKey(domainFromWebsite(company.website))}`, company);
   } else {
     const patchPayload = {};
-    for (const key of ["domain", "website", "industry", "employee_count", "annual_revenue", "notes"]) {
+    for (const key of ["website", "industry", "employee_count", "annual_revenue", "notes"]) {
       if (!company[key] && companyPayload[key]) patchPayload[key] = companyPayload[key];
     }
     if (Object.keys(patchPayload).length) {

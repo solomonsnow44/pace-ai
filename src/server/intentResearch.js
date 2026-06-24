@@ -82,10 +82,9 @@ async function findExistingCompany(client, organizationId, event) {
   if (!domain && !name) return null;
   const { data } = await client
     .from('companies')
-    .select('id,name,domain,website')
+    .select('id,name,website')
     .eq('organization_id', organizationId)
     .or([
-      domain ? `domain.ilike.${domain}` : '',
       domain ? `website.ilike.%${domain}%` : '',
       name ? `name.ilike.${event.company_name}` : '',
     ].filter(Boolean).join(','))

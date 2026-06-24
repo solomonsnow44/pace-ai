@@ -321,9 +321,7 @@ begin
       'mainline_other', r.payload ->> 'Mainline - Other',
       'generic_email_work', r.payload ->> 'Generic Email - Work',
       'generic_email_home', r.payload ->> 'Generic Email - Home',
-      'generic_email_other', r.payload ->> 'Generic Email - Other',
-      'source_file', r.source_file,
-      'source_sheet', r.source_sheet
+      'generic_email_other', r.payload ->> 'Generic Email - Other'
     ));
 
     select c.id

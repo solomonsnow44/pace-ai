@@ -633,6 +633,7 @@ const workspaceViewIds = new Set(navItems.map(item => item.id).concat([
   "contact-detail",
   "lead-lookup",
 ]));
+const primaryWorkspaceViewIds = new Set(navItems.map(item => item.id));
 const workspacePathViews = new Map([
   ["/aircall", "aircall"],
   ["/dashboard", "dashboard"],
@@ -652,6 +653,23 @@ const workspacePathViews = new Map([
 ]);
 const workspaceViewPaths = new Map([...workspacePathViews.entries()].map(([path, view]) => [view, path]));
 const WORKSPACE_UI_STATE_STORAGE_KEY = "paceops.workspaceUiState.v1";
+const WORKSPACE_NAVIGATION_MEMORY_STORAGE_KEY = "paceops.workspaceNavigationMemory.v1";
+const defaultPrimaryViewByWorkspaceView = new Map([
+  ["client-detail", "clients"],
+  ["campaign-detail", "campaigns"],
+  ["account-detail", "clients"],
+  ["contact-detail", "contacts"],
+  ["lead-lookup", "contacts"],
+]);
+
+function primaryViewForWorkspaceView(view = "", fallback = "dashboard") {
+  if (primaryWorkspaceViewIds.has(view)) return view;
+  if (!fallback || fallback === "dashboard") {
+    const defaultPrimaryView = defaultPrimaryViewByWorkspaceView.get(view);
+    if (primaryWorkspaceViewIds.has(defaultPrimaryView)) return defaultPrimaryView;
+  }
+  return primaryWorkspaceViewIds.has(fallback) ? fallback : "dashboard";
+}
 
 function readWorkspaceViewFromUrl() {
   if (typeof window === "undefined") return "";
@@ -934,17 +952,24 @@ function normalizeWorkspaceUiState(state = {}) {
   if (typeof state.activeView === "string" && workspaceViewIds.has(state.activeView)) {
     normalized.activeView = state.activeView;
   }
+  if (typeof state.activePrimaryView === "string" && primaryWorkspaceViewIds.has(state.activePrimaryView)) {
+    normalized.activePrimaryView = state.activePrimaryView;
+  }
   if (typeof state.activeClientId === "string" && state.activeClientId.trim()) {
     normalized.activeClientId = state.activeClientId.trim();
   }
   if (typeof state.activeCampaignId === "string" && state.activeCampaignId.trim()) {
     normalized.activeCampaignId = state.activeCampaignId.trim();
   }
-  if (typeof state.selectedAccountId === "string" && state.selectedAccountId.trim()) {
-    normalized.selectedAccountId = state.selectedAccountId.trim();
+  if (Object.prototype.hasOwnProperty.call(state, "selectedAccountId")) {
+    normalized.selectedAccountId = typeof state.selectedAccountId === "string" && state.selectedAccountId.trim()
+      ? state.selectedAccountId.trim()
+      : null;
   }
-  if (typeof state.selectedContactId === "string" && state.selectedContactId.trim()) {
-    normalized.selectedContactId = state.selectedContactId.trim();
+  if (Object.prototype.hasOwnProperty.call(state, "selectedContactId")) {
+    normalized.selectedContactId = typeof state.selectedContactId === "string" && state.selectedContactId.trim()
+      ? state.selectedContactId.trim()
+      : null;
   }
   return normalized;
 }
@@ -974,6 +999,61 @@ function saveUiState(userId = "", nextState = {}) {
   const normalized = normalizeWorkspaceUiState(nextState);
   try {
     window.localStorage.setItem(key, JSON.stringify(normalized));
+  } catch {
+    return;
+  }
+}
+
+function buildWorkspaceNavigationMemoryStorageKey(userId = "", primaryView = "") {
+  const normalizedPrimaryView = primaryViewForWorkspaceView(primaryView);
+  return `${WORKSPACE_NAVIGATION_MEMORY_STORAGE_KEY}:${String(userId || "").trim()}:${normalizedPrimaryView}`;
+}
+
+function loadWorkspaceNavigationMemory(userId = "", primaryView = "") {
+  if (typeof window === "undefined" || !userId) return {};
+  const key = buildWorkspaceNavigationMemoryStorageKey(userId, primaryView);
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return normalizeWorkspaceUiState(parsed);
+  } catch {
+    return {};
+  }
+}
+
+function saveWorkspaceNavigationMemory(userId = "", primaryView = "", nextState = {}) {
+  if (typeof window === "undefined" || !userId) return;
+  const normalizedPrimaryView = primaryViewForWorkspaceView(primaryView);
+  const key = buildWorkspaceNavigationMemoryStorageKey(userId, normalizedPrimaryView);
+  const normalized = normalizeWorkspaceUiState({
+    ...nextState,
+    activePrimaryView: normalizedPrimaryView,
+  });
+  try {
+    window.localStorage.setItem(key, JSON.stringify(normalized));
+  } catch {
+    return;
+  }
+}
+
+function loadPersistentViewState(key = "", fallback = {}) {
+  if (typeof window === "undefined" || !key) return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? { ...fallback, ...parsed } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function savePersistentViewState(key = "", state = {}) {
+  if (typeof window === "undefined" || !key) return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(state));
   } catch {
     return;
   }
@@ -1237,6 +1317,9 @@ async function loadRelationalCrmData(organizationId, workspaceUsers = []) {
       const campaignCompanies = new Set(campaignTargets
         .filter(member => member.campaign_id === campaign.id && member.company_id)
         .map(member => member.company_id));
+      meetings
+        .filter(meeting => meeting.campaign_id === campaign.id && meeting.company_id)
+        .forEach(meeting => campaignCompanies.add(meeting.company_id));
       const campaignContacts = new Set(campaignTargets
         .filter(member => member.campaign_id === campaign.id && member.contact_id)
         .map(member => member.contact_id));
@@ -4059,7 +4142,7 @@ function AircallDialButton({ contact, phoneNumber: phoneNumberOverride = "", lab
   );
 }
 
-function PageHeader({ title, eyebrow, description, children }) {
+function PageHeader({ title, eyebrow, description, meta, children }) {
   const hasEyebrow = Boolean(eyebrow && String(eyebrow).trim());
   const hasTitle = Boolean(title && String(title).trim());
   const hasDescription = Boolean(description && String(description).trim());
@@ -4068,6 +4151,7 @@ function PageHeader({ title, eyebrow, description, children }) {
       <div>
         {hasEyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
         {hasTitle ? <h1>{title}</h1> : null}
+        {meta ? <div className="page-header-meta">{meta}</div> : null}
         {hasDescription ? <p>{description}</p> : null}
       </div>
       <div className="page-actions">{children}</div>
@@ -5279,11 +5363,16 @@ function MeetingBookingModal({ call, campaigns = [], contacts = [], workspaceUse
 
 function ClientDetailPage({ client, aircallData, onOpenCampaign, onOpenAccount, onOpenContact, onEditClient, onEditAccount, onNewCampaign, onManageClientAccount, onOpenAircallUser, onDeleteMeeting, onUpdateMeetingAssignment, onImportCompanies, currentUserId = "", canManageCrmRecords = false }) {
   const { campaigns, accounts, contacts, activities, workspaceUsers, meetings } = useCrmData();
+  const clientViewStateKey = `paceops.view.clientDetail:${currentUserId || "anon"}:${client?.id || "none"}`;
+  const clientViewState = useMemo(() => loadPersistentViewState(clientViewStateKey, { activeClientActivityView: "campaigns" }), [clientViewStateKey]);
   const [membershipOpen, setMembershipOpen] = useState(false);
-  const [activeClientActivityView, setActiveClientActivityView] = useState("campaigns");
+  const [activeClientActivityView, setActiveClientActivityView] = useState(() => clientViewState.activeClientActivityView || "campaigns");
   const companyImportInputRef = useRef(null);
   const [companyImportStatus, setCompanyImportStatus] = useState("idle");
   const [companyImportMessage, setCompanyImportMessage] = useState("");
+  useEffect(() => {
+    savePersistentViewState(clientViewStateKey, { activeClientActivityView });
+  }, [activeClientActivityView, clientViewStateKey]);
   if (client?.id === "none") {
     return <ScopeSelectionPrompt requireCampaign={false} />;
   }
@@ -5600,10 +5689,15 @@ function CampaignList({ campaigns: providedCampaigns, onOpenCampaign, onEditCamp
 function CampaignDetailPage({ campaign, aircallData, onNavigate, onOpenClient, onOpenAccount, onOpenContact, onEditCampaign, onEditAccount, onManageCampaignMembers, onAddCompany, onNewContact, onDeleteMeeting, onUpdateMeetingAssignment, currentUserId = "", canManageCrmRecords = false }) {
   const { clients, accounts, contacts, workspaceUsers, meetings } = useCrmData();
   const companiesSectionRef = useRef(null);
-  const [expandedCampaignSection, setExpandedCampaignSection] = useState("");
+  const campaignViewStateKey = `paceops.view.campaignDetail:${currentUserId || "anon"}:${campaign?.id || "none"}`;
+  const campaignViewState = useMemo(() => loadPersistentViewState(campaignViewStateKey, { expandedCampaignSection: "", companySearchQuery: "", contactSearchQuery: "" }), [campaignViewStateKey]);
+  const [expandedCampaignSection, setExpandedCampaignSection] = useState(() => campaignViewState.expandedCampaignSection || "");
   const [membershipOpen, setMembershipOpen] = useState(false);
-  const [companySearchQuery, setCompanySearchQuery] = useState("");
-  const [contactSearchQuery, setContactSearchQuery] = useState("");
+  const [companySearchQuery, setCompanySearchQuery] = useState(() => campaignViewState.companySearchQuery || "");
+  const [contactSearchQuery, setContactSearchQuery] = useState(() => campaignViewState.contactSearchQuery || "");
+  useEffect(() => {
+    savePersistentViewState(campaignViewStateKey, { expandedCampaignSection, companySearchQuery, contactSearchQuery });
+  }, [campaignViewStateKey, companySearchQuery, contactSearchQuery, expandedCampaignSection]);
   useEffect(() => {
     if (!expandedCampaignSection) return undefined;
     function handleKeyDown(event) {
@@ -6039,13 +6133,28 @@ function AccountDetailPage({ account, onOpenContact, onEditAccount, onNewContact
         title={account.name}
         description={account.insight}
       >
-        {canManageCrmRecords ? <button className="secondary-button" type="button" onClick={() => onEditAccount(account)}>Edit company</button> : null}
-        {accountUrl ? (
-          <a className="secondary-button" href={normalizeUrl(accountUrl)} target="_blank" rel="noreferrer">
-            <ExternalLink size={16} />
-            {extractDomain(accountUrl) || accountUrl}
-          </a>
-        ) : null}
+        <div className="company-header-actions">
+          {canManageCrmRecords ? (
+            <button className="secondary-button" type="button" onClick={() => onEditAccount(account)}>
+              <Pencil size={15} />
+              <span>Edit company</span>
+            </button>
+          ) : null}
+          <div className="company-header-links">
+            {accountUrl ? (
+              <a className="company-header-website" href={normalizeUrl(accountUrl)} target="_blank" rel="noreferrer" title={`Open ${extractDomain(accountUrl) || accountUrl}`}>
+                <ExternalLink size={14} />
+                <span>Website</span>
+              </a>
+            ) : null}
+            {account.linkedinUrl ? (
+              <a className="company-header-linkedin" href={normalizeLinkedinUrl(account.linkedinUrl) || account.linkedinUrl} target="_blank" rel="noreferrer" title={`Open ${account.name} on LinkedIn`} aria-label={`Open ${account.name} on LinkedIn`}>
+                <LinkedInLogoIcon size={14} />
+                <span>LinkedIn</span>
+              </a>
+            ) : null}
+          </div>
+        </div>
       </PageHeader>
       <div className="record-hero">
         <RecordAvatar name={account.name} imageUrl={account.pictureUrl} size="large" />
@@ -7324,18 +7433,20 @@ function findIntentEventCompanyDuplicates(intentEvent = {}, companies = []) {
 function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [], onOpenContact, canSync = false, onSyncAircall, onLoadAircallRange, onBookMeeting, onSaveCallNote, currentUserId = "", currentAircallUserId = "", selectedAircallUserId = "", isAdmin = false }) {
   const { clients: crmClients = [], campaigns: crmCampaigns = [] } = useCrmData();
   const todayKey = toLocalDateKey(new Date());
-  const [rangeMode, setRangeMode] = useState("today");
-  const [selectedDate, setSelectedDate] = useState(todayKey);
-  const [customStartDate, setCustomStartDate] = useState(toLocalDateKey(addDays(startOfLocalDay(new Date()), -6)));
-  const [customEndDate, setCustomEndDate] = useState(todayKey);
+  const aircallViewStateKey = `paceops.view.aircall:${currentUserId || "anon"}`;
+  const aircallViewState = useMemo(() => loadPersistentViewState(aircallViewStateKey, {}), [aircallViewStateKey]);
+  const [rangeMode, setRangeMode] = useState(() => aircallViewState.rangeMode || "today");
+  const [selectedDate, setSelectedDate] = useState(() => aircallViewState.selectedDate || todayKey);
+  const [customStartDate, setCustomStartDate] = useState(() => aircallViewState.customStartDate || toLocalDateKey(addDays(startOfLocalDay(new Date()), -6)));
+  const [customEndDate, setCustomEndDate] = useState(() => aircallViewState.customEndDate || todayKey);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => monthKeyFromDateKey(todayKey));
-  const [selectedUserId, setSelectedUserId] = useState("all");
-  const [reportClientId, setReportClientId] = useState("all");
-  const [reportCampaignId, setReportCampaignId] = useState("all");
-  const [reportUserId, setReportUserId] = useState("all");
+  const [selectedUserId, setSelectedUserId] = useState(() => aircallViewState.selectedUserId || "all");
+  const [reportClientId, setReportClientId] = useState(() => aircallViewState.reportClientId || "all");
+  const [reportCampaignId, setReportCampaignId] = useState(() => aircallViewState.reportCampaignId || "all");
+  const [reportUserId, setReportUserId] = useState(() => aircallViewState.reportUserId || "all");
   const [reportExportStatus, setReportExportStatus] = useState("idle");
-  const [activeAircallPanel, setActiveAircallPanel] = useState("activity");
+  const [activeAircallPanel, setActiveAircallPanel] = useState(() => aircallViewState.activeAircallPanel || "activity");
   const [transcriptModalCall, setTranscriptModalCall] = useState(null);
   const [meetingBookingCall, setMeetingBookingCall] = useState(null);
   const [callNoteModalCall, setCallNoteModalCall] = useState(null);
@@ -7346,6 +7457,19 @@ function AircallDashboardPage({ aircallData, workspaceUsers = [], contacts = [],
   const [syncStatus, setSyncStatus] = useState("idle");
   const [syncError, setSyncError] = useState("");
   const [syncSummary, setSyncSummary] = useState("");
+  useEffect(() => {
+    savePersistentViewState(aircallViewStateKey, {
+      rangeMode,
+      selectedDate,
+      customStartDate,
+      customEndDate,
+      selectedUserId,
+      reportClientId,
+      reportCampaignId,
+      reportUserId,
+      activeAircallPanel,
+    });
+  }, [activeAircallPanel, aircallViewStateKey, customEndDate, customStartDate, rangeMode, reportCampaignId, reportClientId, reportUserId, selectedDate, selectedUserId]);
   const rawCalls = Array.isArray(aircallData?.calls) ? aircallData.calls : [];
   const rawAircallUsers = Array.isArray(aircallData?.users) ? aircallData.users : [];
   const visibleWorkspaceUsers = isAdmin ? workspaceUsers : workspaceUsers.filter(item => item.id === currentUserId);
@@ -8189,7 +8313,7 @@ async function exportAircallClientProgressHtml({
         includeIntelligence: true,
       });
       const syncedCount = Number(payload?.callsSynced ?? payload?.callsFetched);
-      const transcriptCount = Number(payload?.transcriptsSynced);
+      const transcriptCount = Number(payload?.transcriptsSynced || 0) + Number(payload?.missingTranscriptsSynced || 0);
       const intelligenceSummary = Number.isFinite(transcriptCount) && transcriptCount > 0
         ? ` ${transcriptCount} transcripts synced.`
         : "";
@@ -8614,6 +8738,7 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
   const [deleteError, setDeleteError] = useState("");
   const [draft, setDraft] = useState(() => ({
     accountId: contact.accountId,
+    accountName: contact.account || contact.company || "",
     name: contact.name || "",
     role: contact.role || "",
     email: contact.email || "",
@@ -8713,10 +8838,26 @@ function ContactDetailPage({ contact, privateNote = "", contactCalls = [], onUpd
           {editError ? <div className="form-error">{editError}</div> : null}
           {editing ? (
             <div className="detail-edit-grid">
+              <datalist id={`contact-detail-company-options-${contact.id}`}>
+                {accounts.map(item => <option key={item.id} value={item.name} />)}
+              </datalist>
               <FormField label="Company">
-                <select value={draft.accountId} onChange={event => updateDraft("accountId", event.target.value)}>
-                  {accounts.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </select>
+                <input
+                  list={`contact-detail-company-options-${contact.id}`}
+                  value={draft.accountName}
+                  onChange={event => {
+                    const accountName = event.target.value;
+                    const matchedAccount = accounts.find(item => normalizeLookupValue(item.name).toLowerCase() === normalizeLookupValue(accountName).toLowerCase());
+                    setDraft(current => ({
+                      ...current,
+                      accountName,
+                      accountId: matchedAccount?.id || "",
+                    }));
+                    setEditStatus("idle");
+                    setEditError("");
+                  }}
+                  placeholder="Type or select company"
+                />
               </FormField>
               <FormField label="Name">
                 <input value={draft.name} onChange={event => updateDraft("name", event.target.value)} />
@@ -9069,8 +9210,10 @@ function PipelinePage({
   const { accounts, contacts, pipelineStages, actionNotes = [], pipelineBoards = [], pipelineBoardInvites = [] } = useCrmData();
   const activeStages = normalizePipelineStages(pipelineStages || pipelineColumns);
   const pipelineBoardRef = useRef(null);
-  const [activePipelineBoardId, setActivePipelineBoardId] = useState("default");
-  const [pipelineMode, setPipelineMode] = useState("companies");
+  const pipelineViewStateKey = `paceops.view.pipeline:${currentUserId || "anon"}:${activeClient?.id || "none"}:${activeCampaign?.id || "none"}`;
+  const pipelineViewState = useMemo(() => loadPersistentViewState(pipelineViewStateKey, { activePipelineBoardId: "default", pipelineMode: "companies", pipelineSearch: "" }), [pipelineViewStateKey]);
+  const [activePipelineBoardId, setActivePipelineBoardId] = useState(() => pipelineViewState.activePipelineBoardId || "default");
+  const [pipelineMode, setPipelineMode] = useState(() => pipelineViewState.pipelineMode || "companies");
   const [draggedItem, setDraggedItem] = useState(null);
   const [dropStage, setDropStage] = useState("");
   const [editingStages, setEditingStages] = useState(false);
@@ -9078,7 +9221,7 @@ function PipelinePage({
   const [stageSaveStatus, setStageSaveStatus] = useState("idle");
   const [stageSaveError, setStageSaveError] = useState("");
   const [selectedItem, setSelectedItem] = useState(null);
-  const [pipelineSearch, setPipelineSearch] = useState("");
+  const [pipelineSearch, setPipelineSearch] = useState(() => pipelineViewState.pipelineSearch || "");
   const [managingBoardAccess, setManagingBoardAccess] = useState(false);
   const [duplicateStatus, setDuplicateStatus] = useState("idle");
   const [duplicateError, setDuplicateError] = useState("");
@@ -9087,9 +9230,11 @@ function PipelinePage({
   const [invitingBoardUsers, setInvitingBoardUsers] = useState(false);
   const [reviewingBoardInvites, setReviewingBoardInvites] = useState(false);
   const [inviteError, setInviteError] = useState("");
+  useEffect(() => {
+    savePersistentViewState(pipelineViewStateKey, { activePipelineBoardId, pipelineMode, pipelineSearch });
+  }, [activePipelineBoardId, pipelineMode, pipelineSearch, pipelineViewStateKey]);
 
   useEffect(() => {
-    setActivePipelineBoardId("default");
     setManagingBoardAccess(false);
     setNamingBoard(false);
   }, [activeCampaign?.id]);
@@ -9479,10 +9624,11 @@ function PipelinePage({
                   const subtitle = record.type === "company"
                     ? `${contactCount} contact${contactCount === 1 ? "" : "s"}`
                     : record.account?.name || "No company";
+                  const isIntentToBuyCard = pipelineStageIdForValue(record.stage, activeStages) === pipelineStageIdForValue("intent-to-buy", activeStages);
                   return (
                     <article
                       key={`${record.type}:${record.id}`}
-                      className={`pipeline-card ${draggedItem?.type === record.type && draggedItem?.id === record.id ? "dragging" : ""}`}
+                      className={`pipeline-card ${isIntentToBuyCard ? "intent-to-buy-card" : ""} ${draggedItem?.type === record.type && draggedItem?.id === record.id ? "dragging" : ""}`}
                       draggable
                       role="button"
                       tabIndex={0}
@@ -9755,8 +9901,13 @@ function PipelinePage({
 Calls workspace disabled.
 function CallsPage({ onOpenContact, onLogCall, onStartCallBlock }) {
   const { contacts, callInsights } = useCrmData();
-  const [outcome, setOutcome] = useState("Connected");
-  const [contactId, setContactId] = useState("");
+  const callsViewStateKey = "paceops.view.calls";
+  const callsViewState = useMemo(() => loadPersistentViewState(callsViewStateKey, { outcome: "Connected", contactId: "" }), []);
+  const [outcome, setOutcome] = useState(() => callsViewState.outcome || "Connected");
+  const [contactId, setContactId] = useState(() => callsViewState.contactId || "");
+  useEffect(() => {
+    savePersistentViewState(callsViewStateKey, { outcome, contactId });
+  }, [contactId, outcome]);
 
   return (
     <>
@@ -9866,12 +10017,17 @@ function actionNoteStatusLabel(value) {
 
 function ResearchPage({ activeClient, activeCampaign, onOpenAccount, onEditAccount, onAddSource, onGenerateScripts, onSaveScript, onDeleteScript, onSaveActionNote, onDeleteActionNote }) {
   const { accounts, contacts, scriptItems = [], actionNotes = [] } = useCrmData();
-  const [searchTerm, setSearchTerm] = useState("");
-  const [infoAccountId, setInfoAccountId] = useState("");
-  const [scriptAccountId, setScriptAccountId] = useState("");
+  const researchViewStateKey = `paceops.view.research:${activeClient?.id || "none"}:${activeCampaign?.id || "none"}`;
+  const researchViewState = useMemo(() => loadPersistentViewState(researchViewStateKey, { searchTerm: "", infoAccountId: "", scriptAccountId: "" }), [researchViewStateKey]);
+  const [searchTerm, setSearchTerm] = useState(() => researchViewState.searchTerm || "");
+  const [infoAccountId, setInfoAccountId] = useState(() => researchViewState.infoAccountId || "");
+  const [scriptAccountId, setScriptAccountId] = useState(() => researchViewState.scriptAccountId || "");
   const [scriptDraft, setScriptDraft] = useState(null);
   const [actionNoteDraft, setActionNoteDraft] = useState(null);
   const [actionNoteStatus, setActionNoteStatus] = useState("idle");
+  useEffect(() => {
+    savePersistentViewState(researchViewStateKey, { searchTerm, infoAccountId, scriptAccountId });
+  }, [infoAccountId, researchViewStateKey, scriptAccountId, searchTerm]);
   if (activeClient?.id === "none" || activeCampaign?.id === "none") {
     return <ScopeSelectionPrompt />;
   }
@@ -11215,20 +11371,63 @@ function createManualLeadDraft() {
 }
 
 const LEAD_DATABASE_COMPANIES_ONLY_STORAGE_KEY = "paceops.leadDatabase.companiesOnly";
+const LEAD_DATABASE_VIEW_STATE_STORAGE_KEY = "paceops.leadDatabase.viewState";
 
-function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, onAddToCrmContacts, onSaveLeadList, onOpenCompany, currentUserId = "", isAdmin = false }) {
-  const { contacts: crmContacts, accounts = [], clients = [], workspaceUsers = [], campaigns = [] } = useCrmData();
-  const [leadLookupQuery, setLeadLookupQuery] = useState("");
-  const [leadLookupCompany, setLeadLookupCompany] = useState("");
-  const [leadLookupIndustry, setLeadLookupIndustry] = useState("");
-  const [leadLookupTitle, setLeadLookupTitle] = useState("");
-  const [leadLookupFieldFilters, setLeadLookupFieldFilters] = useState({
-    email: false,
-    mobile: false,
-    directNumber: false,
-    linkedin: false,
+function loadLeadDatabaseViewState(userId = "") {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(`${LEAD_DATABASE_VIEW_STATE_STORAGE_KEY}:${String(userId || "anonymous")}`);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function saveLeadDatabaseViewState(userId = "", state = {}) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(`${LEAD_DATABASE_VIEW_STATE_STORAGE_KEY}:${String(userId || "anonymous")}`, JSON.stringify(state));
+  } catch {
+    return;
+  }
+}
+
+function dedupeLeadContactDatabase(records = []) {
+  const seen = new Set();
+  return (records || []).filter(contact => {
+    const identity = normalizeLookupValue(contact.normalizedIdentityKey)
+      || [
+        normalizeLookupValue(contact.contactName || [contact.firstName, contact.lastName].filter(Boolean).join(" ")).toLowerCase(),
+        normalizeLookupValue(contact.company).toLowerCase(),
+      ].join("|");
+    const email = normalizeEmail(contact.manualEmail);
+    const key = contact.id || identity || email;
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
+}
+
+function LeadDatabasePage({ leadLists, contactDatabase: rawContactDatabase = [], onSaveLeadContact, onAddToCrmContacts, onSaveLeadList, onOpenCompany, currentUserId = "", isAdmin = false }) {
+  const contactDatabase = useMemo(() => dedupeLeadContactDatabase(rawContactDatabase), [rawContactDatabase]);
+  const { contacts: crmContacts, accounts = [], clients = [], workspaceUsers = [], campaigns = [] } = useCrmData();
+  const savedViewState = useMemo(() => loadLeadDatabaseViewState(currentUserId), [currentUserId]);
+  const [leadLookupQuery, setLeadLookupQuery] = useState(() => savedViewState.query || "");
+  const [leadLookupCompany, setLeadLookupCompany] = useState(() => savedViewState.company || "");
+  const [leadLookupIndustry, setLeadLookupIndustry] = useState(() => savedViewState.industry || "");
+  const [leadLookupTitle, setLeadLookupTitle] = useState(() => savedViewState.title || "");
+  const [leadLookupFieldFilters, setLeadLookupFieldFilters] = useState(() => ({
+    email: Boolean(savedViewState.fieldFilters?.email),
+    mobile: Boolean(savedViewState.fieldFilters?.mobile),
+    directNumber: Boolean(savedViewState.fieldFilters?.directNumber),
+    linkedin: Boolean(savedViewState.fieldFilters?.linkedin),
+  }));
   const [companiesOnly, setCompaniesOnly] = useState(() => {
+    if (typeof savedViewState.companiesOnly === "boolean") return savedViewState.companiesOnly;
     if (typeof window === "undefined") return false;
     try {
       return window.localStorage.getItem(LEAD_DATABASE_COMPANIES_ONLY_STORAGE_KEY) === "true";
@@ -11236,11 +11435,11 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       return false;
     }
   });
-  const [editMode, setEditMode] = useState(false);
+  const [editMode, setEditMode] = useState(() => Boolean(savedViewState.editMode));
   const [leadLookupDrafts, setLeadLookupDrafts] = useState({});
   const [leadLookupSaveStatuses, setLeadLookupSaveStatuses] = useState({});
-  const [leadLookupPageSize, setLeadLookupPageSize] = useState("50");
-  const [leadLookupPage, setLeadLookupPage] = useState(1);
+  const [leadLookupPageSize, setLeadLookupPageSize] = useState(() => savedViewState.pageSize || "50");
+  const [leadLookupPage, setLeadLookupPage] = useState(() => Number(savedViewState.page) || 1);
   const [copiedLookupCell, setCopiedLookupCell] = useState("");
   const [selectedContactIds, setSelectedContactIds] = useState([]);
   const [saveListOpen, setSaveListOpen] = useState(false);
@@ -11252,6 +11451,19 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
   const [contactHubspotExportStatus, setContactHubspotExportStatus] = useState("idle");
   const [contactHubspotExportSummary, setContactHubspotExportSummary] = useState("");
   const [contactHubspotExportDialog, setContactHubspotExportDialog] = useState(null);
+  useEffect(() => {
+    saveLeadDatabaseViewState(currentUserId, {
+      query: leadLookupQuery,
+      company: leadLookupCompany,
+      industry: leadLookupIndustry,
+      title: leadLookupTitle,
+      fieldFilters: leadLookupFieldFilters,
+      companiesOnly,
+      editMode,
+      pageSize: leadLookupPageSize,
+      page: leadLookupPage,
+    });
+  }, [companiesOnly, currentUserId, editMode, leadLookupCompany, leadLookupFieldFilters, leadLookupIndustry, leadLookupPage, leadLookupPageSize, leadLookupQuery, leadLookupTitle]);
   const industryByCompany = new Map(accounts.map(account => [normalizeLookupValue(account.name).toLowerCase(), normalizeLookupValue(account.industry)]));
   const leadListMembershipByIdentity = new Map();
   const savedEmailCount = contactDatabase.filter(contact => normalizeLookupValue(contact.manualEmail)).length;
@@ -11312,7 +11524,37 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
 
   const leadLookupTerms = normalizeLookupValue(leadLookupQuery).toLowerCase().split(/\s+/).filter(Boolean);
   const activeLeadLookupFieldFilterCount = Object.values(leadLookupFieldFilters).filter(Boolean).length;
-  const filteredLeadLookupResults = contactDatabase.filter(contact => {
+  const normalizedLeadLookupQuery = normalizeLookupValue(leadLookupQuery).toLowerCase();
+  function scoreLeadLookupContact(contact) {
+    if (!normalizedLeadLookupQuery) return 0;
+    const contactName = normalizeLookupValue(contact.contactName || [contact.firstName, contact.lastName].filter(Boolean).join(" ")).toLowerCase();
+    const email = normalizeLookupValue(contact.manualEmail).toLowerCase();
+    const company = normalizeLookupValue(contact.company).toLowerCase();
+    const title = normalizeLookupValue(contact.jobTitle).toLowerCase();
+    if (contactName === normalizedLeadLookupQuery) return 1000;
+    if (contactName.startsWith(normalizedLeadLookupQuery)) return 900;
+    if (leadLookupTerms.length && leadLookupTerms.every(term => contactName.split(/\s+/).some(part => part === term))) return 850;
+    if (leadLookupTerms.length && leadLookupTerms.every(term => contactName.includes(term))) return 800;
+    if (email === normalizedLeadLookupQuery) return 700;
+    if (email.includes(normalizedLeadLookupQuery)) return 650;
+    if (company === normalizedLeadLookupQuery) return 520;
+    if (company.includes(normalizedLeadLookupQuery)) return 480;
+    if (title === normalizedLeadLookupQuery) return 420;
+    if (title.includes(normalizedLeadLookupQuery)) return 380;
+    return 0;
+  }
+  function leadLookupContactName(contact) {
+    return normalizeLookupValue(contact.contactName || [contact.firstName, contact.lastName].filter(Boolean).join(" ")).toLowerCase();
+  }
+  function isStrongLeadLookupNameMatch(contact) {
+    if (leadLookupTerms.length < 2) return false;
+    const contactName = leadLookupContactName(contact);
+    if (!contactName) return false;
+    return contactName === normalizedLeadLookupQuery
+      || contactName.includes(normalizedLeadLookupQuery)
+      || leadLookupTerms.every(term => contactName.includes(term));
+  }
+  const baseLeadLookupResults = contactDatabase.filter(contact => {
     const contactIndustry = industryByCompany.get(normalizeLookupValue(contact.company).toLowerCase()) || "";
     const hasEmail = Boolean(normalizeEmail(contact.manualEmail));
     const hasMobile = Boolean(getDisplayPhoneNumber(contact.manualMobile));
@@ -11344,7 +11586,13 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
       profileSkillsText(contact.skills),
     ].map(value => normalizeLookupValue(value).toLowerCase()).join(" ");
     return leadLookupTerms.every(term => searchableText.includes(term));
-  }).sort((first, second) => {
+  });
+  const strongLeadLookupNameMatches = leadLookupTerms.length > 1
+    ? baseLeadLookupResults.filter(isStrongLeadLookupNameMatch)
+    : [];
+  const filteredLeadLookupResults = (strongLeadLookupNameMatches.length ? strongLeadLookupNameMatches : baseLeadLookupResults).sort((first, second) => {
+    const relevanceDelta = scoreLeadLookupContact(second) - scoreLeadLookupContact(first);
+    if (relevanceDelta) return relevanceDelta;
     const firstName = normalizeLookupValue(first.contactName || [first.firstName, first.lastName].filter(Boolean).join(" ") || first.company);
     const secondName = normalizeLookupValue(second.contactName || [second.firstName, second.lastName].filter(Boolean).join(" ") || second.company);
     return firstName.localeCompare(secondName, undefined, { sensitivity: "base" })
@@ -11381,6 +11629,8 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
     ? filteredLeadLookupResults
     : filteredLeadLookupResults.slice(leadLookupStartIndex, leadLookupStartIndex + leadLookupRowsPerPage);
   const companyLookupResults = filteredCompanyLookupResults;
+  const leadLookupResultKey = leadLookupResults.map(contact => contact.id).join("|") || "empty";
+  const companyLookupResultKey = companyLookupResults.map(company => company.id).join("|") || "empty";
   const leadLookupShownStart = filteredLeadLookupResults.length ? leadLookupStartIndex + 1 : 0;
   const leadLookupShownEnd = leadLookupStartIndex + leadLookupResults.length;
   const activeLookupShownStart = companiesOnly ? (companyLookupResults.length ? 1 : 0) : leadLookupShownStart;
@@ -11912,7 +12162,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                   <th>Contacts</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody key={companyLookupResultKey}>
                 {companyLookupResults.length ? companyLookupResults.map(company => {
                   const websiteUrl = company.displayWebsite ? normalizeUrl(company.displayWebsite) : "";
                   const contactLabel = company.crmContactCount || company.savedContactCount
@@ -11989,7 +12239,7 @@ function LeadDatabasePage({ leadLists, contactDatabase = [], onSaveLeadContact, 
                 {editMode ? <th>Actions</th> : null}
               </tr>
             </thead>
-            <tbody>
+            <tbody key={leadLookupResultKey}>
               {leadLookupResults.length ? leadLookupResults.map(contact => {
                 const memberships = [
                   ...leadListMembershipByIdentity.get(buildLeadIdentityKey(contact)) || [],
@@ -19564,11 +19814,9 @@ function WorkflowModal({
       case "contact":
         return (
           <>
-            {workflow.context?.forceCompanySelection ? null : (
-              <datalist id="contact-account-options">
-                {data.accounts.map(account => <option key={account.id} value={account.name} />)}
-              </datalist>
-            )}
+            <datalist id="contact-account-options">
+              {data.accounts.map(account => <option key={account.id} value={account.name} />)}
+            </datalist>
             <div className="workflow-fieldset contact-workflow-section">
               <div className="workflow-section-title">
                 <span>Identity</span>
@@ -19576,14 +19824,15 @@ function WorkflowModal({
               <div className="workflow-field-grid">
                 <FormField label="Company">
                   {workflow.context?.forceCompanySelection ? (
-                    <select required value={values.accountId} onChange={event => {
-                      const selectedAccount = data.accounts.find(account => account.id === event.target.value);
-                      update("accountId", event.target.value);
-                      update("accountName", selectedAccount?.name || "");
-                    }}>
-                      <option value="">Select company</option>
-                      {data.accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
-                    </select>
+                    <input list="contact-account-options" required value={values.accountName} onChange={event => {
+                      const accountName = event.target.value;
+                      const matchedAccount = data.accounts.find(account => normalizeLookupValue(account.name).toLowerCase() === normalizeLookupValue(accountName).toLowerCase());
+                      setValues(current => ({
+                        ...current,
+                        accountName,
+                        accountId: matchedAccount?.id || "",
+                      }));
+                    }} placeholder="Type or select company" />
                   ) : (
                     <input list="contact-account-options" required value={values.accountName} onChange={event => {
                       const accountName = event.target.value;
@@ -19921,6 +20170,7 @@ export default function App() {
     isOrgAdmin: false,
   });
   const [activeView, setActiveView] = useState("dashboard");
+  const [activePrimaryView, setActivePrimaryView] = useState("dashboard");
   const [showHomePage, setShowHomePage] = useState(false);
   const [activeClientId, setActiveClientId] = useState("each-other");
   const [activeCampaignId, setActiveCampaignId] = useState("priority-targeting");
@@ -20060,12 +20310,27 @@ export default function App() {
     if (!user?.id || dataUserId !== user.id) return;
     saveUiState(user.id, {
       activeView,
+      activePrimaryView,
       activeClientId,
       activeCampaignId,
       selectedAccountId,
       selectedContactId,
     });
-  }, [activeCampaignId, activeClientId, activeView, dataUserId, selectedAccountId, selectedContactId, user?.id]);
+    saveWorkspaceNavigationMemory(user.id, activePrimaryView, {
+      activeView,
+      activePrimaryView,
+      activeClientId,
+      activeCampaignId,
+      selectedAccountId,
+      selectedContactId,
+    });
+  }, [activeCampaignId, activeClientId, activePrimaryView, activeView, dataUserId, selectedAccountId, selectedContactId, user?.id]);
+
+  useEffect(() => {
+    if (primaryWorkspaceViewIds.has(activeView) && activeView !== activePrimaryView) {
+      setActivePrimaryView(activeView);
+    }
+  }, [activePrimaryView, activeView]);
 
   useEffect(() => {
     if (!supabase || !dataOrgId || !user?.id) return undefined;
@@ -20100,20 +20365,22 @@ export default function App() {
       const navigation = event.state?.workspaceNavigation;
       if (navigation?.activeView) {
         setActiveView(canAccessWorkspaceView(navigation.activeView, effectiveAccessState) ? navigation.activeView : "dashboard");
-        if (navigation.activeClientId) setActiveClientId(navigation.activeClientId);
-        if (navigation.activeCampaignId) setActiveCampaignId(navigation.activeCampaignId);
-        if (navigation.selectedAccountId) setSelectedAccountId(navigation.selectedAccountId);
-        if (navigation.selectedContactId) setSelectedContactId(navigation.selectedContactId);
+        setActivePrimaryView(primaryViewForWorkspaceView(navigation.activeView, navigation.activePrimaryView || activePrimaryView));
+        if (Object.prototype.hasOwnProperty.call(navigation, "activeClientId")) setActiveClientId(navigation.activeClientId);
+        if (Object.prototype.hasOwnProperty.call(navigation, "activeCampaignId")) setActiveCampaignId(navigation.activeCampaignId);
+        if (Object.prototype.hasOwnProperty.call(navigation, "selectedAccountId")) setSelectedAccountId(navigation.selectedAccountId || null);
+        if (Object.prototype.hasOwnProperty.call(navigation, "selectedContactId")) setSelectedContactId(navigation.selectedContactId || null);
         return;
       }
 
       const requestedView = readWorkspaceViewFromUrl();
       setActiveView(canAccessWorkspaceView(requestedView, effectiveAccessState) ? (requestedView || "dashboard") : "dashboard");
+      setActivePrimaryView(primaryViewForWorkspaceView(requestedView || "dashboard"));
     };
 
     window.addEventListener("popstate", applyBrowserNavigation);
     return () => window.removeEventListener("popstate", applyBrowserNavigation);
-  }, [effectiveAccessState.isOrgAdmin, user?.id]);
+  }, [activePrimaryView, effectiveAccessState.isOrgAdmin, user?.id]);
 
   async function handleAuthenticatedUser(nextUser) {
     const normalizedNextUser = {
@@ -20137,6 +20404,7 @@ export default function App() {
       const requestedView = readWorkspaceViewFromUrl();
       if (requestedView) {
         setActiveView(canAccessWorkspaceView(requestedView, effectiveAccessState) ? requestedView : "dashboard");
+        setActivePrimaryView(primaryViewForWorkspaceView(requestedView));
       }
       setUser(current => current?.id === nextUser.id ? {
         ...current,
@@ -20157,6 +20425,7 @@ export default function App() {
       const requestedView = readWorkspaceViewFromUrl();
       if (requestedView) {
         setActiveView(canAccessWorkspaceView(requestedView, effectiveAccessState) ? requestedView : "dashboard");
+        setActivePrimaryView(primaryViewForWorkspaceView(requestedView));
       }
       setUser(current => current?.id === nextUser.id ? {
         ...current,
@@ -20253,24 +20522,28 @@ export default function App() {
         ...syncedCrmData,
         workspaceUsers: mergedWorkspaceUsers,
       };
+      const urlView = readWorkspaceViewFromUrl();
+      const savedPrimaryView = primaryViewForWorkspaceView(urlView || uiState.activePrimaryView || uiState.activeView || "dashboard");
+      const navigationMemory = urlView ? {} : loadWorkspaceNavigationMemory(nextUser.id, savedPrimaryView);
+      const restoreState = { ...uiState, ...navigationMemory };
       const allClientIds = new Set((nextCrmData.clients || []).map(client => client.id).filter(Boolean));
-      const restoredClientId = (typeof uiState.activeClientId === "string" && allClientIds.has(uiState.activeClientId))
-        ? uiState.activeClientId
+      const restoredClientId = (typeof restoreState.activeClientId === "string" && allClientIds.has(restoreState.activeClientId))
+        ? restoreState.activeClientId
         : (nextCrmData.clients[0]?.id || "none");
       const restoredClientCampaigns = nextCrmData.campaigns.filter(campaign => campaign.clientId === restoredClientId);
       const allCampaignIds = new Set(restoredClientCampaigns.map(campaign => campaign.id).filter(Boolean));
-      const restoredCampaignId = (typeof uiState.activeCampaignId === "string" && allCampaignIds.has(uiState.activeCampaignId))
-        ? uiState.activeCampaignId
+      const restoredCampaignId = (typeof restoreState.activeCampaignId === "string" && allCampaignIds.has(restoreState.activeCampaignId))
+        ? restoreState.activeCampaignId
         : (restoredClientCampaigns[0]?.id || "none");
       const allAccountIds = new Set((nextCrmData.accounts || []).map(account => account.id).filter(Boolean));
       const allContactIds = new Set((nextCrmData.contacts || []).map(contact => contact.id).filter(Boolean));
-      const urlView = readWorkspaceViewFromUrl();
-      const requestedView = urlView || uiState.activeView || "dashboard";
+      const requestedView = urlView || restoreState.activeView || "dashboard";
       setActiveView(canAccessWorkspaceView(requestedView, nextAccessState) ? requestedView : "dashboard");
+      setActivePrimaryView(primaryViewForWorkspaceView(requestedView, restoreState.activePrimaryView || savedPrimaryView));
       setActiveClientId(restoredClientId);
       setActiveCampaignId(restoredCampaignId);
-      setSelectedAccountId(typeof uiState.selectedAccountId === "string" && allAccountIds.has(uiState.selectedAccountId) ? uiState.selectedAccountId : null);
-      setSelectedContactId(typeof uiState.selectedContactId === "string" && allContactIds.has(uiState.selectedContactId) ? uiState.selectedContactId : null);
+      setSelectedAccountId(typeof restoreState.selectedAccountId === "string" && allAccountIds.has(restoreState.selectedAccountId) ? restoreState.selectedAccountId : null);
+      setSelectedContactId(typeof restoreState.selectedContactId === "string" && allContactIds.has(restoreState.selectedContactId) ? restoreState.selectedContactId : null);
       setCrmData(refreshCrmData(nextCrmData));
       setLeadLists(nextLeadLists);
       setIntentData(nextIntentData);
@@ -21108,18 +21381,52 @@ export default function App() {
     ...workspaceUsers.map(workspaceUser => ({ type: "User", id: workspaceUser.id, title: workspaceUser.name, meta: workspaceUser.email })),
   ].filter(result => `${result.title} ${result.meta}`.toLowerCase().includes(searchQuery)).slice(0, 7);
 
-  function currentNavigationState() {
+  function currentNavigationState(overrides = {}) {
+    const primaryView = primaryViewForWorkspaceView(
+      overrides.activePrimaryView || (primaryWorkspaceViewIds.has(overrides.activeView) ? overrides.activeView : activePrimaryView),
+      activePrimaryView,
+    );
     return {
       activeView,
-      activeClientId: activeClient.id,
-      activeCampaignId: activeCampaign.id,
+      activePrimaryView: primaryView,
+      activeClientId: activeClient?.id || activeClientId,
+      activeCampaignId: activeCampaign?.id || activeCampaignId,
       selectedAccountId,
       selectedContactId,
+      ...overrides,
     };
+  }
+
+  function applyNavigationState(state = {}, fallbackView = "dashboard") {
+    const normalized = normalizeWorkspaceUiState(state);
+    const nextView = canAccessWorkspaceView(normalized.activeView, effectiveAccessState)
+      ? normalized.activeView
+      : fallbackView;
+    const nextPrimaryView = primaryViewForWorkspaceView(nextView, normalized.activePrimaryView || fallbackView);
+    setActivePrimaryView(nextPrimaryView);
+    if (Object.prototype.hasOwnProperty.call(normalized, "activeClientId")) setActiveClientId(normalized.activeClientId);
+    if (Object.prototype.hasOwnProperty.call(normalized, "activeCampaignId")) setActiveCampaignId(normalized.activeCampaignId);
+    if (Object.prototype.hasOwnProperty.call(normalized, "selectedAccountId")) setSelectedAccountId(normalized.selectedAccountId || null);
+    if (Object.prototype.hasOwnProperty.call(normalized, "selectedContactId")) setSelectedContactId(normalized.selectedContactId || null);
+    setActiveView(nextView);
+    return {
+      ...currentNavigationState(),
+      ...normalized,
+      activeView: nextView,
+      activePrimaryView: nextPrimaryView,
+    };
+  }
+
+  function saveCurrentNavigationMemory(primaryView = activePrimaryView) {
+    if (!user?.id) return;
+    const normalizedPrimaryView = primaryViewForWorkspaceView(primaryView, activePrimaryView);
+    saveWorkspaceNavigationMemory(user.id, normalizedPrimaryView, currentNavigationState({ activePrimaryView: normalizedPrimaryView }));
   }
 
   function navigateTo(view, updates = {}, options = {}) {
     if (!canAccessWorkspaceView(view, effectiveAccessState)) view = "dashboard";
+    const nextPrimaryView = primaryViewForWorkspaceView(view, activePrimaryView);
+    saveCurrentNavigationMemory(activePrimaryView);
     if (view === "aircall" && !options.preserveAircallUserFilter) {
       setSelectedAircallUserId("");
     }
@@ -21130,11 +21437,13 @@ export default function App() {
     if (Object.prototype.hasOwnProperty.call(updates, "activeCampaignId")) setActiveCampaignId(updates.activeCampaignId);
     if (Object.prototype.hasOwnProperty.call(updates, "selectedAccountId")) setSelectedAccountId(updates.selectedAccountId || null);
     if (Object.prototype.hasOwnProperty.call(updates, "selectedContactId")) setSelectedContactId(updates.selectedContactId || null);
+    setActivePrimaryView(nextPrimaryView);
     if (options.browserHistory !== false) {
       writeWorkspaceHistory({
         ...currentNavigationState(),
         ...updates,
         activeView: view,
+        activePrimaryView: nextPrimaryView,
       });
     }
     setActiveView(view);
@@ -21142,18 +21451,22 @@ export default function App() {
 
   function navigatePrimary(view) {
     if (!canAccessWorkspaceView(view, effectiveAccessState)) view = "dashboard";
-    const nextSelectedAccountId = ["clients", "accounts", "contacts"].includes(view) ? null : selectedAccountId;
-    const nextSelectedContactId = view === "contacts" ? null : selectedContactId;
+    saveCurrentNavigationMemory(activePrimaryView);
+    const rememberedState = user?.id ? loadWorkspaceNavigationMemory(user.id, view) : {};
+    const hasRememberedState = Object.keys(rememberedState).length > 0;
+    const nextState = hasRememberedState
+      ? {
+        ...currentNavigationState(),
+        ...rememberedState,
+        activePrimaryView: view,
+      }
+      : currentNavigationState({
+        activeView: view,
+        activePrimaryView: view,
+      });
     setViewHistory([]);
-    writeWorkspaceHistory({
-      ...currentNavigationState(),
-      activeView: view,
-      selectedAccountId: nextSelectedAccountId,
-      selectedContactId: nextSelectedContactId,
-    });
-    setSelectedAccountId(nextSelectedAccountId);
-    setSelectedContactId(nextSelectedContactId);
-    setActiveView(view);
+    const appliedState = applyNavigationState(nextState, view);
+    writeWorkspaceHistory(appliedState);
   }
 
   function goBack() {
@@ -21165,6 +21478,7 @@ export default function App() {
       setActiveCampaignId(previous.activeCampaignId);
       setSelectedAccountId(previous.selectedAccountId);
       setSelectedContactId(previous.selectedContactId);
+      setActivePrimaryView(primaryViewForWorkspaceView(previous.activeView, previous.activePrimaryView || activePrimaryView));
       setActiveView(previous.activeView);
       return current.slice(0, -1);
     });
@@ -21218,6 +21532,7 @@ export default function App() {
   }
 
   function openClient(id) {
+    if (id) setActiveClientId(id);
     navigateTo("client-detail", { activeClientId: id });
   }
 
@@ -21269,7 +21584,46 @@ export default function App() {
 
   async function handleUpdateContact(values) {
     const previous = crmData.contacts.find(contact => contact.id === values.id);
-    const account = crmData.accounts.find(item => item.id === values.accountId);
+    const accountName = normalizeLookupValue(values.accountName);
+    let account = crmData.accounts.find(item => (
+      item.id === values.accountId
+      || (accountName && normalizeLookupValue(item.name).toLowerCase() === accountName.toLowerCase())
+    ));
+    let createdAccount = null;
+    if (previous && !account && accountName) {
+      const persistedCompany = await createRelationalCompany(dataOrgId, {
+        clientId: previous.clientId || crmData.clients[0]?.id || "",
+        name: accountName,
+        website: "",
+        industry: "Unspecified",
+        location: "Unspecified",
+        employees: "Unknown",
+        value: 0,
+        stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
+        status: "New",
+        nextAction: "Review new contact",
+        insight: "Created from contact edit form.",
+        scripts: null,
+      });
+      createdAccount = {
+        id: persistedCompany.id,
+        clientId: previous.clientId || crmData.clients[0]?.id || "",
+        name: accountName,
+        website: "",
+        domain: "No domain",
+        stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
+        status: "New",
+        industry: "Unspecified",
+        location: "Unspecified",
+        employees: "Unknown",
+        value: 0,
+        lastActivity: "Created from contact edit",
+        nextAction: "Review new contact",
+        insight: "Created from contact edit form.",
+        scripts: null,
+      };
+      account = createdAccount;
+    }
     const nextContact = previous ? {
       ...previous,
       clientId: account?.clientId || previous.clientId,
@@ -21297,6 +21651,9 @@ export default function App() {
     if (nextContact) {
       updateData(current => ({
         ...current,
+        accounts: createdAccount && !current.accounts.some(item => item.id === createdAccount.id)
+          ? [createdAccount, ...current.accounts]
+          : current.accounts,
         contacts: current.contacts.map(contact => contact.id === values.id ? nextContact : contact),
         activities: [makeActivity("Contact", `Contact updated: ${nextContact.name || "Untitled contact"}`, nextContact.account || "Workspace"), ...current.activities],
       }));
@@ -21630,10 +21987,54 @@ export default function App() {
       agentName: values.agentName || meetingOwner?.name || "",
       status: "booked",
     });
+    const activeStages = normalizePipelineStages(crmData.pipelineStages || pipelineColumns);
+    const intentToBuyStage = pipelineStageIdForValue("intent-to-buy", activeStages);
+    const contactCompanyId = values.contactId
+      ? (crmData.contacts || []).find(contact => contact.id === values.contactId)?.companyId
+        || (crmData.contacts || []).find(contact => contact.id === values.contactId)?.accountId
+      : "";
+    const candidateCompanyId = savedMeeting.companyId || values.companyId || contactCompanyId;
+    const titleKey = normalizeLookupValue(savedMeeting.title || values.title).toLowerCase();
+    const campaignCompanyIds = new Set(Array.isArray(campaign?.companyIds) ? campaign.companyIds : []);
+    const meetingCompany = (crmData.accounts || []).find(account => account.id === candidateCompanyId)
+      || (crmData.accounts || []).find(account => (
+        account.clientId === clientId
+        && (!campaignCompanyIds.size || campaignCompanyIds.has(account.id))
+        && normalizeLookupValue(account.name).toLowerCase() === titleKey
+      ));
+    const shouldMoveCompanyToIntent = meetingCompany && meetingCompany.stage !== intentToBuyStage;
+    if (shouldMoveCompanyToIntent) {
+      await updateRelationalCompanyPipelineStage(dataOrgId, meetingCompany, intentToBuyStage);
+    }
+    if (meetingCompany && campaign && !campaignCompanyIds.has(meetingCompany.id)) {
+      await saveRelationalCampaignCompanyTarget(dataOrgId, campaign, meetingCompany.id);
+    }
     updateData(current => refreshCrmData({
       ...current,
       meetings: [savedMeeting, ...(current.meetings || [])],
+      campaigns: meetingCompany && campaign && !campaignCompanyIds.has(meetingCompany.id)
+        ? (current.campaigns || []).map(item => item.id === campaign.id
+          ? {
+            ...item,
+            companyIds: [...new Set([...(Array.isArray(item.companyIds) ? item.companyIds : []), meetingCompany.id])],
+            accounts: Number(item.accounts || item.companies || 0) + 1,
+            companies: Number(item.companies || item.accounts || 0) + 1,
+          }
+          : item)
+        : current.campaigns,
+      accounts: shouldMoveCompanyToIntent
+        ? (current.accounts || []).map(account => account.id === meetingCompany.id
+          ? { ...account, stage: intentToBuyStage, customFields: { ...(account.customFields || {}), ui_stage: intentToBuyStage } }
+          : account)
+        : current.accounts,
       activities: [
+        ...(shouldMoveCompanyToIntent ? [
+          makeActivity("Pipeline", `${meetingCompany.name} moved to Intent to Buy`, meetingCompany.name, meetingOwner?.name || savedMeeting.agentName || effectiveUser.name, {
+            clientId: meetingCompany.clientId,
+            campaignId: savedMeeting.campaignId,
+            companyId: meetingCompany.id,
+          }),
+        ] : []),
         makeActivity("Meeting", `Meeting booked: ${savedMeeting.title}`, campaign?.name || "Campaign", meetingOwner?.name || savedMeeting.agentName || effectiveUser.name, {
           clientId: savedMeeting.clientId,
           campaignId: savedMeeting.campaignId,
@@ -22692,12 +23093,83 @@ export default function App() {
         }
         values = { ...values, campaignId: campaign.id };
       } else if (mustSelectExistingAccount) {
-        account = crmData.accounts.find(item => item.id === values.accountId);
-        if (!account) throw new Error("Choose a company before adding this contact.");
+        const accountName = normalizeLookupValue(values.accountName);
+        account = crmData.accounts.find(item => (
+          item.id === values.accountId
+          || (accountName && normalizeLookupValue(item.name).toLowerCase() === accountName.toLowerCase())
+        ));
+        if (!account && accountName) {
+          const clientId = activeClient?.id || context.clientId || crmData.clients[0]?.id || "";
+          const persistedCompany = await createRelationalCompany(dataOrgId, {
+            clientId,
+            name: accountName,
+            website: "",
+            industry: "Unspecified",
+            location: "Unspecified",
+            employees: "Unknown",
+            value: 0,
+            stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
+            status: "New",
+            nextAction: "Review new contact",
+            insight: "Created from contact form.",
+            scripts: null,
+          });
+          account = {
+            id: persistedCompany.id,
+            clientId,
+            name: accountName,
+            website: "",
+            domain: "No domain",
+            stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
+            status: "New",
+            industry: "Unspecified",
+            location: "Unspecified",
+            employees: "Unknown",
+            value: 0,
+            lastActivity: "Created with contact",
+            nextAction: "Review new contact",
+            insight: "Created from contact form.",
+            scripts: null,
+          };
+        }
+        if (!account) throw new Error("Type or select a company before adding this contact.");
       } else {
         const accountName = normalizeLookupValue(values.accountName) || "Untitled company";
         account = crmData.accounts.find(item => item.id === values.accountId || normalizeLookupValue(item.name).toLowerCase() === accountName.toLowerCase());
-        if (!account) throw new Error("Choose a company before adding this contact.");
+        if (!account) {
+          const clientId = activeClient?.id || context.clientId || crmData.clients[0]?.id || "";
+          const persistedCompany = await createRelationalCompany(dataOrgId, {
+            clientId,
+            name: accountName,
+            website: "",
+            industry: "Unspecified",
+            location: "Unspecified",
+            employees: "Unknown",
+            value: 0,
+            stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
+            status: "New",
+            nextAction: "Review new contact",
+            insight: "Created from contact form.",
+            scripts: null,
+          });
+          account = {
+            id: persistedCompany.id,
+            clientId,
+            name: accountName,
+            website: "",
+            domain: "No domain",
+            stage: crmData.pipelineStages?.[0]?.name || pipelineColumns[0].name,
+            status: "New",
+            industry: "Unspecified",
+            location: "Unspecified",
+            employees: "Unknown",
+            value: 0,
+            lastActivity: "Created with contact",
+            nextAction: "Review new contact",
+            insight: "Created from contact form.",
+            scripts: null,
+          };
+        }
       }
 
       if (!UUID_PATTERN.test(String(account.id))) throw new Error("Create or select a database-backed company before saving this contact.");
@@ -23263,14 +23735,8 @@ export default function App() {
     if (result.type === "User") openView("settings");
   }
 
-  function listViewSelectionResets(view) {
-    if (view === "contacts") return { selectedAccountId: null, selectedContactId: null };
-    if (view === "clients" || view === "accounts") return { selectedAccountId: null };
-    return {};
-  }
-
   function openView(view) {
-    navigateTo(view, listViewSelectionResets(view));
+    navigateTo(view);
   }
 
   function renderPage() {
